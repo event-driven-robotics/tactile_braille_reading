@@ -1,0 +1,9 @@
+scale 5
+time_bin_size 5
+nb_input_copies 2
+tau_mem 0.06
+tau_ratio 10
+fwd_weight_scale 1
+weight_scale_factor 0.01
+reg_spikes 0.004
+reg_neurons 0.000001

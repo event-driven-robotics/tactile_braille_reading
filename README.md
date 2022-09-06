@@ -18,7 +18,7 @@ Scanning | Sample-based | Event-based
 ![scanning](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/assets/pipeline1.gif) | ![sample_based](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/assets/pipeline2.gif) | ![event_based](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/assets/pipeline3.gif)
 
 # How-to
-1. Install [Python](https://www.python.org/), [PyTorch](https://pytorch.org/), [scikit-learn](https://scikit-learn.org/stable/), [NumPy](https://numpy.org/), [pandas](https://pandas.pydata.org/) and [matplotlib](https://matplotlib.org/) for plotting
+1. Install [Python](https://www.python.org/), [PyTorch](https://pytorch.org/), [NumPy](https://numpy.org/), [scikit-learn](https://scikit-learn.org/stable/), [pandas](https://pandas.pydata.org/) and [matplotlib](https://matplotlib.org/) for plotting
 2. Download the [dataset](https://zenodo.org/record/7050094) from Zenodo
 3. Extract the files and add them in the main folder of this repository
 4. Run the jupiter notebook for the [feedforawrd SNN](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/notebooks/braille_reading_ffsnn.ipynb) and/or the [recurrent SNN](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/notebooks/braille_reading_rsnn.ipynb)

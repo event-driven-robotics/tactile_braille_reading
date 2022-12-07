@@ -1,7 +1,7 @@
 Braille letters
 =============
 
-This repo is part of the publication ["Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware"](https://www.frontiersin.org/articles/10.3389/fnins.2022.951164/full) on Frontiers.
+This repo is part of the publication ["Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware"](https://www.frontiersin.org/articles/10.3389/fnins.2022.951164/full) you can find on Frontiers.
 
 Braille is a tactile writing system used by people who are visually impaired. These characters have rectangular blocks called *cells* that have tiny bumps called *raised dots*. The number and arrangement of these dots distinguish one character from another. For more details and background information see [here](https://en.wikipedia.org/wiki/Braille).
 

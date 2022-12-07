@@ -1,4 +1,4 @@
-Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware
+# Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware
 ============+
 
 You can find our publication on [Frontiers](https://www.frontiersin.org/articles/10.3389/fnins.2022.951164/full).

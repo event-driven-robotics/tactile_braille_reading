@@ -58,6 +58,10 @@ def load_and_extract(params, file_name, taxels=None, letter_written=None, dtype=
     data = torch.tensor(data, dtype=dtype)
     labels = torch.tensor(labels, dtype=torch.long)
 
+    return data, labels, selected_chans, data_steps, time_step
+
+
+def create_splits(data, labels):
     # create 70/20/10 train/test/validation split
     # first create 70/30 train/(test + validation)
     x_train, x_validation_test, y_train, y_validation_test = train_test_split(
@@ -70,4 +74,4 @@ def load_and_extract(params, file_name, taxels=None, letter_written=None, dtype=
     ds_validation = TensorDataset(x_validation, y_validation)
     ds_test = TensorDataset(x_test, y_test)
 
-    return ds_train, ds_validation, ds_test, labels, selected_chans, data_steps, time_step
+    return ds_train, ds_validation, ds_test

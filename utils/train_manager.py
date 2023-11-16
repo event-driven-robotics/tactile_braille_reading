@@ -211,18 +211,17 @@ def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.001
             local_loss.append(loss_val.item())
 
             if possible_weight_values != "baseline":
-                print("Applying weight discretization.")
                 # use thee STE function for quantization
                 for layer_idx in range(len(layers)):
                     try:
                         # fast but memory intensive
-                        logger.debug(
-                            f"Using fast but memory intensive STE function on layer {layer_idx+1}.")
+                        # logger.debug(
+                        #     f"Using fast but memory intensive STE function on layer {layer_idx+1}.")
                         layers[layer_idx].data.copy_(
                             ste_fn(layers[layer_idx].data, possible_weight_values))
                     except:
-                        logger.debug(
-                            f"Fast STE function failed. Using slower version on layer {layer_idx+1}.")
+                        # logger.debug(
+                        #     f"Fast STE function failed. Using slower version on layer {layer_idx+1}.")
                         # slower but memory efficient
                         for neuron_idx in range(len(layers[layer_idx])):
                             layers[layer_idx][neuron_idx].data.copy_(
@@ -306,8 +305,8 @@ def validate_model(dataset, layers, time_constants, spike_fn, nb_input_copies=1,
         # compare to labels
         tmp = np.mean((y_local == out_max).detach().cpu().numpy())
         accs.append(tmp)
-        trues.append(y_local.detach().cpu().numpy())
-        preds.append(out_max.detach().cpu().numpy())
+        trues.extend(y_local.detach().cpu().numpy())
+        preds.extend(out_max.detach().cpu().numpy())
         activity_record.append(
             [spk_rec.detach().cpu().numpy(), spks_out.detach().cpu().numpy()])
 

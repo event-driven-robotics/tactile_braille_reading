@@ -13,8 +13,7 @@ class feedforward_layer:
     def create_layer(nb_inputs, nb_outputs, fwd_scale, device='cpu', dtype=torch.float):
         ff_layer = torch.empty(
             (nb_inputs, nb_outputs),  device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(ff_layer, mean=0.0,
-                              std=fwd_scale/sqrt(nb_inputs))
+        torch.nn.init.normal_(ff_layer, mean=0.0, std=fwd_scale/sqrt(nb_inputs))
         return ff_layer
 
     def compute_activity(spike_fn, nb_input, nb_neurons, input_activity, alpha, beta, nb_steps, device='cpu', dtype=torch.float):
@@ -55,13 +54,11 @@ class recurrent_layer:
     def create_layer(nb_inputs, nb_outputs, fwd_scale, rec_scale, device='cpu', dtype=torch.float):
         ff_layer = torch.empty(
             (nb_inputs, nb_outputs),  device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(ff_layer, mean=0.0,
-                              std=fwd_scale/sqrt(nb_inputs))
+        torch.nn.init.normal_(ff_layer, mean=0.0, std=fwd_scale/sqrt(nb_inputs))
 
         rec_layer = torch.empty(
             (nb_outputs, nb_outputs),  device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(
-            rec_layer, mean=0.0, std=rec_scale/sqrt(nb_inputs))
+        torch.nn.init.normal_(rec_layer, mean=0.0, std=rec_scale/sqrt(nb_inputs))
         return ff_layer,  rec_layer
 
     def compute_activity(spike_fn, nb_input, nb_neurons, input_activity, layer, alpha, beta, nb_steps, device='cpu', dtype=torch.float):

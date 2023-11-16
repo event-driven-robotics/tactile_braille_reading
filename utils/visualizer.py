@@ -5,17 +5,16 @@ Here we have all functions to visualize results.
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sn
-from matplotlib.gridspec import GridSpec
 from numpy import random
 from sklearn.metrics import confusion_matrix
 
 
-def ConfusionMatrix(out_path, trues, preds, labels, threshold, bit_resolution=8, use_trainable_tc=False, use_trainable_out=False):
+def ConfusionMatrix(out_path, trues, preds, labels, threshold, bit_resolution=8, use_trainable_tc=False, use_trainable_out=False, repetition=1):
     '''
     Here we create a confusion matrix.
     '''
 
-    cm = confusion_matrix(trues, preds, normalize='true')
+    cm = confusion_matrix(y_true=trues, y_pred=preds, labels=labels, normalize='true')
     cm_df = pd.DataFrame(cm, index=[ii for ii in labels], columns=[
                          jj for jj in labels])
     plt.figure(figsize=(12, 12))
@@ -35,10 +34,10 @@ def ConfusionMatrix(out_path, trues, preds, labels, threshold, bit_resolution=8,
     if use_trainable_out:
         local_path += '_train_out'
     plt.savefig(
-        f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_confusion_matrix.png", dpi=300)
+        f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_confusion_matrix_run_{repetition+1}.png", dpi=300)
 
 
-def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainable_tc=False, use_trainable_out=False):
+def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainable_tc=False, use_trainable_out=False, repetition=1):
     '''
     Here we visualize the network activity of a random batch.
     '''
@@ -52,10 +51,10 @@ def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainab
         plt.figure(figsize=(16, 9))
         plt.title(f"Layer {layer_num}")
         # for i in range(nb_plt):
-            # plt.subplot(gs[layer_num])
+        # plt.subplot(gs[layer_num])
         plt.imshow(layer_activity[sample_num].T,
-                    cmap=plt.cm.gray_r, origin="lower", aspect='auto')
-            # if i == 0:
+                   cmap=plt.cm.gray_r, origin="lower", aspect='auto')
+        # if i == 0:
         plt.xlabel("Time")
         plt.ylabel("Units")
         sn.despine()
@@ -66,4 +65,4 @@ def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainab
         if use_trainable_out:
             local_path += '_train_out'
         plt.savefig(
-            f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_raster_plot.png", dpi=300)
+            f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_raster_plot_run_{repetition+1}.png", dpi=300)

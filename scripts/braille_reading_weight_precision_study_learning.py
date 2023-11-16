@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from utils.data_manager import load_and_extract
+from utils.data_manager import create_splits, load_and_extract
 from utils.train_manager import build, check_cuda, train, validate_model
 from utils.visualizer import ConfusionMatrix, NetworkActivity
 
@@ -25,8 +25,11 @@ use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
 epochs = 100
-# bit_resolution_list = [16, 14, 12, 10, 8, 6, 4, 2, 1]  # possible bit resolutions
-bit_resolution_list = ["baseline"]  # possible bit resolutions
+bit_resolution_list = ["baseline", 16, 14, 12,
+                       10, 8, 6, 4, 2, 1]  # possible bit resolutions
+
+# weight range extracted from unconstrained training
+weight_range = [-0.5, 0.5]
 max_repetitions = 5
 
 use_trainable_out = False
@@ -144,7 +147,7 @@ class SurrGradSpike(torch.autograd.Function):
 spike_fn = SurrGradSpike.apply
 
 for bit_resolution in bit_resolution_list:
-    best_acc = 0.0
+    # best_acc = 0.0
     # for actual_weight_precision in weight_precision:
     results_dict = {
         "bit_resolution": bit_resolution,
@@ -158,7 +161,6 @@ for bit_resolution in bit_resolution_list:
         # calculate possible weight values
         # determines in how many increments we seperate values between min and max (inlc. both)
         number_of_increments = 2**bit_resolution
-        weight_range = [-1, 1]  # weight range
         possible_weight_values = np.linspace(
             weight_range[0], weight_range[1], number_of_increments)
         possible_weight_values = torch.as_tensor(
@@ -168,8 +170,10 @@ for bit_resolution in bit_resolution_list:
 
     for repetition in range(max_repetitions):
         # load data
-        ds_train, ds_validation, ds_test, labels, nb_channels, data_steps, time_step = load_and_extract(
+        data, labels, nb_channels, data_steps, time_step = load_and_extract(
             params=params, file_name=file_name, letter_written=letters)
+        ds_train, ds_validation, ds_test = create_splits(data, labels)
+
         if repetition == 0:
             LOG.debug("Number of training data %i" % len(ds_train))
             LOG.debug("Number of validation data %i" % len(ds_validation))
@@ -180,7 +184,6 @@ for bit_resolution in bit_resolution_list:
             LOG.debug("---------------------------\n")
 
         # build the network
-        # TODO hand over logger!
         layers, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
             np.unique(labels)), time_step=time_step, possible_weight_values=possible_weight_values, device=device, logger=LOG)
 
@@ -213,29 +216,27 @@ for bit_resolution in bit_resolution_list:
         val_acc, trues, preds, activity_record = validate_model(dataset=ds_test, layers=best_layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
             'nb_input_copies'], device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
 
-        # safe overall best layer
-        if np.mean(val_acc) > best_acc:
-            very_best_layer = best_layers
-            best_acc = np.mean(val_acc)
-            best_trues = trues
-            best_preds = preds
-            best_activity_record = activity_record
-
         results_dict["training_results"].append(accs_hist[0])
         results_dict["validation_results"].append(accs_hist[1])
         results_dict["test_results"].append(np.mean(val_acc))
 
+        ConfusionMatrix(out_path=path, trues=trues, preds=preds, labels=letters, threshold=threshold, bit_resolution=bit_resolution,
+                        use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
+
+        # visualize network activity of the best perfoming batch
+        NetworkActivity(out_path=path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
+                        use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
+
+        # save the best layer
+        torch.save(best_layers,
+                   f'./model/best_model_th{threshold}_{bit_resolution}_bit_resolution_run_{repetition+1}.pt')
+
         # free memory
-        # del ds_train, ds_validation, ds_test
+        del ds_train, ds_validation, ds_test
         torch.clear_autocast_cache()
 
     LOG.debug("*************************")
-    LOG.debug("* Best: {:.2f} %         *" .format(best_acc*100))
-    LOG.debug("*************************")
-
-    # save the best layer
-    torch.save(very_best_layer,
-               f'./model/best_model_th{threshold}_{bit_resolution}_bit_resolution.pt')
+    LOG.debug("\n\n\n")
 
     # save results
     torch.save(
@@ -272,21 +273,7 @@ for bit_resolution in bit_resolution_list:
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy (%)")
     plt.ylim((0, 105))
-    plt.legend(["Training", "Test"], loc='lower right')
+    plt.legend(["Training", "Test", "_", "_", "Best train",
+               "Best test"], loc='lower right')
     plt.savefig(
         f"{path}/rsnn_thr_{threshold}_{bit_resolution}_bit_resolution_acc.png", dpi=300)
-
-    # get test results
-    test_acc, trues, preds, activity_record = validate_model(dataset=ds_test, layers=very_best_layer, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
-        'nb_input_copies'], device=device, dtype=dtype, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
-
-    # find best test
-    idx_best_test = np.argmax(results_dict["test_results"])
-
-    # plotting the confusion matrix
-    ConfusionMatrix(out_path=path, trues=trues[idx_best_test], preds=preds[idx_best_test], labels=letters, threshold=threshold, bit_resolution=bit_resolution,
-                    use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out)
-
-    # plotting the network activity
-    NetworkActivity(out_path=path, spk_recs=activity_record[idx_best_test], threshold=threshold, bit_resolution=bit_resolution,
-                    use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out)

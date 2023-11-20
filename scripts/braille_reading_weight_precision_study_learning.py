@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -10,7 +11,9 @@ from utils.data_manager import create_splits, load_and_extract
 from utils.train_manager import build, check_cuda, train, validate_model
 from utils.visualizer import ConfusionMatrix, NetworkActivity
 
-# TODO change name according to precision tested!
+matplotlib.set_loglevel("warning")
+
+
 datetime = str(datetime.datetime.now())
 logger_name = f'./logs/{datetime.split(" ")[0]}_{datetime.split(" ")[1].split(".")[0]}_braille_reading_weight_precision_study.log'
 logging.basicConfig(filename=f'{logger_name}',
@@ -25,11 +28,14 @@ use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
 epochs = 100
-bit_resolution_list = ["baseline", 16, 14, 12,
-                       10, 8, 6, 4, 2, 1]  # possible bit resolutions
+# bit_resolution_list = ["baseline", 16, 14, 12,
+#                        10, 8, 6, 4, 2, 1]  # possible bit resolutions
+# bit_resolution_list = [16, 14, 12,
+#                        10, 8, 6, 4, 2, 1]  # possible bit resolutions
+bit_resolution_list = [2, 1]  # possible bit resolutions
+# TODO include clamping into filename!
+dynamic_clamping = False  # if True, the weights are clamped to the range after training
 
-# weight range extracted from unconstrained training
-weight_range = [-0.5, 0.5]
 max_repetitions = 5
 
 use_trainable_out = False
@@ -157,16 +163,6 @@ for bit_resolution in bit_resolution_list:
         "validation_results": [],
         "test_results": [],
     }
-    if bit_resolution != "baseline":
-        # calculate possible weight values
-        # determines in how many increments we seperate values between min and max (inlc. both)
-        number_of_increments = 2**bit_resolution
-        possible_weight_values = np.linspace(
-            weight_range[0], weight_range[1], number_of_increments)
-        possible_weight_values = torch.as_tensor(
-            possible_weight_values, device=device, dtype=dtype)
-    else:
-        possible_weight_values = bit_resolution
 
     for repetition in range(max_repetitions):
         # load data
@@ -185,12 +181,12 @@ for bit_resolution in bit_resolution_list:
 
         # build the network
         layers, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
-            np.unique(labels)), time_step=time_step, possible_weight_values=possible_weight_values, device=device, logger=LOG)
+            np.unique(labels)), time_step=time_step, bit_resolution=bit_resolution, dynamic_clamping=dynamic_clamping, device=device, logger=LOG)
 
         # train the network
         # a fixed learning rate is already defined within the train function, that's why here it is omitted
         loss_hist, accs_hist, best_layers = train(params=params, spike_fn=spike_fn, ste_fn=ste_fn, dataset_train=ds_train, batch_size=batch_size, lr=lr, nb_epochs=epochs,
-                                                  layers=layers, time_constants=time_constants, dataset_validation=ds_validation, possible_weight_values=possible_weight_values, device=device, dtype=dtype, logger=LOG)
+                                                  layers=layers, time_constants=time_constants, dataset_validation=ds_validation, bit_resolution=bit_resolution, dynamic_clamping=dynamic_clamping, device=device, dtype=dtype, logger=LOG)
 
         # best training and test at best training
         acc_best_train = np.max(accs_hist[0])  # returns max value

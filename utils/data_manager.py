@@ -66,9 +66,14 @@ def create_splits(data, labels):
     # first create 70/30 train/(test + validation)
     x_train, x_validation_test, y_train, y_validation_test = train_test_split(
         data, labels, test_size=0.30, shuffle=True, stratify=labels)
+    # TODO include a loop to split data as often needed until all labels in test given!
     # split test and validation 2/1
-    x_validation, x_test, y_validation, y_test = train_test_split(
-        x_validation_test, y_validation_test, test_size=0.33, shuffle=True, stratify=y_validation_test)
+    redo_split = True
+    while redo_split:
+        x_validation, x_test, y_validation, y_test = train_test_split(
+            x_validation_test, y_validation_test, test_size=0.33, shuffle=True, stratify=y_validation_test)
+        if len(np.unique(y_test)) == len(np.unique(labels)):
+            redo_split = False
 
     ds_train = TensorDataset(x_train, y_train)
     ds_validation = TensorDataset(x_validation, y_validation)

@@ -14,7 +14,7 @@ def ConfusionMatrix(out_path, trues, preds, labels, threshold, bit_resolution=8,
     Here we create a confusion matrix.
     '''
 
-    cm = confusion_matrix(y_true=trues, y_pred=preds, labels=labels, normalize='true')
+    cm = confusion_matrix(y_true=trues, y_pred=preds, normalize='true')
     cm_df = pd.DataFrame(cm, index=[ii for ii in labels], columns=[
                          jj for jj in labels])
     plt.figure(figsize=(12, 12))
@@ -33,6 +33,7 @@ def ConfusionMatrix(out_path, trues, preds, labels, threshold, bit_resolution=8,
         local_path += '_train_tc'
     if use_trainable_out:
         local_path += '_train_out'
+    # TODO remove the +1 from repetition+1
     plt.savefig(
         f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_confusion_matrix_run_{repetition+1}.png", dpi=300)
 
@@ -64,5 +65,6 @@ def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainab
             local_path += '_train_tc'
         if use_trainable_out:
             local_path += '_train_out'
+        # TODO remove the +1 from repetition+1
         plt.savefig(
             f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_raster_plot_run_{repetition+1}.png", dpi=300)

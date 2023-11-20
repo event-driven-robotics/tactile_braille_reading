@@ -45,7 +45,7 @@ def check_cuda():
     return device
 
 
-def build(params, nb_channels, nb_hidden, nb_outputs, time_step, ste_fn=None, use_trainable_tc=False, use_trainable_out=False, possible_weight_values=None, device='cpu', dtype=torch.float, logger=None):
+def build(params, nb_channels, nb_hidden, nb_outputs, time_step, ste_fn=None, use_trainable_tc=False, use_trainable_out=False, bit_resolution=None, dynamic_clamping=False, device='cpu', dtype=torch.float, logger=None):
     '''
     Here we set up the network.
     '''
@@ -76,14 +76,7 @@ def build(params, nb_channels, nb_hidden, nb_outputs, time_step, ste_fn=None, us
         logger.debug("Recurrent weight scale: {}" .format(rec_weight_scale))
         logger.debug("Alpha: {}" .format(alpha))
         logger.debug("Beta: {}" .format(beta))
-        if possible_weight_values != "baseline":
-            logger.debug("Lower bound of weight values: {}" .format(
-                torch.min(possible_weight_values)))
-            logger.debug("Upper bound of weight values: {}" .format(
-                torch.max(possible_weight_values)))
-            logger.debug("Number of increments of weight values: {}\n" .format(
-                len(possible_weight_values)))
-        else:
+        if bit_resolution == "baseline":
             logger.debug("No weight discretization applied.\n")
 
     # recurrent layer
@@ -97,8 +90,40 @@ def build(params, nb_channels, nb_hidden, nb_outputs, time_step, ste_fn=None, us
     # write layers to dict
     layers.append(w1), layers.append(w2), layers.append(v1)
 
-    if possible_weight_values != "baseline":
-        print("Applying weight discretization.")
+    if bit_resolution != "baseline":
+        if dynamic_clamping:
+            clamp_max, clamp_min = np.max([torch.max(w1).detach().cpu().numpy(), torch.max(w2).detach().cpu().numpy(), torch.max(v1).detach().cpu(
+            ).numpy()]), np.min([torch.min(w1).detach().cpu().numpy(), torch.min(w2).detach().cpu().numpy(), torch.min(v1).detach().cpu().numpy()])
+            clamp_max, clamp_min = 1.2*clamp_max, 1.2*clamp_min  # add some margin
+            # calculate possible weight values
+            # determines in how many increments we seperate values between min and max (inlc. both)
+            number_of_increments = 2**bit_resolution
+            possible_weight_values = np.linspace(
+                clamp_min, clamp_max, number_of_increments)
+            possible_weight_values = torch.as_tensor(
+                possible_weight_values, device=device, dtype=dtype)
+        else:
+
+            # calculate possible weight values
+            # determines in how many increments we seperate values between min and max (inlc. both)
+            number_of_increments = 2**bit_resolution
+            possible_weight_values = np.linspace(
+                -0.5, 0.5, number_of_increments)
+            possible_weight_values = torch.as_tensor(
+                possible_weight_values, device=device, dtype=dtype)
+
+    if bit_resolution != "baseline":
+        if logger is not None:
+            if dynamic_clamping:
+                logger.debug("Dynamic clamping parameters:")
+            else:
+                logger.debug("Fix clamping parameters:")
+            logger.debug("Lower bound of weight values: {}" .format(
+                torch.min(possible_weight_values)))
+            logger.debug("Upper bound of weight values: {}" .format(
+                torch.max(possible_weight_values)))
+            logger.debug("Number of increments of weight values: {}\n" .format(
+                len(possible_weight_values)))
         # use thee STE function for quantization
         for layer_idx in range(len(layers)):
             try:
@@ -146,7 +171,7 @@ def build(params, nb_channels, nb_hidden, nb_outputs, time_step, ste_fn=None, us
     return layers, time_constants
 
 
-def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.0015, nb_epochs=300, layers=None, time_constants=None, dataset_validation=None, possible_weight_values=None, logger=None, use_trainable_out=False, use_trainable_tc=False, use_dropout=False, device='cpu', dtype=torch.float):
+def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.0015, nb_epochs=300, layers=None, time_constants=None, dataset_validation=None, bit_resolution=None, dynamic_clamping=False, logger=None, use_trainable_out=False, use_trainable_tc=False, use_dropout=False, device='cpu', dtype=torch.float):
     """
     Here we have the training framework.
     """
@@ -172,7 +197,7 @@ def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.001
         for x_local, y_local in generator:
             x_local, y_local = x_local.to(device), y_local.to(device)
 
-            spks_out, recs, layers_update = _run_snn(inputs=x_local, layers=layers, time_constants=time_constants, spike_fn=spike_fn, nb_input_copies=params[
+            spks_out, recs = _run_snn(inputs=x_local, layers=layers, time_constants=time_constants, spike_fn=spike_fn, nb_input_copies=params[
                 'nb_input_copies'], device=device, dtype=dtype, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
             # [mem_rec, spk_rec, out_rec]
             _, spk_rec, _ = recs
@@ -210,7 +235,28 @@ def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.001
             optimizer.step()
             local_loss.append(loss_val.item())
 
-            if possible_weight_values != "baseline":
+            if bit_resolution != "baseline":
+                if dynamic_clamping:
+                    # get the max and min value from the actual weights and include a safety margin
+                    clamp_max, clamp_min = np.max([torch.max(layers[0]).detach().cpu().numpy(), torch.max(layers[1]).detach().cpu().numpy(), torch.max(layers[2]).detach().cpu(
+                    ).numpy()]), np.min([torch.min(layers[0]).detach().cpu().numpy(), torch.min(layers[1]).detach().cpu().numpy(), torch.min(layers[2]).detach().cpu().numpy()])
+                    clamp_max, clamp_min = 1.2*clamp_max, 1.2*clamp_min
+                    # calculate possible weight values
+                    # determines in how many increments we seperate values between min and max (inlc. both)
+                    number_of_increments = 2**bit_resolution
+                    possible_weight_values = np.linspace(
+                        clamp_min, clamp_max, number_of_increments)
+                    possible_weight_values = torch.as_tensor(
+                        possible_weight_values, device=device, dtype=dtype)
+                else:
+                    # calculate possible weight values
+                    # determines in how many increments we seperate values between min and max (inlc. both)
+                    number_of_increments = 2**bit_resolution
+                    possible_weight_values = np.linspace(
+                        -0.5, 0.5, number_of_increments)
+                    possible_weight_values = torch.as_tensor(
+                        possible_weight_values, device=device, dtype=dtype)
+
                 # use thee STE function for quantization
                 for layer_idx in range(len(layers)):
                     try:
@@ -240,7 +286,7 @@ def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.001
         accs_hist[0].append(mean_accs)
 
         # Calculate validation accuracy in each epoch
-        validation_acc, _, _, _ = validate_model(dataset=dataset_validation, layers=layers_update, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
+        validation_acc, _, _, _ = validate_model(dataset=dataset_validation, layers=layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
             'nb_input_copies'], device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
         # only safe best validation
         accs_hist[1].append(np.mean(validation_acc))
@@ -248,32 +294,8 @@ def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.001
         # save best test
         if np.max(validation_acc) >= np.max(accs_hist[1]):
             best_acc_layers = []
-            for ii in layers_update:
+            for ii in layers:
                 best_acc_layers.append(ii.detach().clone())
-
-        # plt.figure("live plot")
-        # plt.title("Epoch: {}" .format(e+1))
-        # plt.subplot(1, 2, 1)
-        # plt.plot(range(1, len(accs_hist[0])+1),
-        #          100*np.array(accs_hist[0]), color='blue')
-        # plt.plot(range(1, len(accs_hist[1])+1),
-        #          100*np.array(accs_hist[1]), color='orange')
-        # plt.xlabel("Epoch")
-        # plt.ylabel("Accuracy (%)")
-        # plt.ylim(0, 105)
-        # plt.legend(["Training", "Test"], loc='lower right')
-        # plt.subplot(1, 2, 2)
-        # plt.plot(range(1, len(loss_hist)+1), np.array(loss_hist), color='blue')
-        # plt.xlabel("Epoch")
-        # plt.ylabel("Loss")
-        # plt.legend(["Training"], loc='lower right')
-        # # to avoid clearing last plot
-        # if (e != epochs-1):
-        #     plt.draw()
-        #     plt.pause(0.1)
-        #     plt.cla()
-        # else:
-        #     plt.close("live plot")
 
         logger.debug("Epoch {}/{} done. Train accuracy: {:.2f}%, Test accuracy: {:.2f}%, Loss: {:.5f}.".format(
             e + 1, nb_epochs, accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
@@ -292,8 +314,8 @@ def validate_model(dataset, layers, time_constants, spike_fn, nb_input_copies=1,
     activity_record = []
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(device), y_local.to(device)
-        spks_out, recs, _ = _run_snn(inputs=x_local, layers=layers, time_constants=time_constants, spike_fn=spike_fn, nb_input_copies=nb_input_copies,
-                                     device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
+        spks_out, recs = _run_snn(inputs=x_local, layers=layers, time_constants=time_constants, spike_fn=spike_fn, nb_input_copies=nb_input_copies,
+                                  device=device, dtype=dtype, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
         # [mem_rec, spk_rec, out_rec]
         _, spk_rec, _ = recs
         # with output spikes
@@ -343,7 +365,7 @@ def _run_snn(inputs, layers, time_constants, spike_fn, nb_input_copies=1, device
                                                             input_activity=h1, layer=v1, alpha=alpha1, beta=beta1, nb_steps=nb_steps, device=device, dtype=dtype)
     else:
         spk_rec, mem_rec = recurrent_layer.compute_activity(spike_fn=spike_fn, nb_input=bs, nb_neurons=nb_hidden,
-                                                        input_activity=h1, layer=v1, alpha=alpha, beta=beta, nb_steps=nb_steps, device=device, dtype=dtype)
+                                                            input_activity=h1, layer=v1, alpha=alpha, beta=beta, nb_steps=nb_steps, device=device, dtype=dtype)
 
     # Readout layer
     h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))
@@ -363,6 +385,5 @@ def _run_snn(inputs, layers, time_constants, spike_fn, nb_input_copies=1, device
             out_offset  # sum spikes
 
     other_recs = [mem_rec, spk_rec, out_rec]
-    layers_update = layers
 
-    return s_out_rec, other_recs, layers_update
+    return s_out_rec, other_recs

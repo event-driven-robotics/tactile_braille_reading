@@ -25,7 +25,7 @@ LOG = logging.getLogger(f'{logger_name}')
 use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
-epochs = 100
+epochs = 2 # 100
 bit_resolution_list = ["baseline", 16, 14, 12,
                        10, 8, 6, 4, 2, 1]  # possible bit resolutions
 
@@ -195,47 +195,5 @@ for bit_resolution in bit_resolution_list:
         # free memory
         torch.clear_autocast_cache()
 
-    # LOG.debug("*************************")
-    # LOG.debug("* Best: {:.2f} %         *" .format(best_acc*100))
     LOG.debug("*************************")
     LOG.debug("\n\n\n")
-
-    # save results
-    torch.save(
-        results_dict, f'./results/results_th{threshold}_{bit_resolution}_bit_resolution.pt')
-
-    # calc mean and std
-    acc_mean_train = np.mean(
-        results_dict["training_results"], axis=0)
-    acc_std_train = np.std(
-        results_dict["training_results"], axis=0)
-    acc_mean_test = np.mean(
-        results_dict["validation_results"], axis=0)
-    acc_std_test = np.std(results_dict["validation_results"], axis=0)
-    # find best validation trial and epoch
-    best_trial, best_epoch = np.where(np.max(
-        results_dict["validation_results"]) == results_dict["validation_results"])
-    best_trial, best_epoch = best_trial[0], best_epoch[0]
-
-    plt.figure()
-    # plot mean and std
-    plt.plot(range(1, len(acc_mean_train)+1), 100 *
-             np.array(acc_mean_train), color='blue')
-    plt.plot(range(1, len(acc_mean_test)+1), 100 *
-             np.array(acc_mean_test), color='orangered')
-    plt.fill_between(range(1, len(acc_mean_train)+1), 100*(acc_mean_train +
-                     acc_std_train), 100*(acc_mean_train-acc_std_train), color='cornflowerblue')
-    plt.fill_between(range(1, len(acc_mean_test)+1), 100*(acc_mean_test +
-                     acc_std_test), 100*(acc_mean_test-acc_std_test), color='sandybrown')
-    # plot best trial
-    plt.plot(range(1, len(results_dict["training_results"][best_trial])+1), 100*np.array(
-        results_dict["training_results"][best_trial]), color='blue', linestyle='dashed')
-    plt.plot(range(1, len(results_dict["validation_results"][best_trial])+1), 100*np.array(
-        results_dict["validation_results"][best_trial]), color='orangered', linestyle='dashed')
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy (%)")
-    plt.ylim((0, 105))
-    plt.legend(["Training", "Test", "_", "_", "Best train",
-               "Best test"], loc='lower right')
-    plt.savefig(
-        f"{path}/rsnn_thr_{threshold}_{bit_resolution}_bit_resolution_acc.png", dpi=300)

@@ -24,10 +24,9 @@ LOG = logging.getLogger(f'{logger_name}')
 # set variables
 use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
-# set the number of epochs you want to train the network (default = 300)
-epochs = 2 # 100
 bit_resolution_list = ["baseline", 16, 14, 12,
                        10, 8, 6, 4, 2, 1]  # possible bit resolutions
+dynamic_clamping = False  # if True, the weights are clamped to the range after training
 
 # weight range extracted from unconstrained training
 weight_range = [-0.5, 0.5]
@@ -176,9 +175,29 @@ for bit_resolution in bit_resolution_list:
         _, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
             np.unique(labels)), time_step=time_step, possible_weight_values=possible_weight_values, device=device, logger=LOG)
 
-        # load the trained network
+        # load the baseline network
         layers = torch.load(
-            f'./model/best_model_th{threshold}_{bit_resolution}_bit_resolution_run_{repetition+1}.pt')
+            f'./model/best_model_th{threshold}_baseline_bit_resolution_run_{repetition+1}.pt')
+
+        if dynamic_clamping:
+            clamp_max, clamp_min = np.max([torch.max(w1).detach().cpu().numpy(), torch.max(w2).detach().cpu().numpy(), torch.max(v1).detach().cpu(
+            ).numpy()]), np.min([torch.min(w1).detach().cpu().numpy(), torch.min(w2).detach().cpu().numpy(), torch.min(v1).detach().cpu().numpy()])
+            clamp_max, clamp_min = 1.2*clamp_max, 1.2*clamp_min  # add some margin
+            # calculate possible weight values
+            # determines in how many increments we seperate values between min and max (inlc. both)
+            number_of_increments = 2**bit_resolution
+            possible_weight_values = np.linspace(
+                clamp_min, clamp_max, number_of_increments)
+            possible_weight_values = torch.as_tensor(
+                possible_weight_values, device=device, dtype=dtype)
+        else:
+            # calculate possible weight values
+            # determines in how many increments we seperate values between min and max (inlc. both)
+            number_of_increments = 2**bit_resolution
+            possible_weight_values = np.linspace(
+                -0.5, 0.5, number_of_increments)
+            possible_weight_values = torch.as_tensor(
+                possible_weight_values, device=device, dtype=dtype)
 
         # get test results
         val_acc, trues, preds, activity_record = validate_model(dataset=ds_total, layers=layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[

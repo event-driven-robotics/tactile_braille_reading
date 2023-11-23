@@ -103,7 +103,6 @@ def build(params, nb_channels, nb_hidden, nb_outputs, time_step, ste_fn=None, us
             possible_weight_values = torch.as_tensor(
                 possible_weight_values, device=device, dtype=dtype)
         else:
-
             # calculate possible weight values
             # determines in how many increments we seperate values between min and max (inlc. both)
             number_of_increments = 2**bit_resolution

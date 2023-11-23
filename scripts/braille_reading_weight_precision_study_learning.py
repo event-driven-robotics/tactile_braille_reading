@@ -7,33 +7,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from utils.data_manager import create_splits, load_and_extract
+from utils.data_manager import create_folder, create_splits, load_and_extract
 from utils.train_manager import build, check_cuda, train, validate_model
 from utils.visualizer import ConfusionMatrix, NetworkActivity
-
-matplotlib.set_loglevel("warning")
-
-
-datetime = str(datetime.datetime.now())
-logger_name = f'./logs/{datetime.split(" ")[0]}_{datetime.split(" ")[1].split(".")[0]}_braille_reading_weight_precision_study.log'
-logging.basicConfig(filename=f'{logger_name}',
-                    filemode='a+',
-                    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                    datefmt='%H:%M:%S',
-                    level=logging.DEBUG)
-LOG = logging.getLogger(f'{logger_name}')
 
 # set variables
 use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
 epochs = 100
-# bit_resolution_list = ["baseline", 16, 14, 12,
-#                        10, 8, 6, 4, 2, 1]  # possible bit resolutions
-# bit_resolution_list = [16, 14, 12,
-#                        10, 8, 6, 4, 2, 1]  # possible bit resolutions
-bit_resolution_list = [2, 1]  # possible bit resolutions
-# TODO include clamping into filename!
+bit_resolution_list = [16, 15, 14, 13, 12, 11, 10, 9,
+                       8, 7, 6, 5, 4, 3, 2, 1]  # possible bit resolutions
+
 dynamic_clamping = False  # if True, the weights are clamped to the range after training
 
 max_repetitions = 5
@@ -49,13 +34,30 @@ dtype = torch.float  # float32
 letters = ['Space', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
            'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
 
-# create folder to safe figures later
-path = './figures'
-isExist = os.path.exists(path)
+# create folders to safe everything
+if dynamic_clamping:
+    study_type = 'dynamic_clamping'
+else:
+    study_type = 'static_clamping'
 
-if not isExist:
-    os.makedirs(path)
+fig_path = f'./figures/learning/{study_type}'
+create_folder(fig_path)
+model_path = f'./model/{study_type}'
+create_folder(model_path)
+results_path = f'./results/{study_type}'
+create_folder(results_path)
 
+matplotlib.set_loglevel("warning")
+
+
+datetime = str(datetime.datetime.now())
+logger_name = f'./logs/{study_type}/{datetime.split(" ")[0]}_{datetime.split(" ")[1].split(".")[0]}_braille_reading_weight_precision_study_{study_type}.log'
+logging.basicConfig(filename=f'{logger_name}',
+                    filemode='a+',
+                    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                    datefmt='%H:%M:%S',
+                    level=logging.DEBUG)
+LOG = logging.getLogger(f'{logger_name}')
 # check for available GPU and distribute work
 device = check_cuda()
 
@@ -216,16 +218,16 @@ for bit_resolution in bit_resolution_list:
         results_dict["validation_results"].append(accs_hist[1])
         results_dict["test_results"].append(np.mean(val_acc))
 
-        ConfusionMatrix(out_path=path, trues=trues, preds=preds, labels=letters, threshold=threshold, bit_resolution=bit_resolution,
+        ConfusionMatrix(out_path=fig_path, trues=trues, preds=preds, labels=letters, threshold=threshold, bit_resolution=bit_resolution,
                         use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
 
         # visualize network activity of the best perfoming batch
-        NetworkActivity(out_path=path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
+        NetworkActivity(out_path=fig_path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
                         use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
 
         # save the best layer
         torch.save(best_layers,
-                   f'./model/best_model_th{threshold}_{bit_resolution}_bit_resolution_run_{repetition+1}.pt')
+                   f'{model_path}/best_model_th{threshold}_{bit_resolution}_bit_resolution_run_{repetition+1}.pt')
 
         # free memory
         del ds_train, ds_validation, ds_test
@@ -236,7 +238,7 @@ for bit_resolution in bit_resolution_list:
 
     # save results
     torch.save(
-        results_dict, f'./results/results_th{threshold}_{bit_resolution}_bit_resolution.pt')
+        results_dict, f'{results_path}/results_th{threshold}_{bit_resolution}_bit_resolution.pt')
 
     # calc mean and std
     acc_mean_train = np.mean(
@@ -272,4 +274,4 @@ for bit_resolution in bit_resolution_list:
     plt.legend(["Training", "Test", "_", "_", "Best train",
                "Best test"], loc='lower right')
     plt.savefig(
-        f"{path}/rsnn_thr_{threshold}_{bit_resolution}_bit_resolution_acc.png", dpi=300)
+        f"{fig_path}/rsnn_thr_{threshold}_{bit_resolution}_bit_resolution_acc.png", dpi=300)

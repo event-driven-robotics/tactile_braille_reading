@@ -1,6 +1,7 @@
 '''
 Here we prepare the data.
 '''
+import os
 
 import numpy as np
 import pandas as pd
@@ -80,3 +81,10 @@ def create_splits(data, labels):
     ds_test = TensorDataset(x_test, y_test)
 
     return ds_train, ds_validation, ds_test
+
+
+def create_folder(path):
+    isExist = os.path.exists(path)
+
+    if not isExist:
+        os.makedirs(path)

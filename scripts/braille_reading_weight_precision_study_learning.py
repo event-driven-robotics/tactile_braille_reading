@@ -16,8 +16,9 @@ use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
 epochs = 100
-bit_resolution_list = [16, 15, 14, 13, 12, 11, 10, 9,
-                       8, 7, 6, 5, 4, 3, 2, 1]  # possible bit resolutions
+# bit_resolution_list = [16, 15, 14, 13, 12, 11, 10, 9,
+#                        8, 7, 6, 5, 4, 3, 2, 1]  # possible bit resolutions
+bit_resolution_list = [15, 13, 11, 9, 7, 5, 3]  # possible bit resolutions
 
 dynamic_clamping = False  # if True, the weights are clamped to the range after training
 

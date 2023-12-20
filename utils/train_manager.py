@@ -256,7 +256,7 @@ def train(params, spike_fn, dataset_train, ste_fn=None, batch_size=128, lr=0.001
                     possible_weight_values = torch.as_tensor(
                         possible_weight_values, device=device, dtype=dtype)
 
-                # use thee STE function for quantization
+                # use the STE function for quantization
                 for layer_idx in range(len(layers)):
                     try:
                         # fast but memory intensive

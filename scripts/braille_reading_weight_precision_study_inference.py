@@ -5,10 +5,11 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset
 
-from utils.data_manager import create_splits, load_and_extract
-from utils.train_manager import build, check_cuda, train, validate_model
+from utils.data_manager import create_folder, load_and_extract
+from utils.train_manager import build, check_cuda, validate_model
 from utils.visualizer import ConfusionMatrix, NetworkActivity
 
 # TODO change name according to precision tested!
@@ -24,13 +25,14 @@ LOG = logging.getLogger(f'{logger_name}')
 # set variables
 use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
-bit_resolution_list = ["baseline", 16, 14, 12,
-                       10, 8, 6, 4, 2, 1]  # possible bit resolutions
+bit_resolution_list = [16, 15, 14, 13, 12, 11,
+                       10, 9, 8, 7, 6, 5, 4, 3, 2, 1]  # possible bit resolutions
 dynamic_clamping = False  # if True, the weights are clamped to the range after training
 
 # weight range extracted from unconstrained training
 weight_range = [-0.5, 0.5]
-max_repetitions = 5
+folds = 5
+kfold = KFold(n_splits=5, shuffle=True)
 
 use_trainable_out = False
 use_trainable_tc = False
@@ -44,11 +46,16 @@ letters = ['Space', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
            'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
 
 # create folder to safe figures later
-path = './figures'
-isExist = os.path.exists(path)
-
-if not isExist:
-    os.makedirs(path)
+# create folders to safe everything
+if dynamic_clamping:
+    study_type = 'dynamic_clamping'
+else:
+    study_type = 'static_clamping'
+path = f'./figures/inference/{study_type}'
+fig_path = f'./figures/inference/{study_type}'
+create_folder(fig_path)
+results_path = f'./results/inference/{study_type}'
+create_folder(results_path)
 
 # check for available GPU and distribute work
 device = check_cuda()
@@ -149,70 +156,80 @@ spike_fn = SurrGradSpike.apply
 # load data
 data, labels, nb_channels, data_steps, time_step = load_and_extract(
     params=params, file_name=file_name, letter_written=letters)
-ds_total = TensorDataset(data, labels)
-
+# ds_total = TensorDataset(data, labels)
+max_repetitions = 5
+total_mean_list = []
+total_std_list = []
 for bit_resolution in bit_resolution_list:
-    if bit_resolution != "baseline":
-        # calculate possible weight values
-        # determines in how many increments we seperate values between min and max (inlc. both)
-        number_of_increments = 2**bit_resolution
-        possible_weight_values = np.linspace(
-            weight_range[0], weight_range[1], number_of_increments)
-        possible_weight_values = torch.as_tensor(
-            possible_weight_values, device=device, dtype=dtype)
-    else:
-        possible_weight_values = bit_resolution
-
+    print(f"Testing bit resolution {bit_resolution}...")
+    # acc_per_split, trues_over_splits, preds_over_splits = [], [], []
+    results_dict = {
+        "bit_resolution": bit_resolution,
+        "nb_repetitions": max_repetitions,
+        "acc_per_split": [],
+        "trues_over_splits": [],
+        "preds_over_splits": [],
+    }
     for repetition in range(max_repetitions):
-        if repetition == 0:
-            LOG.debug("Number of data %i" % len(ds_total))
-            LOG.debug("Number of outputs %i" % len(np.unique(labels)))
-            LOG.debug("Number of timesteps %i" % data_steps)
-            LOG.debug("Input duration %fs" % (data_steps*time_step))
-            LOG.debug("---------------------------\n")
+        for _, test_idc in kfold.split(data, labels):
+            ds_split = TensorDataset(data[test_idc], labels[test_idc])
+            # build the network (never use quntization during build, applied later)
+            _, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
+                np.unique(labels)), time_step=time_step, bit_resolution='baseline', dynamic_clamping=dynamic_clamping, device=device, logger=LOG)
 
-        # build the network
-        _, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
-            np.unique(labels)), time_step=time_step, possible_weight_values=possible_weight_values, device=device, logger=LOG)
+            # load the baseline network
+            layers = torch.load(
+                f'./model/best_model_th{threshold}_baseline_bit_resolution_run_{repetition+1}.pt')
 
-        # load the baseline network
-        layers = torch.load(
-            f'./model/best_model_th{threshold}_baseline_bit_resolution_run_{repetition+1}.pt')
-
-        if dynamic_clamping:
-            clamp_max, clamp_min = np.max([torch.max(w1).detach().cpu().numpy(), torch.max(w2).detach().cpu().numpy(), torch.max(v1).detach().cpu(
-            ).numpy()]), np.min([torch.min(w1).detach().cpu().numpy(), torch.min(w2).detach().cpu().numpy(), torch.min(v1).detach().cpu().numpy()])
-            clamp_max, clamp_min = 1.2*clamp_max, 1.2*clamp_min  # add some margin
+            if dynamic_clamping:
+                clamp_max, clamp_min = np.max([torch.max(layers[0]).detach().cpu().numpy(), torch.max(layers[1]).detach().cpu().numpy(), torch.max(layers[2]).detach().cpu(
+                ).numpy()]), np.min([torch.min(layers[0]).detach().cpu().numpy(), torch.min(layers[1]).detach().cpu().numpy(), torch.min(layers[2]).detach().cpu().numpy()])
+                clamp_max, clamp_min = 1.2*clamp_max, 1.2*clamp_min  # add some margin
+            else:
+                clamp_max, clamp_min = weight_range[1], weight_range[0]
             # calculate possible weight values
             # determines in how many increments we seperate values between min and max (inlc. both)
             number_of_increments = 2**bit_resolution
-            possible_weight_values = np.linspace(
-                clamp_min, clamp_max, number_of_increments)
-            possible_weight_values = torch.as_tensor(
-                possible_weight_values, device=device, dtype=dtype)
-        else:
-            # calculate possible weight values
-            # determines in how many increments we seperate values between min and max (inlc. both)
-            number_of_increments = 2**bit_resolution
-            possible_weight_values = np.linspace(
-                -0.5, 0.5, number_of_increments)
-            possible_weight_values = torch.as_tensor(
-                possible_weight_values, device=device, dtype=dtype)
+            possible_weight_values = torch.as_tensor(np.linspace(
+                clamp_min, clamp_max, number_of_increments), device=device, dtype=dtype)
 
-        # get test results
-        val_acc, trues, preds, activity_record = validate_model(dataset=ds_total, layers=layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
-            'nb_input_copies'], device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
+            # use the STE function for quantization
+            for layer_idx in range(len(layers)):
+                try:
+                    # fast but memory intensive
+                    layers[layer_idx].data.copy_(
+                        ste_fn(layers[layer_idx].data, possible_weight_values))
+                except:
+                    # slower but memory efficient
+                    for neuron_idx in range(len(layers[layer_idx])):
+                        layers[layer_idx][neuron_idx].data.copy_(
+                            ste_fn(layers[layer_idx][neuron_idx].data, possible_weight_values))
+                        
+            # get test results
+            val_acc, trues, preds, activity_record = validate_model(dataset=ds_split, layers=layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
+                'nb_input_copies'], device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
 
-        # plotting the confusion matrix
-        ConfusionMatrix(out_path=path, trues=trues, preds=preds, labels=letters, threshold=threshold, bit_resolution=bit_resolution,
-                        use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
+            # TODO write results to variable to plot later
+            results_dict["acc_per_split"].extend(val_acc)
+            results_dict["trues_over_splits"].extend(trues)
+            results_dict["preds_over_splits"].extend(preds)
 
-        # visualize network activity of the best perfoming batch
-        NetworkActivity(out_path=path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
-                        use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
+            # visualize network activity of the best perfoming batch
+            NetworkActivity(out_path=path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
+                            use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
 
-        # free memory
-        torch.clear_autocast_cache()
+            # free memory
+            torch.clear_autocast_cache()
 
-    LOG.debug("*************************")
-    LOG.debug("\n\n\n")
+    # plotting the confusion matrix
+    ConfusionMatrix(out_path=path, trues=results_dict["trues_over_splits"], preds=results_dict["preds_over_splits"], labels=letters, threshold=threshold, bit_resolution=bit_resolution,
+                    use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition="all")
+    total_mean_list.append(np.mean(results_dict["acc_per_split"]))
+    total_std_list.append(np.std(results_dict["acc_per_split"]))
+
+LOG.debug("*************************")
+LOG.debug("\n\n\n")
+
+# save results
+torch.save(
+    results_dict, f'{results_path}/results_th{threshold}_{bit_resolution}_bit_resolution.pt')

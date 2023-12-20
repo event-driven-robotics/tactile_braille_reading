@@ -45,7 +45,7 @@ fig_path = f'./figures/learning/{study_type}'
 create_folder(fig_path)
 model_path = f'./model/{study_type}'
 create_folder(model_path)
-results_path = f'./results/{study_type}'
+results_path = f'./results/learning/{study_type}'
 create_folder(results_path)
 
 matplotlib.set_loglevel("warning")

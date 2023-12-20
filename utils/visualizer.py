@@ -33,9 +33,10 @@ def ConfusionMatrix(out_path, trues, preds, labels, threshold, bit_resolution=8,
         local_path += '_train_tc'
     if use_trainable_out:
         local_path += '_train_out'
-    # TODO remove the +1 from repetition+1
+    plt.tight_layout()
     plt.savefig(
-        f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_confusion_matrix_run_{repetition+1}.png", dpi=300)
+        f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_confusion_matrix_run_{repetition}.png", dpi=300)
+    plt.close()
 
 
 def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainable_tc=False, use_trainable_out=False, repetition=1):
@@ -65,6 +66,6 @@ def NetworkActivity(out_path, spk_recs, threshold, bit_resolution=8, use_trainab
             local_path += '_train_tc'
         if use_trainable_out:
             local_path += '_train_out'
-        # TODO remove the +1 from repetition+1
         plt.savefig(
-            f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_raster_plot_run_{repetition+1}.png", dpi=300)
+            f"{out_path}/{local_path}_{bit_resolution}_bit_resolution_raster_plot_run_{repetition}.png", dpi=300)
+        plt.close()

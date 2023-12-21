@@ -25,7 +25,7 @@ LOG = logging.getLogger(f'{logger_name}')
 # set variables
 use_seed = False
 threshold = 2  # possible values are: 1, 2, 5, 10
-bit_resolution_list = [16, 15, 14, 13, 12, 11,
+bit_resolution_list = ["baseline", 16, 15, 14, 13, 12, 11,
                        10, 9, 8, 7, 6, 5, 4, 3, 2, 1]  # possible bit resolutions
 dynamic_clamping = False  # if True, the weights are clamped to the range after training
 
@@ -54,6 +54,8 @@ else:
 path = f'./figures/inference/{study_type}'
 fig_path = f'./figures/inference/{study_type}'
 create_folder(fig_path)
+model_path = f'./model/inference/{study_type}'
+create_folder(model_path)
 results_path = f'./results/inference/{study_type}'
 create_folder(results_path)
 
@@ -162,7 +164,6 @@ total_mean_list = []
 total_std_list = []
 for bit_resolution in bit_resolution_list:
     print(f"Testing bit resolution {bit_resolution}...")
-    # acc_per_split, trues_over_splits, preds_over_splits = [], [], []
     results_dict = {
         "bit_resolution": bit_resolution,
         "nb_repetitions": max_repetitions,
@@ -170,17 +171,17 @@ for bit_resolution in bit_resolution_list:
         "trues_over_splits": [],
         "preds_over_splits": [],
     }
-    for repetition in range(max_repetitions):
-        for _, test_idc in kfold.split(data, labels):
-            ds_split = TensorDataset(data[test_idc], labels[test_idc])
-            # build the network (never use quntization during build, applied later)
-            _, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
-                np.unique(labels)), time_step=time_step, bit_resolution='baseline', dynamic_clamping=dynamic_clamping, device=device, logger=LOG)
+    for repetition, (_, test_idc) in enumerate(kfold.split(data, labels)):
+        ds_split = TensorDataset(data[test_idc], labels[test_idc])
+        # build the network (never use quntization during build, applied later)
+        _, time_constants = build(params=params, nb_channels=nb_channels, ste_fn=ste_fn, nb_hidden=450, nb_outputs=len(
+            np.unique(labels)), time_step=time_step, bit_resolution='baseline', dynamic_clamping=dynamic_clamping, device=device, logger=LOG)
 
-            # load the baseline network
-            layers = torch.load(
-                f'./model/best_model_th{threshold}_baseline_bit_resolution_run_{repetition+1}.pt')
+        # load the baseline network
+        layers = torch.load(
+            f'./model/best_model_th{threshold}_baseline_bit_resolution_run_{repetition+1}.pt')
 
+        if bit_resolution != "baseline":
             if dynamic_clamping:
                 clamp_max, clamp_min = np.max([torch.max(layers[0]).detach().cpu().numpy(), torch.max(layers[1]).detach().cpu().numpy(), torch.max(layers[2]).detach().cpu(
                 ).numpy()]), np.min([torch.min(layers[0]).detach().cpu().numpy(), torch.min(layers[1]).detach().cpu().numpy(), torch.min(layers[2]).detach().cpu().numpy()])
@@ -204,22 +205,26 @@ for bit_resolution in bit_resolution_list:
                     for neuron_idx in range(len(layers[layer_idx])):
                         layers[layer_idx][neuron_idx].data.copy_(
                             ste_fn(layers[layer_idx][neuron_idx].data, possible_weight_values))
-                        
-            # get test results
-            val_acc, trues, preds, activity_record = validate_model(dataset=ds_split, layers=layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
-                'nb_input_copies'], device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
 
-            # TODO write results to variable to plot later
-            results_dict["acc_per_split"].extend(val_acc)
-            results_dict["trues_over_splits"].extend(trues)
-            results_dict["preds_over_splits"].extend(preds)
+        # get test results
+        val_acc, trues, preds, activity_record = validate_model(dataset=ds_split, layers=layers, time_constants=time_constants, batch_size=batch_size, spike_fn=spike_fn, nb_input_copies=params[
+            'nb_input_copies'], device=device, dtype=torch.float, use_trainable_out=use_trainable_out, use_trainable_tc=use_trainable_tc, use_dropout=use_dropout)
 
-            # visualize network activity of the best perfoming batch
-            NetworkActivity(out_path=path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
-                            use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
+        # write results to variable to plot later
+        results_dict["acc_per_split"].extend(val_acc)
+        results_dict["trues_over_splits"].extend(trues)
+        results_dict["preds_over_splits"].extend(preds)
 
-            # free memory
-            torch.clear_autocast_cache()
+        torch.save(layers,
+                   f'{model_path}/best_model_th{threshold}_{bit_resolution}_bit_resolution_run_{repetition+1}.pt')
+
+
+        # visualize network activity of the best perfoming batch
+        NetworkActivity(out_path=path, spk_recs=activity_record[np.argmax(val_acc)], threshold=threshold, bit_resolution=bit_resolution,
+                        use_trainable_tc=use_trainable_tc, use_trainable_out=use_trainable_out, repetition=repetition+1)
+
+        # free memory
+        torch.clear_autocast_cache()
 
     # plotting the confusion matrix
     ConfusionMatrix(out_path=path, trues=results_dict["trues_over_splits"], preds=results_dict["preds_over_splits"], labels=letters, threshold=threshold, bit_resolution=bit_resolution,
@@ -227,9 +232,9 @@ for bit_resolution in bit_resolution_list:
     total_mean_list.append(np.mean(results_dict["acc_per_split"]))
     total_std_list.append(np.std(results_dict["acc_per_split"]))
 
+    # save results
+    torch.save(
+        results_dict, f'{results_path}/results_th{threshold}_{bit_resolution}_bit_resolution.pt')
+
 LOG.debug("*************************")
 LOG.debug("\n\n\n")
-
-# save results
-torch.save(
-    results_dict, f'{results_path}/results_th{threshold}_{bit_resolution}_bit_resolution.pt')

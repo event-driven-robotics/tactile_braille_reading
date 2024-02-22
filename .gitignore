@@ -1,6 +1,7 @@
 */__pycache__/*
-/logs/*
-/figures/*
-/model/*
-/results/*
-/evaluation/*
+logs/*
+figures/*
+model/*
+results/*
+evaluation/*
+data/*

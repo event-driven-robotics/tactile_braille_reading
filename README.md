@@ -1,6 +1,6 @@
 # Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware
 
-You can find our publication on Frontiers [here](https://www.frontiersin.org/articles/10.3389/fnins.2022.951164/full).
+You can find the Frontiers publication "Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware" [here](https://www.frontiersin.org/articles/10.3389/fnins.2022.951164/full).
 
 # Braille letters
 

@@ -424,7 +424,7 @@ def train(params, dataset, layers, lr=0.0015, nb_epochs=300, dataset_test=None):
 
         pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
             accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
-        print("Test acc: ", accs_hist[0][-1]*100, "Train acc", accs_hist[1][-1]*100)
+        print("Train acc: ", accs_hist[0][-1]*100, "Test acc", accs_hist[1][-1]*100)
     return loss_hist, accs_hist, best_acc_layers
 
 

@@ -31,7 +31,7 @@ global batch_size
 batch_size = 10
 
 global lr
-lr = 0.002
+lr = 0.0008
 print("Learning rate: ",lr)
 global gamma
 gamma = 0.3

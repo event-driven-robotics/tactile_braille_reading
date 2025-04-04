@@ -3,3 +3,4 @@ figures/*
 logs/*
 *_pycache_*
 model/*
+results/*

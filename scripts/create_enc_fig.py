@@ -2,6 +2,7 @@ import pickle
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D  # Import Line2D for custom legend entries
 from tqdm import tqdm
 
 PLOT_ALL_LETTERS = False
@@ -25,25 +26,29 @@ for item in enc_data:
     letters.append(item["letter"])
     samples.append(item["samples"])
 timestamps = np.arange(start=0, stop=(350 - 0.5)
-                     * (1/frequ), step=1/frequ)  # create a timestamp array for the given frequency
+                       * (1/frequ), step=1/frequ)  # create a timestamp array for the given frequency
 
 if PLOT_ALL_LETTERS:
     # find the first occurrence of each unique letter in raw_letter
     unique_letters, first_indices = np.unique(letters, return_index=True)
-    idc = sorted(first_indices)  # Sort indices to maintain the order of appearance
+    # Sort indices to maintain the order of appearance
+    idc = sorted(first_indices)
     # plot the enc data
     for idx in tqdm(idc):
         # create a figure with 2 subplots
         fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
         # plot the raw data
-        axs[0].plot(timestamps, samples[idx], label=[str(i) for i in range(1, 13)])
+        axs[0].plot(timestamps, samples[idx], label=[str(i)
+                    for i in range(1, 13)])
         axs[0].set_title(f"Letter: {letters[idx]}")
         axs[0].set_ylabel("Taxel Value")
         axs[0].legend()
         # Enable and style the major grid
-        axs[0].grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4, color="black")  # Thicker and solid for major grid
+        axs[0].grid(which="major", linestyle="-", linewidth=1.0,
+                    alpha=0.4, color="black")  # Thicker and solid for major grid
         # Enable and style the minor grid
-        axs[0].grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4, color="gray")  # Thinner and dashed for minor grid
+        axs[0].grid(which="minor", linestyle="--", linewidth=0.5,
+                    alpha=0.4, color="gray")  # Thinner and dashed for minor grid
         axs[0].minorticks_on()  # Turn on minor ticks
         axs[0].set_xlim([timestamps[0], timestamps[-1]])
         # event plot
@@ -65,14 +70,15 @@ if PLOT_ALL_LETTERS:
                     colors="red",
                 )
         # Enable and style the major grid
-        axs[1].grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4, color="black")  # Thicker and solid for major grid
+        axs[1].grid(which="major", linestyle="-", linewidth=1.0,
+                    alpha=0.4, color="black")  # Thicker and solid for major grid
         # Enable and style the minor grid
-        axs[1].grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4, color="gray")  # Thinner and dashed for minor grid
+        axs[1].grid(which="minor", linestyle="--", linewidth=0.5,
+                    alpha=0.4, color="gray")  # Thinner and dashed for minor grid
         axs[1].minorticks_on()  # Turn on minor ticks
         axs[1].set_xlim([timestamps[0], timestamps[-1]])
         fig.savefig(
-            f"./figures/enc_{letters[idx]}_th_2.png",
-            dpi=300,
+            f"./figures/event_encoding/enc_{letters[idx]}_th_2.pdf",
             bbox_inches="tight",
         )
         plt.close(fig)
@@ -104,14 +110,17 @@ off_events = off_events[mask2]
 # create a figure with 2 subplots
 fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 # plot the raw data
-axs[0].plot(local_timestamps, local_raw_data[:, selected_taxel]-local_raw_data[0, selected_taxel], '-o', label=f"Taxel {selected_taxel+1}", color="black")
+axs[0].plot(local_timestamps, local_raw_data[:, selected_taxel]-local_raw_data[0,
+            selected_taxel], '-o', label=f"Taxel {selected_taxel+1}", color="black")
 axs[0].set_title(f"Letter: {letters[idx]}", fontsize=12)
 axs[0].set_ylabel("Taxel Value", fontsize=12)
 axs[0].legend()
 # Enable and style the major grid
-axs[0].grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4, color="black")  # Thicker and solid for major grid
+axs[0].grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4,
+            color="black")  # Thicker and solid for major grid
 # Enable and style the minor grid
-axs[0].grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4, color="gray")  # Thinner and dashed for minor grid
+axs[0].grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4,
+            color="gray")  # Thinner and dashed for minor grid
 axs[0].minorticks_on()  # Turn on minor ticks
 axs[0].set_xlim([local_timestamps[0], local_timestamps[-1]])
 # ON events
@@ -129,9 +138,11 @@ axs[1].eventplot(
     colors="red",
 )
 # Enable and style the major grid
-axs[1].grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4, color="black")  # Thicker and solid for major grid
+axs[1].grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4,
+            color="black")  # Thicker and solid for major grid
 # Enable and style the minor grid
-axs[1].grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4, color="gray")  # Thinner and dashed for minor grid
+axs[1].grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4,
+            color="gray")  # Thinner and dashed for minor grid
 axs[1].minorticks_on()  # Turn on minor ticks
 axs[1].set_xlim([local_timestamps[0], local_timestamps[-1]])
 axs[1].set_xlabel("Time [s]", fontsize=12)
@@ -140,26 +151,28 @@ axs[1].set_yticks([-1, 1])
 axs[1].set_yticklabels(["OFF", "ON"])
 # Turn on minor ticks
 fig.savefig(
-    f"./figures/enc_{letters[idx]}_th_2_closeup_1.pdf",
+    f"./figures/event_encoding/enc_{letters[idx]}_th_2_closeup_1.pdf",
     bbox_inches="tight",
 )
 plt.close(fig)
 
 
 # OPTION II
-from matplotlib.lines import Line2D  # Import Line2D for custom legend entries
-mean = (local_raw_data[:-1, selected_taxel]-local_raw_data[0, selected_taxel] + local_raw_data[1:, selected_taxel]-local_raw_data[0, selected_taxel]) / 2
+mean = (local_raw_data[:-1, selected_taxel]-local_raw_data[0, selected_taxel] +
+        local_raw_data[1:, selected_taxel]-local_raw_data[0, selected_taxel]) / 2
 # create a figure with 2 subplots
 fig = plt.figure(figsize=(10, 4))
 ax = fig.add_subplot(111)
 # plot the raw data
-ax.plot(local_timestamps, local_raw_data[:, selected_taxel]-local_raw_data[0, selected_taxel], '-o', label=f"Taxel {selected_taxel+1}", color="black")
+ax.plot(local_timestamps, local_raw_data[:, selected_taxel]-local_raw_data[0,
+        selected_taxel], '-o', label=f"Taxel {selected_taxel+1}", color="black")
 ax.set_title(f"Letter: {letters[idx]}", fontsize=12)
 ax.set_ylabel("Taxel Value", fontsize=12)
 # ON events
 # center = 0
 linelengths = 10
-on_event_heights = [mean[np.searchsorted(local_timestamps[:-1], t, side="right") - 1] for t in on_events]
+on_event_heights = [mean[np.searchsorted(
+    local_timestamps[:-1], t, side="right") - 1] for t in on_events]
 for event, offset in zip(on_events, on_event_heights):
     ax.eventplot(
         positions=[event],
@@ -168,7 +181,8 @@ for event, offset in zip(on_events, on_event_heights):
         colors="green",
     )
 # OFF events
-off_event_heights = [mean[np.searchsorted(local_timestamps[:-1], t, side="right") - 1] for t in off_events]
+off_event_heights = [mean[np.searchsorted(
+    local_timestamps[:-1], t, side="right") - 1] for t in off_events]
 for event, offset in zip(off_events, off_event_heights):
     ax.eventplot(
         positions=[event],
@@ -177,35 +191,43 @@ for event, offset in zip(off_events, off_event_heights):
         colors="red",
     )
 # Enable and style the major grid
-ax.grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4, color="black")  # Thicker and solid for major grid
+ax.grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4,
+        color="black")  # Thicker and solid for major grid
 # Enable and style the minor grid
-ax.grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4, color="gray")  # Thinner and dashed for minor grid
+ax.grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4,
+        color="gray")  # Thinner and dashed for minor grid
 ax.minorticks_on()  # Turn on minor ticks
 ax.set_xlim([local_timestamps[0], local_timestamps[-1]])
 # Add custom legend entries for ON and OFF events
 legend_elements = [
-    Line2D([0], [0], color="green", marker="|", linestyle="None", markersize=10, label="ON"),
-    Line2D([0], [0], color="red", marker="|", linestyle="None", markersize=10, label="OFF"),
-    Line2D([0], [0], color="black", linestyle="-", marker="o", label=f"Taxel {selected_taxel+1}"),
+    Line2D([0], [0], color="green", marker="|",
+           linestyle="None", markersize=10, label="ON"),
+    Line2D([0], [0], color="red", marker="|",
+           linestyle="None", markersize=10, label="OFF"),
+    Line2D([0], [0], color="black", linestyle="-",
+           marker="o", label=f"Taxel {selected_taxel+1}"),
 ]
 ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
 ax.set_xlabel("Time [s]", fontsize=12)
 # Turn on minor ticks
 fig.savefig(
-    f"./figures/enc_{letters[idx]}_th_2_closeup_2.pdf",
+    f"./figures/event_encoding/enc_{letters[idx]}_th_2_closeup_2.pdf",
     bbox_inches="tight",
 )
 plt.close(fig)
 
 
 # OPTION III
-offset = -20 # np.mean(local_raw_data[:, selected_taxel]-local_raw_data[0, selected_taxel])
+# np.mean(local_raw_data[:, selected_taxel]-local_raw_data[0, selected_taxel])
+offset = -20
 linelengths = 4
+linewidth = 2
 # create a figure with 2 subplots
 fig = plt.figure(figsize=(10, 4))
 ax = fig.add_subplot(111)
 # plot the raw data
-ax.plot(local_timestamps, local_raw_data[:, selected_taxel]-local_raw_data[0, selected_taxel], '-o', label=f"Taxel {selected_taxel+1}", color="black")
+ax.plot(local_timestamps, local_raw_data[:, selected_taxel]-local_raw_data[0,
+        selected_taxel], '-o', label=f"Taxel {selected_taxel+1}", color="black")
 # let's create lines to connect the events with the taxel values, for that we need linear interpolation between to samples to calculate the taxel value at the event time
 # let's create the line equations
 # y = mx + b
@@ -213,20 +235,25 @@ y = local_raw_data[:, selected_taxel]-local_raw_data[0, selected_taxel]
 x = local_timestamps
 m = np.diff(y) / np.diff(x)
 b = y[:-1] - m * x[:-1]
-# now we can calculate the taxel value at the event time    
-on_event_heights = [m[np.searchsorted(x[:-1], t, side="right") - 1] * t + b[np.searchsorted(x[:-1], t, side="right") - 1] for t in on_events]
-off_event_heights = [m[np.searchsorted(x[:-1], t, side="right") - 1] * t + b[np.searchsorted(x[:-1], t, side="right") - 1] for t in off_events]
+# now we can calculate the taxel value at the event time
+on_event_heights = [m[np.searchsorted(x[:-1], t, side="right") - 1] *
+                    t + b[np.searchsorted(x[:-1], t, side="right") - 1] for t in on_events]
+off_event_heights = [m[np.searchsorted(x[:-1], t, side="right") - 1] *
+                     t + b[np.searchsorted(x[:-1], t, side="right") - 1] for t in off_events]
 # now we can plot the lines to connect the events with the taxel values
 for event, line_offset in zip(on_events, on_event_heights):
-    ax.plot([event, event], [offset, line_offset], color="black", linestyle="--", linewidth=0.5)
+    ax.plot([event, event], [offset, line_offset],
+            color="black", linestyle="--", linewidth=1.0, alpha=0.6)
 for event, line_offset in zip(off_events, off_event_heights):
-    ax.plot([event, event], [offset, line_offset], color="black", linestyle="--", linewidth=0.5)
+    ax.plot([event, event], [offset, line_offset],
+            color="black", linestyle="--", linewidth=1.0, alpha=0.6)
 # ON events
 # center = 0
 ax.eventplot(
     positions=on_events,
     lineoffsets=offset,
     linelengths=linelengths,
+    linewidth=linewidth,
     colors="green",
 )
 # OFF events
@@ -234,28 +261,37 @@ ax.eventplot(
     positions=off_events,
     lineoffsets=offset,
     linelengths=linelengths,
+    linewidth=linewidth,
     colors="red",
 )
-ax.set_title(f"Letter: {letters[idx]}")
-ax.set_ylabel("Taxel Value")
+ax.set_title(f"Letter: {letters[idx]}", fontsize=20)
+ax.set_ylabel("Taxel Value", fontsize=16)
 # Enable and style the major grid
-ax.grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4, color="black")  # Thicker and solid for major grid
+ax.grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4,
+        color="black")  # Thicker and solid for major grid
 # Enable and style the minor grid
-ax.grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4, color="gray")  # Thinner and dashed for minor grid
+ax.grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4,
+        color="gray")  # Thinner and dashed for minor grid
 ax.minorticks_on()  # Turn on minor ticks
 ax.set_xlim([local_timestamps[0], local_timestamps[-1]])
 ax.set_ylim([offset-4, 2])
-ax.set_xlabel("Time [s]", fontsize=12)
+ax.set_xlabel("Time (s)", fontsize=16)
 # Add custom legend entries for ON and OFF events
 legend_elements = [
-    Line2D([0], [0], color="green", marker="|", linestyle="None", markersize=10, label="ON neuron"),
-    Line2D([0], [0], color="red", marker="|", linestyle="None", markersize=10, label="OFF neuron"),
-    Line2D([0], [0], color="black", linestyle="-", marker="o", label=f"Taxel {selected_taxel+1}"),
+    Line2D([0], [0], color="green", marker="|",
+           linestyle="None", markersize=10, label="ON neuron"),
+    Line2D([0], [0], color="red", marker="|", linestyle="None",
+           markersize=10, label="OFF neuron"),
+    Line2D([0], [0], color="black", linestyle="-",
+           marker="o", label=f"Taxel {selected_taxel+1}"),
 ]
-ax.legend(handles=legend_elements, loc="upper center", fontsize=10)
+# Change tick label size
+ax.tick_params(axis='both', which='major', labelsize=14)  # Major ticks
+ax.tick_params(axis='both', which='minor', labelsize=12)  # Minor ticks
+ax.legend(handles=legend_elements, loc="upper center", fontsize=14)
 # Turn on minor ticks
 fig.savefig(
-    f"./figures/enc_{letters[idx]}_th_2_closeup.pdf",
+    f"./figures/event_encoding/enc_{letters[idx]}_th_2_closeup.pdf",
     bbox_inches="tight",
 )
 plt.close(fig)

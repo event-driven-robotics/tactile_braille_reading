@@ -20,7 +20,7 @@ from scipy.interpolate import interp1d
 from scipy.signal import argrelextrema
 from tqdm import tqdm
 
-DEBUG = True
+DEBUG = False
 DirOut = "./figures/event_encoding"
 save_fig = False
 EXPERIMENT_TYPE = "100Hz"  # 40Hz, 100Hz
@@ -179,7 +179,7 @@ def extract_data_icub_raw_integers_100Hz(file_name: str) -> tuple:
     ''' Read the files and convert taxel data and labels
         file_name: filename of the dataset in format dict{'taxel_data':, 'letter':}
     '''
-    print("file name {}".format(file_name))
+    # print("file name {}".format(file_name))
     with open(file_name, 'rb') as infile:
         data_dict = pickle.load(infile)
     data = data_dict["taxel_data"].values
@@ -190,62 +190,72 @@ def extract_data_icub_raw_integers_100Hz(file_name: str) -> tuple:
 
 def main():
     ''' Convert time-based data into event-based data '''
-    Spk_threshold = 2  # 1, 2, 5, 10 (default)
-    samples = list()
-    if EXPERIMENT_TYPE == '40Hz':
-        f = 40  # Hz
-        data_raw, labels_raw = extract_data_icub_raw_integers_40Hz(
-            './data/40Hz/data_braille_letters_digits.pkl')
-        Events_filename_out = f'./data/40Hz/data_braille_letters_40Hz_th{Spk_threshold}.pkl'
+    Spk_thresholds = [1, 2, 5, 10]  # (2 default)
+    tqdm_threshold = tqdm(Spk_thresholds, desc="Thresholds", position=0, leave=False, total=len(Spk_thresholds))
+    for Spk_threshold in tqdm_threshold:
+        tqdm_threshold.set_description(f"Threshold {Spk_threshold}")
+        samples = list()
+        if EXPERIMENT_TYPE == '40Hz':
+            f = 40  # Hz
+            data_raw, labels_raw = extract_data_icub_raw_integers_40Hz(
+                './data/40Hz/data_braille_letters_digits.pkl')
+            Events_filename_out = f'./data/40Hz/data_braille_letters_40Hz_th{Spk_threshold}.pkl'
 
-        # Each sequence sample is parsed to events
-        pbar_samples = tqdm(zip(data_raw, labels_raw), total=len(data_raw), desc="Encoding samples", position=0, leave=False)
-        for sample_raw, label in pbar_samples:
-            pbar_samples.set_description(f"Encoding {label}")
-            data_dict_events = {}
-            events_per_samples = sample_to_changes(
-                sample_raw, f, Spk_threshold, save=save_fig)
-            # Dict of the sample
-            data_dict_events['letter'] = label
-            data_dict_events['events'] = events_per_samples
-            samples.append(data_dict_events)
-
-
-    elif EXPERIMENT_TYPE == '100Hz':
-        f = 100  # Hz
-        data_raw, labels_raw, _ = extract_data_icub_raw_integers_100Hz(
-            './data/100Hz/data_braille_letters_0.0.pkl')
-        Events_filename_out = f'./data/100Hz/data_braille_letters_100Hz_th{Spk_threshold}.pkl'
-
-        # Each sequence sample is parsed to events
-        pbar_samples = tqdm(zip(data_raw, labels_raw), total=len(data_raw), desc="Encoding samples", position=0, leave=False)
-        for sample_raw, label in pbar_samples:
-            if label == "A":
-                DEBUG = True
-            else:
-                DEBUG = False
-            pbar_samples.set_description(f"Encoding {label}")
-            data_dict_events = {}
-            events_per_samples = sample_to_changes(
-                sample_raw, f, Spk_threshold, save=save_fig, DEBUG=DEBUG)
-            # Dict of the sample
-            data_dict_events['letter'] = label
-            data_dict_events['events'] = events_per_samples
-            data_dict_events['samples'] = sample_raw
-            samples.append(data_dict_events)
-            
-    else:
-        raise ValueError('Experiment type not supported')
-
-    if save_fig:
-        isExist = os.path.exists(DirOut)
-        if not isExist:
-            os.makedirs(DirOut)
+            # Each sequence sample is parsed to events
+            pbar_samples = tqdm(zip(data_raw, labels_raw), total=len(data_raw), desc="Encoding samples", position=1, leave=False)
+            for sample_raw, label in pbar_samples:
+                pbar_samples.set_description(f"Encoding {label}")
+                data_dict_events = {}
+                events_per_samples = sample_to_changes(
+                    sample_raw, f, Spk_threshold, save=save_fig)
+                # Dict of the sample
+                data_dict_events['letter'] = label
+                data_dict_events['events'] = events_per_samples
+                samples.append(data_dict_events)
 
 
+        elif EXPERIMENT_TYPE == '100Hz':
+            # 300 trials per letter, 100 per recording, 3 recordings, 8100 trials in total
+            f = 100  # Hz
+            data_raw = []
+            labels_raw = []
+            displacement = ["0.0", "0.000125", "6.25e-05"]
+            for dis in displacement:
+                data_tmp, labels_tmp, _ = extract_data_icub_raw_integers_100Hz(
+                    f'./data/100Hz/data_braille_letters_{dis}.pkl')
+                data_raw.extend(data_tmp)
+                labels_raw.extend(labels_tmp)
+            order = np.argsort(labels_raw)
+            data_raw = np.array(data_raw)[order]
+            labels_raw = np.array(labels_raw)[order]
+            Events_filename_out = f'./data/100Hz/data_braille_letters_100Hz_th{Spk_threshold}.pkl'
+
+            # Each sequence sample is parsed to events
+            pbar_samples = tqdm(zip(data_raw, labels_raw), total=len(data_raw), desc="Encoding samples", position=1, leave=False)
+            for sample_raw, label in pbar_samples:
+                pbar_samples.set_description(f"Encoding {label}")
+                data_dict_events = {}
+                events_per_samples = sample_to_changes(
+                    sample_raw, f, Spk_threshold, save=save_fig, DEBUG=DEBUG)
+                # Dict of the sample
+                data_dict_events['letter'] = label
+                data_dict_events['events'] = events_per_samples
+                data_dict_events['samples'] = sample_raw
+                samples.append(data_dict_events)
+                
+        else:
+            raise ValueError('Experiment type not supported')
+
+        if save_fig:
+            isExist = os.path.exists(DirOut)
+            if not isExist:
+                os.makedirs(DirOut)
+
+
+        with open(Events_filename_out, 'wb') as outf:
+            pickle.dump(samples, outf)
+    
     print('Finished conversion')
-    with open(Events_filename_out, 'wb') as outf:
-        pickle.dump(samples, outf)
 
 
 if __name__ == "__main__":

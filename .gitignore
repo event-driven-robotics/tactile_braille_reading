@@ -4,3 +4,5 @@ logs/*
 *_pycache_*
 model/*
 scripts/braille_reading_rsnn_mod_eprop_singletau.py
+
+results/*

@@ -26,7 +26,7 @@ threshold = 2  # possible values are: 1, 2, 5, 10
 load_models = False
 
 # set the number of epochs you want to train the network (default = 300)
-epochs = 10
+epochs = 20
 
 global batch_size
 batch_size = 3
@@ -67,6 +67,8 @@ diff_cap = diff_cap.to(device)
 q = 1/256
 
 possible_weight = diff_cap * q
+factor = 10 ** 3
+possible_weight = torch.floor(possible_weight * factor) / factor
 
 
 # use fixed seed for reproducable results
@@ -270,9 +272,9 @@ def build_and_train(params, ds_train, ds_test, epochs=epochs):
     global tau_mem_rec
     tau_mem_rec = 0.06 #params['tau_mem'] #ms
     global tau_trace
-    tau_trace = 0.12
+    tau_trace = 0.08
     global tau_trace_out
-    tau_trace_out = 0.12
+    tau_trace_out = 0.105
     tau_syn = tau_mem/params['tau_ratio']
     print("tau_mem: ", tau_mem, "tau_mem recurrent: ", tau_mem_rec, "tau trace out: ", tau_trace_out, "tau trace: ", tau_trace)
     global alpha

@@ -14,7 +14,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import pickle
 
-torch.cuda.empty_cache()  # Svuota la cache della memoria CUDA
+torch.cuda.empty_cache()
 torch.set_default_dtype(torch.float64)
 
 dtype = torch.float
@@ -60,7 +60,7 @@ isExist = os.path.exists(path)
 if not isExist:
     os.makedirs(path)
 
-device = torch.device("cuda:1")
+device = torch.device("cuda:0")
 
 neg_capacitance = torch.arange(255, -1, -1)
 
@@ -181,7 +181,7 @@ def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, A):
     for t in range (1, data_steps):
         trace_rec_a[:,:,t] = trace_rec[:,:,t-1] * h.permute(1,2,0)[:,:,t] + (beta_adaptive_thr - h.permute(1,2,0)[:,:,t] * dump_thr) * trace_rec_a[:,:,t-1]
 
-    trace_rec = trace_rec + dump_thr * trace_rec_a
+    trace_rec = trace_rec - dump_thr * trace_rec_a
     trace_rec   = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
     trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
 

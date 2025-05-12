@@ -29,7 +29,7 @@ load_models = False
 epochs = 20
 
 global batch_size
-batch_size = 3
+batch_size = 4  # in best case a multiple of 4
 global lr
 lr = 0.0008
 print("Learning rate: ",lr)
@@ -45,6 +45,10 @@ use_linear_decay = False
 global ref_per_timesteps
 # refractory period is set in simulation time steps for now; set to None to disable
 ref_per_timesteps = 1
+global nb_noise_channels
+nb_noise_channels = 10
+global nb_cue_channels
+nb_cue_channels = 10
 
 # some options for plotting
 NB_BATCHES_TO_PLOT = 1
@@ -94,7 +98,13 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters):
     global data_steps
     data_steps = len(time)
     global delayed_output
-    delayed_output = data_steps
+    delayed_output = int((0.5/time_step)+0.5)  # sim time steps
+    
+    # Define the desired spike rate (e.g., 0.2 means 20% of the time steps will have spikes)
+    spike_rate_cue = 0.3  # Adjust this value to control the spike frequency
+    spike_rate_noise = 0.2  # Adjust this value to control the spike frequency
+    
+
     data_dict = pd.read_pickle(file_name)
     #data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
     data_dict = pd.DataFrame(data_dict)
@@ -123,6 +133,26 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters):
             events_array = np.reshape(np.transpose(
                 events_array, (1, 0, 2)), (events_array.shape[1], -1))
             selected_chans = 2*nchan
+        
+        # first we include the last 500ms of empty input to the data
+        input_data_padding = np.zeros((delayed_output, selected_chans))
+        events_array = np.append(events_array, input_data_padding, axis=0)
+
+        # we want to include a cue channle of nb_cue_channels neurons
+        cue_input = np.zeros((events_array.shape[0], nb_cue_channels))
+        cue_input[-delayed_output:, :] = np.random.choice(
+            [0, 1], size=(delayed_output, nb_cue_channels), p=[1 - spike_rate_cue, spike_rate_cue]
+        )
+
+        # we want to include nb_noise_channels neurons noise channels
+        noise_input = np.random.choice(
+            [0, 1], size=(events_array.shape[0], nb_noise_channels), p=[1 - spike_rate_noise, spike_rate_noise]
+        )
+
+        # now we can append all data 
+        events_array = np.append(events_array, cue_input, axis=1)
+        events_array = np.append(events_array, noise_input, axis=1)
+
         data.append(events_array)
         labels.append(letter_written.index(data_dict['letter'][i]))
 
@@ -260,7 +290,7 @@ def build_and_train(params, ds_train, ds_test, epochs=epochs):
     print("Number of input copies ", nb_input_copies)
     # Network parameters
     global nb_inputs
-    nb_inputs = nb_channels*nb_input_copies
+    nb_inputs = (nb_channels*nb_input_copies) + nb_cue_channels + nb_noise_channels
     global nb_outputs
     nb_outputs = len(np.unique(labels))
     global nb_hidden
@@ -272,9 +302,9 @@ def build_and_train(params, ds_train, ds_test, epochs=epochs):
     global tau_mem_rec
     tau_mem_rec = 0.06 #params['tau_mem'] #ms
     global tau_trace
-    tau_trace = 0.08
+    tau_trace = 1.6  # 0.08
     global tau_trace_out
-    tau_trace_out = 0.105
+    tau_trace_out = 2.1  # 0.105
     tau_syn = tau_mem/params['tau_ratio']
     print("tau_mem: ", tau_mem, "tau_mem recurrent: ", tau_mem_rec, "tau trace out: ", tau_trace_out, "tau trace: ", tau_trace)
     global alpha
@@ -695,7 +725,7 @@ def plot_network_activity(spr_recs, layer_names, figname='./figures'):
 
 # Load data and parameters
 file_dir_data = './data/'
-file_type = 'data_braille_letters_th_new'
+file_type = 'data_braille_letters_100Hz_th'  # data_braille_letters_100Hz_th2
 file_thr = str(threshold)
 file_name = file_dir_data + file_type + file_thr + '.pkl'
 

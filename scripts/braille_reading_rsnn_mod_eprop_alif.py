@@ -179,9 +179,13 @@ def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, A):
 
 
     for t in range (1, data_steps):
-        trace_rec_a[:,:,t] = trace_rec[:,:,t-1] * h.permute(1,2,0)[:,:,t] + (beta_adaptive_thr - h.permute(1,2,0)[:,:,t] * dump_thr) * trace_rec_a[:,:,t-1]
+        # Bellec; solution to the learning dilemma, page 13. eq 24
+        # psi[t] * z[t-1] = e[t]
+        # eta[t+1] = e[t] + (rho - psi[t] * beta)*eta[t] 
+        trace_rec_a[:,:,t] = trace_rec[:,:,t-1] * h.permute(1,2,0)[:,:,t-1] + (beta_adaptive_thr - h.permute(1,2,0)[:,:,t-1] * dump_thr) * trace_rec_a[:,:,t-1]
 
-    trace_rec = trace_rec - dump_thr * trace_rec_a
+    # Bellec; solution to the learning dilemma, page 13. eq 25 in two lines. First the part in the brackets
+    trace_rec = trace_rec - (dump_thr * trace_rec_a)
     trace_rec   = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
     trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
 
@@ -851,9 +855,9 @@ class recurrent_layer:
             # input activity plus last step output activity
             h1 = input_activity[:, t] + torch.einsum("ab,bc->ac", (out, layer.t()))
 
-            if(t >= 1):
-                a_thr[:,:,t] = (beta_adaptive_thr*a_thr[:,:,t-1]) + out[:,:n_alif] #a[t] = beta*a[t-1] + s[t-1]
-                threshold_neurons[:,:n_alif,t] = firing_threshold + dump_thr * a_thr[:,:,t]
+            if (t >= 1):
+                a_thr[:,:,t] = (beta_adaptive_thr*a_thr[:,:,t-1]) + out[:,:n_alif]  # a[t+1] = rho*a[t] + s[t], a[t] = rho*a[t-1] + s[t-1]
+                threshold_neurons[:,:n_alif,t] = firing_threshold + dump_thr * a_thr[:,:,t]  # A[t] = v_th + beta*a[t]
 
 
             mthr = mem-threshold_neurons[:,:,t]

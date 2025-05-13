@@ -93,8 +93,6 @@ class LI:
         self.mem = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-        # self.mem_rec = []
-
     def update(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
@@ -109,22 +107,7 @@ class LI:
         self.mem = (self.beta * self.mem +
                     torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer))
 
-        # self.mem_rec.append(self.mem.detach().cpu().numpy())
-
         return self.mem
-
-    # def results(self):
-    #     """
-    #     Return the recorded spikes, membrane potentials, and synaptic currents.
-
-    #     This method retrieves the recorded spike outputs, membrane potentials, 
-    #     from the feedforward layer. The returned values are converted to numpy 
-    #     arrays for further analysis or visualization.
-
-    #     Returns:
-    #         membrane_potentials (numpy.ndarray): Recorded membrane potentials of shape (timesteps, batch_size, nb_neurons).
-    #     """
-    #     return np.array(self.mem_rec)
 
 
 class CuBaLI:
@@ -183,9 +166,6 @@ class CuBaLI:
         self.mem = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-        # self.syn_rec = []
-        # self.mem_rec = []
-
     def update(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
@@ -203,25 +183,7 @@ class CuBaLI:
             torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer)
         self.mem = (self.beta * self.mem + self.syn)
 
-        # self.syn_rec.append(self.syn.detach().cpu().numpy())
-        # self.mem_rec.append(self.mem.detach().cpu().numpy())
-
         return self.syn, self.mem
-
-    # def results(self):
-    #     """
-    #     Return the recorded spikes, membrane potentials, and synaptic currents.
-
-    #     This method retrieves the recorded spike outputs, membrane potentials, 
-    #     and synaptic currents from the feedforward layer. The returned values 
-    #     are converted to numpy arrays for further analysis or visualization.
-
-    #     Returns:
-    #         tuple:
-    #             - synaptic_currents (numpy.ndarray): Recorded synaptic currents of shape (timesteps, batch_size, nb_neurons).
-    #             - membrane_potentials (numpy.ndarray): Recorded membrane potentials of shape (timesteps, batch_size, nb_neurons).
-    #     """
-    #     return np.array(self.syn_rec), np.array(self.mem_rec)
 
 
 class LIF:
@@ -277,9 +239,6 @@ class LIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-        # self.mem_rec = []
-        # self.out_rec = []
-
     def update(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
@@ -301,26 +260,7 @@ class LIF:
         out = spike_fn(mthr)
         self.rst = out.detach()
 
-        # self.mem_rec.append(self.mem.detach().cpu().numpy())
-        # self.out_rec.append(self.rst.cpu().numpy())
-
         return self.rst, self.mem
-
-    # def results(self):
-    #     """
-    #     Return the recorded spikes, membrane potentials, and synaptic currents.
-
-    #     This method retrieves the recorded spike outputs, membrane potentials, 
-    #     from the feedforward layer. The returned values are converted to numpy 
-    #     arrays for further analysis or visualization.
-
-    #     Returns:
-    #         tuple:
-    #             - spikes (numpy.ndarray): Recorded spike outputs of shape (timesteps, batch_size, nb_neurons).
-    #             - membrane_potentials (numpy.ndarray): Recorded membrane potentials of shape (timesteps, batch_size, nb_neurons).
-    #     """
-    #     return np.array(self.out_rec), np.array(self.mem_rec)
-
 
 class CuBaLIF:
     """
@@ -382,10 +322,6 @@ class CuBaLIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-        # self.syn_rec = []
-        # self.mem_rec = []
-        # self.out_rec = []
-
     def update(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
@@ -408,27 +344,7 @@ class CuBaLIF:
         out = spike_fn(mthr)
         self.rst = out.detach()
 
-        # self.syn_rec.append(self.syn.detach().cpu().numpy())
-        # self.mem_rec.append(self.mem.detach().cpu().numpy())
-        # self.out_rec.append(self.rst.cpu().numpy())
-
         return self.rst, self.syn, self.mem
-
-    # def results(self):
-    #     """
-    #     Return the recorded spikes, membrane potentials, and synaptic currents.
-
-    #     This method retrieves the recorded spike outputs, membrane potentials, 
-    #     and synaptic currents from the feedforward layer. The returned values 
-    #     are converted to numpy arrays for further analysis or visualization.
-
-    #     Returns:
-    #         tuple:
-    #             - spikes (numpy.ndarray): Recorded spike outputs of shape (timesteps, batch_size, nb_neurons).
-    #             - synaptic_currents (numpy.ndarray): Recorded synaptic currents of shape (timesteps, batch_size, nb_neurons).
-    #             - membrane_potentials (numpy.ndarray): Recorded membrane potentials of shape (timesteps, batch_size, nb_neurons).
-    #     """
-    #     return np.array(self.out_rec), np.array(self.syn_rec), np.array(self.mem_rec)
 
 
 class RLIF:
@@ -496,10 +412,6 @@ class RLIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-        # Recordings
-        # self.mem_rec = []
-        # self.out_rec = []
-
     def update(self, input_activity_t):
         """
         Compute the activity of the recurrent layer for a single time step.
@@ -524,27 +436,7 @@ class RLIF:
         out = spike_fn(mthr)
         self.rst = out.detach()  # Reset spikes
 
-        # Record values
-        # self.mem_rec.append(self.mem.detach().cpu().numpy())
-        # self.out_rec.append(self.rst.cpu().numpy())
-
         return self.rst, self.mem
-
-    # def results(self):
-    #     """
-    #     Return the recorded spikes, membrane potentials, and synaptic currents.
-
-    #     This method retrieves the recorded spike outputs, membrane potentials, 
-    #     and synaptic currents from the recurrent layer. The returned values 
-    #     are converted to numpy arrays for further analysis or visualization.
-
-    #     Returns:
-    #         tuple:
-    #             - spikes (numpy.ndarray): Recorded spike outputs of shape (timesteps, batch_size, nb_neurons).
-    #             - membrane_potentials (numpy.ndarray): Recorded membrane potentials of shape (timesteps, batch_size, nb_neurons).
-    #     """
-
-    #     return np.array(self.out_rec), np.array(self.mem_rec)
 
 
 class CuBaRLIF:
@@ -619,11 +511,6 @@ class CuBaRLIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-        # Recordings
-        # self.syn_rec = []
-        # self.mem_rec = []
-        # self.out_rec = []
-
     def update(self, input_activity_t):
         """
         Compute the activity of the recurrent layer for a single time step.
@@ -655,24 +542,7 @@ class CuBaRLIF:
         # self.out_rec.append(self.rst.cpu().numpy())
 
         return self.rst, self.syn, self.mem
-
-    # def results(self):
-    #     """
-    #     Return the recorded spikes, membrane potentials, and synaptic currents.
-
-    #     This method retrieves the recorded spike outputs, membrane potentials, 
-    #     and synaptic currents from the recurrent layer. The returned values 
-    #     are converted to numpy arrays for further analysis or visualization.
-
-    #     Returns:
-    #         tuple:
-    #             - spikes (numpy.ndarray): Recorded spike outputs of shape (timesteps, batch_size, nb_neurons).
-    #             - synaptic_currents (numpy.ndarray): Recorded synaptic currents of shape (timesteps, batch_size, nb_neurons).
-    #             - membrane_potentials (numpy.ndarray): Recorded membrane potentials of shape (timesteps, batch_size, nb_neurons).
-    #     """
-
-    #     return np.array(self.out_rec), np.array(self.syn_rec), np.array(self.mem_rec)
-
+    
 
 # Define parameters
 nb_inputs = 100  # Number of input neurons

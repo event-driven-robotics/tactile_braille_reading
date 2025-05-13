@@ -185,9 +185,9 @@ def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, A):
         trace_rec_a[:,:,t] = trace_rec[:,:,t-1] * h.permute(1,2,0)[:,:,t-1] + (beta_adaptive_thr - h.permute(1,2,0)[:,:,t-1] * dump_thr) * trace_rec_a[:,:,t-1]
 
     # Bellec; solution to the learning dilemma, page 13. eq 25 in two lines. First the part in the brackets
-    trace_rec = trace_rec - (dump_thr * trace_rec_a)
+    trace_rec = trace_rec - (dump_thr * trace_rec_a)  # x = (z[t-1] - beta*eta[t])
     trace_rec   = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
-    trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
+    trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)  # psi * (x)
 
     # Output eligibility vector
     trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, 1:data_steps+1]

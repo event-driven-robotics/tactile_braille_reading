@@ -338,14 +338,6 @@ def build_and_train(params, ds_train, ds_test, epochs=epochs):
         beta_trace = float(np.exp(-time_step/tau_trace))
         beta_trace_out = float(np.exp(-time_step/tau_trace_out))
         beta_adaptive_thr = float(np.exp(-time_step/tau_adaptive_thr))
-    if ref_per_timesteps:
-        # initialize as many we have layers with the size of each layer
-        global ref_counter_hidden
-        ref_counter_hidden = torch.zeros(
-            (batch_size, nb_hidden), device=device)
-        global ref_counter_readout
-        ref_counter_readout = torch.zeros(
-            (batch_size, nb_outputs), device=device)
 
     fwd_weight_scale = params['fwd_weight_scale']
     rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']

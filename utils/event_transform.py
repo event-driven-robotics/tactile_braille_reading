@@ -219,7 +219,7 @@ def main():
             f = 100  # Hz
             data_raw = []
             labels_raw = []
-            displacement = ["0.0", "0.000125", "6.25e-05"]
+            displacement = ["0.0", "0.000125"]
             for dis in displacement:
                 data_tmp, labels_tmp, _ = extract_data_icub_raw_integers_100Hz(
                     f'./data/100Hz/data_braille_letters_{dis}.pkl')

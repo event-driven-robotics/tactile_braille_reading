@@ -63,7 +63,7 @@ class LI:
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, beta, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, beta, fwd_scale=0.1, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
         """
         Initialize the LI neuron layer with weights and parameters.
 
@@ -134,7 +134,7 @@ class CuBaLI:
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, alpha, beta, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, alpha, beta, fwd_scale=0.1, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
         """
         Initialize the CuBaLI neuron layer with the specified parameters and optionally provided weights.
 
@@ -214,7 +214,7 @@ class LIF:
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, beta, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, beta, fwd_scale=0.1, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
         """
         Initialize the LIF neuron layer with weights and parameters.
 
@@ -295,7 +295,7 @@ class CuBaLIF:
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, alpha, beta, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, alpha, beta, fwd_scale=0.1, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
         """
         Initialize the CuBaLIF neuron layer with weights and parameters.
 
@@ -381,7 +381,7 @@ class RLIF:
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, beta, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, beta, fwd_scale=0.1, rec_scale=0.1, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
         """
         Initialize the RLIF neuron layer with weights and parameters.
 
@@ -478,7 +478,7 @@ class CuBaRLIF:
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, beta, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, alpha, beta, fwd_scale=0.1, rec_scale=0.1, weights=None, device="cuda", dtype=torch.float, requires_grad=True):
         """
         Initialize the CuBaRLIF neuron layer with weights and parameters.
 

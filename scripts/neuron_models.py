@@ -59,7 +59,7 @@ class LI:
         beta (float): Membrane decay constant (leak rate).
         device (str or torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
         dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
     """
 
@@ -85,13 +85,13 @@ class LI:
         self.device = device
         self.dtype = dtype
 
-        if weights:
-            self.ff_layer = weights
+        if weights is not None:
+            self.ff_weights = weights
         else:
             # Initialize the feedforward layer weights
-            self.ff_layer = torch.empty(
+            self.ff_weights = torch.empty(
                 (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.ff_layer, mean=0.0,
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
                                   std=fwd_scale / np.sqrt(nb_inputs))
 
         # Initialize the synaptic current and membrane potential
@@ -111,7 +111,7 @@ class LI:
         """
 
         self.mem = (self.beta * self.mem +
-                    torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer))
+                    torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights))
 
         return self.mem
 
@@ -129,7 +129,7 @@ class CuBaLI:
         beta (float): Membrane potential decay constant (leak rate for membrane potential).
         device (str or torch.device): Device for tensor storage and computation (e.g., 'cuda' or 'cpu').
         dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
         syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
     """
@@ -160,13 +160,13 @@ class CuBaLI:
         self.device = device
         self.dtype = dtype
 
-        if weights:
-            self.ff_layer = weights
+        if weights is not None:
+            self.ff_weights = weights
         else:
             # Initialize the feedforward layer weights
-            self.ff_layer = torch.empty(
+            self.ff_weights = torch.empty(
                 (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.ff_layer, mean=0.0,
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
                                   std=fwd_scale / np.sqrt(nb_inputs))
 
         # Initialize the synaptic current and membrane potential
@@ -191,7 +191,7 @@ class CuBaLI:
         """
 
         self.syn = self.alpha * self.syn + \
-            torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer)
+            torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights)
         self.mem = (self.beta * self.mem + self.syn)
 
         return self.syn, self.mem
@@ -209,7 +209,7 @@ class LIF:
         beta (float): Membrane decay constant (leak rate).
         device (str or torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
         dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
     """
@@ -236,13 +236,13 @@ class LIF:
         self.device = device
         self.dtype = dtype
 
-        if weights:
-            self.ff_layer = weights
+        if weights is not None:
+            self.ff_weights = weights
         else:
             # Initialize the feedforward layer weights
-            self.ff_layer = torch.empty(
+            self.ff_weights = torch.empty(
                 (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.ff_layer, mean=0.0,
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
                                   std=fwd_scale / np.sqrt(nb_inputs))
 
         # Initialize the synaptic current and membrane potential
@@ -267,7 +267,7 @@ class LIF:
         """
 
         self.mem = (self.beta * self.mem + torch.einsum("ab,bc->ac",
-                    input_activity_t, self.ff_layer)) * (1.0 - self.rst)
+                    input_activity_t, self.ff_weights)) * (1.0 - self.rst)
 
         mthr = self.mem - 1.0
         out = spike_fn(mthr)
@@ -289,7 +289,7 @@ class CuBaLIF:
         beta (float): Membrane decay constant.
         device (torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
         dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
         syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
@@ -319,13 +319,13 @@ class CuBaLIF:
         self.device = device
         self.dtype = dtype
 
-        if weights:
-            self.ff_layer = weights
+        if weights is not None:
+            self.ff_weights = weights
         else:
             # Initialize the feedforward layer weights
-            self.ff_layer = torch.empty(
+            self.ff_weights = torch.empty(
                 (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.ff_layer, mean=0.0,
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
                                   std=fwd_scale / np.sqrt(nb_inputs))
 
         # Initialize the synaptic current and membrane potential
@@ -353,7 +353,7 @@ class CuBaLIF:
         """
 
         self.syn = self.alpha * self.syn + \
-            torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer)
+            torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights)
         self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
 
         mthr = self.mem - 1.0
@@ -375,8 +375,8 @@ class RLIF:
         beta (float): Membrane decay constant.
         device (str or torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
         dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
-        rec_layer (torch.Tensor): Recurrent weight matrix of shape (nb_neurons, nb_neurons).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        rec_weights (torch.Tensor): Recurrent weight matrix of shape (nb_neurons, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
     """
@@ -404,23 +404,23 @@ class RLIF:
         self.device = device
         self.dtype = dtype
 
-        if weights:
-            self.ff_layer = weights[0]
-            self.rec_layer = weights[1]
+        if weights is not None:
+            self.ff_weights = weights[0]
+            self.rec_weights = weights[1]
         else:
             # Initialize feedforward and recurrent weights
-            self.ff_layer = torch.empty(
+            self.ff_weights = torch.empty(
                 (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.ff_layer, mean=0.0,
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
                                   std=fwd_scale / np.sqrt(nb_inputs))
 
-            self.rec_layer = torch.empty(
+            self.rec_weights = torch.empty(
                 (nb_neurons, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.rec_layer, mean=0.0,
+            torch.nn.init.normal_(self.rec_weights, mean=0.0,
                                   std=rec_scale / np.sqrt(nb_neurons))
 
         # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
-        # self.rec_layer[torch.arange(nb_neurons),
+        # self.rec_weights[torch.arange(nb_neurons),
         #                torch.arange(nb_neurons)] = 0.0
 
         # Initialize synaptic current, membrane potential, and spike output
@@ -445,8 +445,8 @@ class RLIF:
         """
 
         # Compute input and recurrent contributions
-        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer) + \
-            torch.einsum("ab,bc->ac", self.rst, self.rec_layer)
+        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights) + \
+            torch.einsum("ab,bc->ac", self.rst, self.rec_weights)
 
         # Update synaptic current and membrane potential
         self.mem = (self.beta * self.mem + h1) * (1.0 - self.rst)
@@ -471,8 +471,8 @@ class CuBaRLIF:
         beta (float): Membrane potential decay constant.
         device (str or torch.device): Device for tensor storage and computation (e.g., 'cuda' or 'cpu').
         dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
-        rec_layer (torch.Tensor): Recurrent weight matrix of shape (nb_neurons, nb_neurons).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        rec_weights (torch.Tensor): Recurrent weight matrix of shape (nb_neurons, nb_neurons).
         syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons), indicating which neurons have just spiked.
@@ -503,23 +503,23 @@ class CuBaRLIF:
         self.device = device
         self.dtype = dtype
 
-        if weights:
-            self.ff_layer = weights[0]
-            self.rec_layer = weights[1]
+        if weights is not None:
+            self.ff_weights = weights[0]
+            self.rec_weights = weights[1]
         else:
             # Initialize feedforward and recurrent weights
-            self.ff_layer = torch.empty(
+            self.ff_weights = torch.empty(
                 (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.ff_layer, mean=0.0,
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
                                   std=fwd_scale / np.sqrt(nb_inputs))
 
-            self.rec_layer = torch.empty(
+            self.rec_weights = torch.empty(
                 (nb_neurons, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
-            torch.nn.init.normal_(self.rec_layer, mean=0.0,
+            torch.nn.init.normal_(self.rec_weights, mean=0.0,
                                   std=rec_scale / np.sqrt(nb_neurons))
 
         # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
-        # self.rec_layer[torch.arange(nb_neurons),
+        # self.rec_weights[torch.arange(nb_neurons),
         #                torch.arange(nb_neurons)] = 0.0
 
         # Initialize synaptic current, membrane potential, and spike output
@@ -547,8 +547,8 @@ class CuBaRLIF:
         """
 
         # Compute input and recurrent contributions
-        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer) + \
-            torch.einsum("ab,bc->ac", self.rst, self.rec_layer)
+        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights) + \
+            torch.einsum("ab,bc->ac", self.rst, self.rec_weights)
 
         # Update synaptic current and membrane potential
         self.syn = self.alpha * self.syn + h1

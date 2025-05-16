@@ -650,6 +650,10 @@ class CuBaLIF_HW_Aware:
                 - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
                 - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
         """
+        self.syn   = self.syn[:h1.shape[0],:]
+        self.mem   = self.mem[:h1.shape[0],:]
+        self.rst   = self.rst[:h1.shape[0],:]
+
         mthr = self.mem - self.firing_threshold
         out = spike_fn(mthr)
         self.rst = out.detach()

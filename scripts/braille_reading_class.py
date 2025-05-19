@@ -18,7 +18,7 @@ torch.cuda.empty_cache()
 #torch.autograd.set_detect_anomaly(True)
 
 global default_device
-default_device ='cuda:3'
+default_device ='cuda:0'
 
 letters = ['Space', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
            'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
@@ -169,7 +169,7 @@ class SurrGradSpike(torch.autograd.Function):
     as this was done in Zenke & Ganguli (2018).
     """
 
-    scale = 10
+    scale = 15
     threshold = 0
 
     @staticmethod
@@ -339,12 +339,11 @@ class CuBaLIF:
         else:
             self.syn = self.alpha*self.syn + input_activity_t
 
+        self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
+
         if self.lower_bound:
             # clamp membrane potential
             self.mem[self.mem < self.lower_bound] = self.lower_bound
-
-        self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
-
 
         return out.clone(), self.syn, self.mem, self.n_spike
 
@@ -446,7 +445,7 @@ class CuBaRLIF:
 
             self.rec_weights = torch.empty((nb_neurons, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
 
-            torch.nn.init.normal_(self.rec_weights, mean=0.0, std=rec_scale / np.sqrt(nb_neurons))
+            torch.nn.init.normal_(self.rec_weights, mean=0.0, std=fwd_scale*rec_scale / np.sqrt(nb_neurons))
 
         # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
         # self.rec_layer[torch.arange(nb_neurons),
@@ -503,13 +502,11 @@ class CuBaRLIF:
         else:
             self.syn = self.alpha*self.syn + h1
 
+        self.mem = (self.beta*self.mem + self.syn)*(1.0-self.rst)
+
         if self.lower_bound:
             # clamp membrane potential
             self.mem[self.mem < self.lower_bound] = self.lower_bound
-
-
-        self.mem = (self.beta*self.mem + self.syn)*(1.0-self.rst)
-
         # Record values
         # self.syn_rec.append(self.syn.detach().cpu().numpy())
         # self.mem_rec.append(self.mem.detach().cpu().numpy())
@@ -521,7 +518,6 @@ class CuBaRLIF:
     def update_refractory_perdiod_counter(self):
         self.ref_per_counter = self.ref_per_counter[:self.rst.shape[0], :self.rst.shape[1]]
         self.ref_per_counter[self.ref_per_counter > 0.0] -= 1
-        self.ref_per_counter[self.rst > 0.0] = self.ref_per_timesteps
         return self.ref_per_counter
 
 

@@ -51,7 +51,7 @@ def default_parser(parser):
     parser.add_argument('--time_bin_size', type=int, default=3, help='time bin size in ms (default: 3)')
     parser.add_argument('--max_time', type=int, default=3501, help='max time in ms (default: 3501)')
     parser.add_argument('--device', type=str, default=default_device, help='device to use change to cpu if no gpu available')
-    parser.add_argument('--dtype', type=str, default='float', help='data type to use (default: floa)')
+    parser.add_argument('--dtype', type=str, default='torch.float', help='data type to use (default: floa)')
     parser.add_argument('--batch_size', type=int, default=128, help='input batch size for training (default: 4)')
     parser.add_argument('--batch_size_test', type=int, default=128, help='input batch size for test (default: 128)')
     parser.add_argument('--lr', type=float, default=0.0008, help='learning rate (default:0.0008)')
@@ -79,8 +79,8 @@ dict_args = vars(parser.parse_args())
 
 dict_args.update({"lr": 0.0015})
 dict_args.update({"epochs": 50})
-
-
+#dict_args.update({"max_time": 3500})
+#dict_args.update({"time_bin_size": 10})
 
 
 # use fixed seed for reproducable results
@@ -105,7 +105,6 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters):
     delayed_output = data_steps
 
     data_dict = pd.read_pickle(file_name)
-    #data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
     data_dict = pd.DataFrame(data_dict)
     # Extract data
     data = []
@@ -138,10 +137,8 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters):
     # return data,labels
     data = np.array(data)
     labels = np.array(labels)
-    #one_hot_encoded = np.eye(len(np.unique(labels)))[labels]
-    #output = np.repeat(one_hot_encoded[:, np.newaxis, :], data_steps+1, axis=1)
 
-    # print(labels)
+    # Print average number of spikes for each letter
     data = torch.tensor(data, dtype=torch.float)
     labels = torch.tensor(labels, dtype=torch.long)
 
@@ -169,7 +166,7 @@ class SurrGradSpike(torch.autograd.Function):
     as this was done in Zenke & Ganguli (2018).
     """
 
-    scale = 15
+    scale = 15.0
     threshold = 0
 
     @staticmethod
@@ -288,7 +285,7 @@ class CuBaLIF:
 
 
         if weights is not None:
-            self.ff_weights = weights[0]
+            self.ff_weights = torch.nn.Parameter(weights.to(device=device, dtype=dtype))
         else:
             # Initialize feedforward
             self.ff_weights = torch.empty((nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
@@ -301,6 +298,8 @@ class CuBaLIF:
         self.mem     = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
         self.rst     = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.new_mem = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
         self.n_spike = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
@@ -318,33 +317,38 @@ class CuBaLIF:
                 - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
                 - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
         """
+        '''
         self.syn   = self.syn[:input_activity_t.shape[0],:]
         self.mem   = self.mem[:input_activity_t.shape[0],:]
         self.rst   = self.rst[:input_activity_t.shape[0],:]
         self.n_spike = self.n_spike[:input_activity_t.shape[0],:]
         self.firing_threshold = self.firing_threshold[:input_activity_t.shape[0],:]
+        new_syn = torch.zeros((input_activity_t.shape[0], self.nb_neurons), device=self.device, dtype=self.dtype)
+        '''
         mthr = self.mem - self.firing_threshold
         out = spike_fn(mthr)
-        self.n_spike[out == 1] = self.n_spike[out == 1] + 1
-        self.rst = out.detach()
 
+        self.n_spike[out == 1] = self.n_spike[out == 1] + 1
+
+        self.rst = out.detach()
 
         if self.ref_per_timesteps is not None:
             self.update_refractory_perdiod_counter()
             # only update the membrane potential if not in refractory period
             # take care of last batch
             mask = self.ref_per_counter[:self.syn.shape[0], :self.syn.shape[1]] == 0.0
-            self.syn = self.alpha * self.syn
-            self.syn[mask] = (self.alpha*self.syn[mask] + input_activity_t[mask])
+            new_syn = self.alpha * self.syn
+            new_syn[mask] = (self.alpha*self.syn[mask] + input_activity_t[mask])
         else:
-            self.syn = self.alpha*self.syn + input_activity_t
+            new_syn = self.alpha*self.syn + input_activity_t
 
-        self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
+        self.mem = (self.beta*self.mem + self.syn)*(1.0-self.rst)
 
         if self.lower_bound:
             # clamp membrane potential
             self.mem[self.mem < self.lower_bound] = self.lower_bound
 
+        self.syn = new_syn
         return out.clone(), self.syn, self.mem, self.n_spike
 
 
@@ -427,7 +431,7 @@ class CuBaRLIF:
         self.device = device
         self.dtype = dtype
         self.theta = firing_threshold
-        self.firing_threshold = firing_threshold * torch.ones((batch_size, self.nb_neurons), device = device, dtype=dtype)
+        self.firing_threshold = self.theta * torch.ones((batch_size, self.nb_neurons), device = device, dtype=dtype)
 
         if self.ref_per_timesteps is not None:
             self.ref_per_counter = torch.zeros(
@@ -435,8 +439,8 @@ class CuBaRLIF:
 
 
         if weights is not None:
-            self.ff_weights = weights[0]
-            self.rec_weights = weights[1]
+            self.ff_weights = torch.nn.Parameter(weights[0].to(device=device, dtype=dtype))
+            self.rec_weights = torch.nn.Parameter(weights[1].to(device=device, dtype=dtype))
         else:
             # Initialize feedforward and recurrent weights
             self.ff_weights = torch.empty((nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
@@ -445,7 +449,7 @@ class CuBaRLIF:
 
             self.rec_weights = torch.empty((nb_neurons, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
 
-            torch.nn.init.normal_(self.rec_weights, mean=0.0, std=fwd_scale*rec_scale / np.sqrt(nb_neurons))
+            torch.nn.init.normal_(self.rec_weights, mean=0.0, std=fwd_scale*rec_scale / np.sqrt(nb_inputs))
 
         # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
         # self.rec_layer[torch.arange(nb_neurons),
@@ -458,8 +462,13 @@ class CuBaRLIF:
                                device=device, dtype=dtype)
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
+        self.new_mem = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+        self.out = torch.zeros((batch_size, nb_neurons),
+                                 device=device, dtype=dtype)
+
+    def update(self, input_activity_t, t):
         """
         Compute the activity of the recurrent layer for a single time step.
 
@@ -472,16 +481,18 @@ class CuBaRLIF:
                 - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
                 - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
         """
-
         # Compute input and recurrent contributions
-        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights) + \
-            torch.einsum("ab,bc->ac", self.rst[:input_activity_t.shape[0],:], self.rec_weights)
-
+        h1 = input_activity_t + \
+            torch.einsum("ab,bc->ac", self.out[:input_activity_t.shape[0],:], self.rec_weights)
+        '''
         self.a_thr = self.a_thr[:input_activity_t.shape[0],:]
         self.syn   = self.syn[:input_activity_t.shape[0],:]
         self.mem   = self.mem[:input_activity_t.shape[0],:]
         self.rst   = self.rst[:input_activity_t.shape[0],:]
         self.firing_threshold = self.firing_threshold[:input_activity_t.shape[0],:]
+        new_syn = torch.zeros((input_activity_t.shape[0], self.nb_neurons), device=self.device, dtype=self.dtype)
+        self.out = self.out[:input_activity_t.shape[0],:]
+        '''
         '''
         if(self.n_alif > 0):
             # Update synaptic current and membrane potential
@@ -489,18 +500,18 @@ class CuBaRLIF:
             self.firing_threshold[:,:self.n_alif] = self.firing_threshold +self.dump_thr * self.a_thr  # A[t] = v_th + beta*a[t]
         '''
         mthr = self.mem - self.firing_threshold
-        out = spike_fn(mthr)
-        self.rst = out.detach()  # Reset spikes
+        self.out = spike_fn(mthr)
+        self.rst = self.out.detach()  # Reset spikes
 
         if self.ref_per_timesteps is not None:
             self.update_refractory_perdiod_counter()
             # only update the membrane potential if not in refractory period
             # take care of last batch
             mask = self.ref_per_counter[:self.syn.shape[0], :self.syn.shape[1]] == 0.0
-            self.syn = self.alpha * self.syn
-            self.syn[mask] = (self.alpha*self.syn[mask] + h1[mask])
+            new_syn = self.alpha * self.syn
+            new_syn[mask] = (self.alpha*self.syn[mask] + h1[mask])
         else:
-            self.syn = self.alpha*self.syn + h1
+            new_syn = self.alpha*self.syn + h1
 
         self.mem = (self.beta*self.mem + self.syn)*(1.0-self.rst)
 
@@ -512,12 +523,15 @@ class CuBaRLIF:
         # self.mem_rec.append(self.mem.detach().cpu().numpy())
         # self.out_rec.append(self.rst.cpu().numpy())
 
-        return out.clone(), self.syn, self.mem
+        self.syn = new_syn
+
+        return self.out.clone(), self.syn, self.mem
 
 
     def update_refractory_perdiod_counter(self):
         self.ref_per_counter = self.ref_per_counter[:self.rst.shape[0], :self.rst.shape[1]]
         self.ref_per_counter[self.ref_per_counter > 0.0] -= 1
+        self.ref_per_counter[self.rst > 0.0] = self.ref_per_timesteps
         return self.ref_per_counter
 
 
@@ -558,16 +572,19 @@ class SRNN:
         self.beta_trace = float(np.exp(-time_step / self.tau_trace))
         self.beta_trace_rec = float(np.exp(-time_step / self.tau_trace_rec))
 
+        with open('test_init_weight.pkl', 'rb') as f:
+            layers = pickle.load(f)
+
         self.ff_layer = CuBaLIF(batch_size=self.batch_size, nb_inputs=self.nb_hidden, nb_neurons=self.nb_output,
                             fwd_scale=self.fwd_weight_scale, alpha=self.alpha, firing_threshold=self.firing_threshold,
                             beta=self.beta, device=self.device, dtype=self.dtype, lower_bound=self.lower_bound,
-                            ref_per_timesteps=self.ref_per_timesteps,weights=None, requires_grad=True)
+                            ref_per_timesteps=self.ref_per_timesteps,weights=layers[1], requires_grad=True)
 
         self.rec_layer = CuBaRLIF(batch_size=self.batch_size, nb_inputs=self.nb_inputs, nb_neurons=self.nb_hidden,
                            fwd_scale=self.fwd_weight_scale, rec_scale=self.weight_scale_factor, alpha=self.alpha,
                            firing_threshold=self.firing_threshold,beta_thr = self.beta_adaptive_thr,
                            dump_thr = self.dump_thr, beta=self.beta, device=self.device, dtype=self.dtype,
-                           lower_bound=self.lower_bound, ref_per_timesteps=self.ref_per_timesteps, weights=None,
+                           lower_bound=self.lower_bound, ref_per_timesteps=self.ref_per_timesteps, weights=[layers[0], layers[2]],
                            requires_grad=True)
 
 
@@ -582,7 +599,7 @@ class SRNN:
         self.rec_layer.ref_per_counter = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
         self.rec_layer.a_thr = torch.zeros((bs, self.rec_layer.n_alif), device=self.device, dtype=self.dtype)
         self.rec_layer.firing_threshold = self.rec_layer.theta * torch.ones((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
-
+        self.rec_layer.out = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
 
         self.ff_layer.syn = torch.zeros((bs, self.nb_output), device=self.device, dtype=self.dtype)
         self.ff_layer.mem = torch.zeros((bs, self.nb_output), device=self.device, dtype=self.dtype)
@@ -602,9 +619,10 @@ class SRNN:
         ff_mem_tot = torch.zeros((bs, nb_steps, self.nb_output), dtype=self.dtype, device=self.device)
         ff_nb_spk_tot = torch.zeros((bs, nb_steps, self.nb_output), dtype=self.dtype, device=self.device)
 
+        h = torch.einsum("abc,cd->abd", input, self.rec_layer.ff_weights)
+
         for t in range(nb_steps):
-            # Extract input activity for the current time step
-            rec_spk, rec_syn, rec_mem = self.rec_layer.update(input[:,t])
+            rec_spk, rec_syn, rec_mem = self.rec_layer.update(h[:,t,:], t)
             rec_spk_tot[:,t,:] = rec_spk
             rec_syn_tot[:,t,:] = rec_syn
             rec_mem_tot[:,t,:] = rec_mem
@@ -619,16 +637,16 @@ class SRNN:
             ff_mem_tot[:,t,:] = ff_mem
             ff_nb_spk_tot[:,t,:] = ff_nb_spk
 
-
         return[rec_spk_tot, rec_syn_tot, rec_mem_tot], [ff_spk_tot, ff_syn_tot, ff_mem_tot, ff_nb_spk_tot]
 
     def train_bptt(self, dataset_train, dataset_test):
-        print("TO DO")
         log_softmax_fn = nn.LogSoftmax(dim=1)
         loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
 
         generator = DataLoader(dataset=dataset_train, batch_size=self.batch_size, pin_memory=True,
                             shuffle=True, num_workers=2)
+        layers = []
+        layers.append(self.rec_layer.ff_weights), layers.append(self.ff_layer.ff_weights), layers.append(self.rec_layer.rec_weights)
 
         loss_hist = []
         accs_hist = [[], []]
@@ -636,7 +654,7 @@ class SRNN:
                             total=self.epochs, leave=False)
         for _ in pbar_training:
             # learning rate decreases over epochs
-            optimizer = torch.optim.Adamax([self.rec_layer.ff_weights, self.ff_layer.ff_weights, self.rec_layer.rec_weights], lr=self.lr, betas=(0.9, 0.995))
+            optimizer = torch.optim.Adamax(layers, lr=self.lr, betas=(0.9, 0.995))
             # if e > nb_epochs/2:
             #     lr = lr * 0.9
             local_loss = []
@@ -654,6 +672,7 @@ class SRNN:
                 # cross entropy loss on the active read-out layer
                 log_p_y = log_softmax_fn(m)
 
+                #print("m: ", m.sum())
                 # Here we can set up our regularizer loss
                 # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
                 # L1 loss on total number of spikes (hidden layer 1)
@@ -663,6 +682,7 @@ class SRNN:
                 # print("L1: ", reg_loss)
                 # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
                 # L2 loss on spikes per neuron (hidden layer 1)
+                #print("reg_loss: ", reg_loss)
                 reg_loss += self.reg_neurons * \
                     torch.mean(torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
                 # L2 loss on spikes per neuron (output layer)
@@ -672,6 +692,7 @@ class SRNN:
 
                 # Here we combine supervised loss and the regularizer
                 loss_val = loss_fn(log_p_y, y_local) + reg_loss
+                #print(f"{loss_val:.15f}")  # prints 10 decimal places
 
                 optimizer.zero_grad()
                 loss_val.backward()
@@ -736,17 +757,6 @@ class SRNN:
             m = torch.sum(spk_rec_readout, 1)  # sum over time
 
             max_val, am = torch.max(m, 1)     # argmax over output units
-
-            # with output spikes
-            mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
-            if mask.any():
-                #print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
-                # compare to labels
-                true_indices = torch.nonzero(mask, as_tuple=True)
-                #am[true_indices] = torch.randint(0, len(letters), (len(true_indices),), device=device)
-                for i in true_indices:
-                    candidates = torch.nonzero(m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]  # Trova gli output con valore massimo
-                    am[i] = candidates[torch.randint(0, len(candidates), (1,))]  # Scegli randomicamente tra i candidati
 
             # compare to labels
             tmp = np.mean((y_local == am).detach().cpu().numpy())

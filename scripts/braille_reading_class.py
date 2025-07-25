@@ -54,7 +54,7 @@ def default_parser(parser):
     parser.add_argument('--dtype', type=str, default='torch.float', help='data type to use (default: floa)')
     parser.add_argument('--batch_size', type=int, default=128, help='input batch size for training (default: 4)')
     parser.add_argument('--batch_size_test', type=int, default=128, help='input batch size for test (default: 128)')
-    parser.add_argument('--lr', type=float, default=0.0008, help='learning rate (default:0.0008)')
+    parser.add_argument('--lr', type=float, default=0.0015, help='learning rate (default:0.0008)')
     parser.add_argument('--n_rec_alif', type=int, default=0, help='number of recurrent ALIF neurons (default: 0)')
     parser.add_argument('--tau_mem', type=float, default=0.06, help='membrane time constant (default: 0.06)')
     parser.add_argument('--tau_syn', type=float, default=0.0, help='synaptic time constant (default: 0.0)')
@@ -77,11 +77,9 @@ default_parser(parser)
 global dict_args
 dict_args = vars(parser.parse_args())
 
-dict_args.update({"lr": 0.0015})
-dict_args.update({"epochs": 50})
-#dict_args.update({"max_time": 3500})
-#dict_args.update({"time_bin_size": 10})
-
+dict_args.update({"eprop": True})
+dict_args.update({"batch_size": 4})
+dict_args.update({"lr": 0.0008})
 
 # use fixed seed for reproducable results
 if use_seed:
@@ -304,7 +302,7 @@ class CuBaLIF:
         self.n_spike = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
 
@@ -317,14 +315,6 @@ class CuBaLIF:
                 - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
                 - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
         """
-        '''
-        self.syn   = self.syn[:input_activity_t.shape[0],:]
-        self.mem   = self.mem[:input_activity_t.shape[0],:]
-        self.rst   = self.rst[:input_activity_t.shape[0],:]
-        self.n_spike = self.n_spike[:input_activity_t.shape[0],:]
-        self.firing_threshold = self.firing_threshold[:input_activity_t.shape[0],:]
-        new_syn = torch.zeros((input_activity_t.shape[0], self.nb_neurons), device=self.device, dtype=self.dtype)
-        '''
         mthr = self.mem - self.firing_threshold
         out = spike_fn(mthr)
 
@@ -397,7 +387,7 @@ class CuBaRLIF:
         out_rec (list): List to record spike outputs over time.
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, firing_threshold, beta_thr, dump_thr, beta, device, dtype, n_alif=0, lower_bound=None, ref_per_timesteps=None, weights=None, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, firing_threshold, beta_thr, dump_thr, beta, device, dtype, lower_bound=None, ref_per_timesteps=None, weights=None, requires_grad=True):
         """
         Initialize the recurrent layer with weights and parameters.
 
@@ -414,14 +404,12 @@ class CuBaRLIF:
             beta (float): Membrane decay constant.
             device (torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
             dtype (torch.dtype): Data type for tensors (e.g., torch.float).
-            n_alif (int): Number of ALIF neurons in the layer.
             lower_bound (float): Lower bound for membrane potential.
             ref_per_timesteps (int): Refractory period in time steps.
         """
 
         self.nb_inputs = nb_inputs
         self.nb_neurons = nb_neurons
-        self.n_alif = n_alif
         self.lower_bound = lower_bound
         self.ref_per_timesteps = ref_per_timesteps
         self.alpha = alpha
@@ -454,7 +442,6 @@ class CuBaRLIF:
         # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
         # self.rec_layer[torch.arange(nb_neurons),
         #                torch.arange(nb_neurons)] = 0.0
-        self.a_thr = torch.zeros((batch_size, n_alif), device=device, dtype=dtype)
         # Initialize synaptic current, membrane potential, and spike output
         self.syn = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
@@ -468,7 +455,7 @@ class CuBaRLIF:
         self.out = torch.zeros((batch_size, nb_neurons),
                                  device=device, dtype=dtype)
 
-    def update(self, input_activity_t, t):
+    def step(self, input_activity_t, t):
         """
         Compute the activity of the recurrent layer for a single time step.
 
@@ -484,21 +471,7 @@ class CuBaRLIF:
         # Compute input and recurrent contributions
         h1 = input_activity_t + \
             torch.einsum("ab,bc->ac", self.out[:input_activity_t.shape[0],:], self.rec_weights)
-        '''
-        self.a_thr = self.a_thr[:input_activity_t.shape[0],:]
-        self.syn   = self.syn[:input_activity_t.shape[0],:]
-        self.mem   = self.mem[:input_activity_t.shape[0],:]
-        self.rst   = self.rst[:input_activity_t.shape[0],:]
-        self.firing_threshold = self.firing_threshold[:input_activity_t.shape[0],:]
-        new_syn = torch.zeros((input_activity_t.shape[0], self.nb_neurons), device=self.device, dtype=self.dtype)
-        self.out = self.out[:input_activity_t.shape[0],:]
-        '''
-        '''
-        if(self.n_alif > 0):
-            # Update synaptic current and membrane potential
-            self.a_thr = (self.beta_thr*self.a_thr) + self.rst[:,:self.n_alif]  # a[t+1] = rho*a[t] + s[t], a[t] = rho*a[t-1] + s[t-1]
-            self.firing_threshold[:,:self.n_alif] = self.firing_threshold +self.dump_thr * self.a_thr  # A[t] = v_th + beta*a[t]
-        '''
+
         mthr = self.mem - self.firing_threshold
         self.out = spike_fn(mthr)
         self.rst = self.out.detach()  # Reset spikes
@@ -597,7 +570,6 @@ class SRNN:
         self.rec_layer.mem = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
         self.rec_layer.rst = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
         self.rec_layer.ref_per_counter = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
-        self.rec_layer.a_thr = torch.zeros((bs, self.rec_layer.n_alif), device=self.device, dtype=self.dtype)
         self.rec_layer.firing_threshold = self.rec_layer.theta * torch.ones((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
         self.rec_layer.out = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
 
@@ -622,7 +594,7 @@ class SRNN:
         h = torch.einsum("abc,cd->abd", input, self.rec_layer.ff_weights)
 
         for t in range(nb_steps):
-            rec_spk, rec_syn, rec_mem = self.rec_layer.update(h[:,t,:], t)
+            rec_spk, rec_syn, rec_mem = self.rec_layer.step(h[:,t,:], t)
             rec_spk_tot[:,t,:] = rec_spk
             rec_syn_tot[:,t,:] = rec_syn
             rec_mem_tot[:,t,:] = rec_mem
@@ -630,13 +602,27 @@ class SRNN:
         h1 = torch.einsum("abc,cd->abd", rec_spk_tot, self.ff_layer.ff_weights)
 
         for t in range(nb_steps):
-            ff_spk, ff_syn, ff_mem, ff_nb_spk = self.ff_layer.update(h1[:,t,:])
+            ff_spk, ff_syn, ff_mem, ff_nb_spk = self.ff_layer.step(h1[:,t,:])
 
             ff_spk_tot[:,t,:] = ff_spk
             ff_syn_tot[:,t,:] = ff_syn
             ff_mem_tot[:,t,:] = ff_mem
             ff_nb_spk_tot[:,t,:] = ff_nb_spk
 
+        '''
+        with open('other_recs.pkl', 'rb') as f:
+            other_recs = pickle.load(f)
+
+        with open('spk_rec_readout.pkl', 'rb') as f:
+            spk_rec_readout = pickle.load(f)
+
+        [mem_rec_hidden, spk_rec_hidden, mem_rec_readout] = other_recs
+
+        print("mem_rec_hidden are equal: ", torch.equal(rec_mem_tot, mem_rec_hidden))
+        print("spk_rec_hidden are equal: ", torch.equal(rec_spk_tot, spk_rec_hidden))
+        print("mem_rec_readout are equal: ", torch.equal(ff_mem_tot, mem_rec_readout))
+        print("spk_rec_readout are equal: ", torch.equal(ff_spk_tot, spk_rec_readout))
+        '''
         return[rec_spk_tot, rec_syn_tot, rec_mem_tot], [ff_spk_tot, ff_syn_tot, ff_mem_tot, ff_nb_spk_tot]
 
     def train_bptt(self, dataset_train, dataset_test):
@@ -738,6 +724,216 @@ class SRNN:
 
     def train_eprop(self, dataset_train, dataset_test):
         print("TO DO")
+        # The log softmax function across output units
+        log_softmax_fn = nn.LogSoftmax(dim=1)
+        loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
+
+        generator = DataLoader(dataset=dataset_train, batch_size=self.batch_size, pin_memory=True,
+                            shuffle=True, num_workers=2)
+
+        layers = []
+        layers.append(self.rec_layer.ff_weights), layers.append(self.ff_layer.ff_weights), layers.append(self.rec_layer.rec_weights)
+
+        # The optimization loop
+        loss_hist = []
+        accs_hist = [[], []]
+        pbar_training = tqdm(range(self.epochs), position=1,
+                            total=self.epochs, leave=False)
+
+        for _ in pbar_training:
+            # learning rate decreases over epochs
+            optimizer = torch.optim.Adamax(layers, lr=self.lr, betas=(0.9, 0.995))
+            # if e > nb_epochs/2:
+            #     lr = lr * 0.9
+            local_loss = []
+            # accs: mean training accuracies for each batch
+            accs = []
+            pbar_batches = tqdm(generator, position=2,
+                                total=len(generator), leave=False)
+            for x_local, y_local in pbar_batches:
+                x_local, y_local = x_local.to(self.device), y_local.to(self.device)
+                # reset refractory period counter for each batch
+                optimizer.zero_grad()
+
+                with open('x.pkl', 'rb') as f:
+                    x_orig = pickle.load(f)
+
+                with open('yo.pkl', 'rb') as f:
+                    yo_orig = pickle.load(f)
+
+                with open('yt.pkl', 'rb') as f:
+                    yt_orig = pickle.load(f)
+
+                with open('v.pkl', 'rb') as f:
+                    v_orig = pickle.load(f)
+
+                with open('z.pkl', 'rb') as f:
+                    z_orig = pickle.load(f)
+
+                one_hot_encoded = torch.nn.functional.one_hot(y_local, num_classes=len(np.unique(labels)))
+
+                rec, ff = self.forward(x_local)
+                max_spikes, _ = torch.max(ff[3], dim=2, keepdim=True)  # [batch, tempo, 1]
+                '''
+
+                # Crea una maschera booleana per identificare i neuroni con il valore massimo
+                is_max = ff[3] == max_spikes  # [batch, tempo, neurone]
+
+                # Genera indici casuali per scegliere tra i massimi
+                rand_vals = torch.rand(ff[3].shape)  # Numeri casuali [0,1] per ogni neurone
+                rand_vals[~is_max] = -1  # Imposta a -1 i neuroni che non sono massimi
+                # Prendi l'indice con il valore massimo tra quelli rimasti
+                _, am = torch.max(rand_vals, dim=2)  # Ora il massimo è scelto casualmente tra i pari
+                '''
+                with open('nb_spikes.pkl', 'rb') as f:
+                    nb_spikes = pickle.load(f)
+
+                #print("nb_spikes are equals: ", torch.equal(ff[3], nb_spikes))
+                _, am = torch.max(ff[3], 2)
+                with open('am.pkl', 'rb') as f:
+                    am_orig = pickle.load(f)
+
+                print("am are equal: ", torch.equal(am, am_orig))
+                print("nb_spikes are equal: ", torch.equal(ff[3], nb_spikes))
+                yo = torch.nn.functional.one_hot(am, num_classes=len(np.unique(labels))).to(self.device)
+
+                spk_rec_hidden= rec[0]
+                spk_rec_readout = ff[0]
+
+                print("x are equal: ", torch.equal(x_local.permute(1,0,2), x_orig))
+                print("yo are equal: ", torch.equal(yo.permute(1,0,2), yo_orig))
+                print("yt are equal: ", torch.equal(one_hot_encoded, yt_orig))
+                print("v are equal: ", torch.equal(rec[2].permute(1,0,2), v_orig))
+                print("z are equal: ", torch.equal(rec[0].permute(1,0,2), z_orig))
+
+                self.grads_batch(x_local.permute(1,0,2), yo.permute(1,0,2), one_hot_encoded, rec[2].permute(1,0,2), rec[0].permute(1,0,2))
+
+                m = torch.sum(spk_rec_readout, 1)  # sum over time
+
+                # cross entropy loss on the active read-out layer
+                log_p_y = log_softmax_fn(m)
+
+                # Here we can set up our regularizer loss
+                # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
+                # L1 loss on total number of spikes (hidden layer 1)
+                reg_loss = self.reg_spikes * torch.mean(torch.sum(spk_rec_hidden, 1))
+                # L1 loss on total number of spikes (output layer)
+                # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
+                # print("L1: ", reg_loss)
+                # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
+                # L2 loss on spikes per neuron (hidden layer 1)
+                reg_loss += self.reg_neurons * \
+                    torch.mean(torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
+                # L2 loss on spikes per neuron (output layer)
+                # reg_loss += params['reg_neurons'] * \
+                #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
+                # print("L1 + L2: ", reg_loss)
+
+                # Here we combine supervised loss and the regularizer
+                loss_val = loss_fn(log_p_y, y_local) + reg_loss
+                optimizer.step()
+                layers_update = [self.ff_layer.ff_weights.detach().clone(), self.rec_layer.ff_weights.detach().clone(), self.rec_layer.rec_weights.detach().clone()]
+
+                local_loss.append(loss_val.item())
+
+                # compare to labels
+                _, am = torch.max(m, 1)  # argmax over output units
+                tmp = np.mean((y_local == am).detach().cpu().numpy())
+                accs.append(tmp)
+
+            mean_loss = np.mean(local_loss)
+            loss_hist.append(mean_loss)
+
+            # mean_accs: mean training accuracy of current epoch (average over all batches)
+            mean_accs = np.mean(accs)
+            accs_hist[0].append(mean_accs)
+
+            # Calculate test accuracy in each epoch
+            if dataset_test is not None:
+                test_acc = self.compute_classification_accuracy(
+                    dataset=dataset_test)
+                accs_hist[1].append(test_acc)  # only safe best test
+
+                # save best training
+                if mean_accs >= np.max(accs_hist[0]):
+                    best_acc_layers = []
+                    for ii in layers_update:
+                        best_acc_layers.append(ii.detach().clone())
+            else:
+                # save best test
+                if np.max(test_acc) >= np.max(accs_hist[1]):
+                    best_acc_layers = []
+                    for ii in layers_update:
+                        best_acc_layers.append(ii.detach().clone())
+
+            pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
+                accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
+            print("Train acc: ", accs_hist[0][-1]*100, "Test acc", accs_hist[1][-1]*100)
+        return loss_hist, accs_hist, best_acc_layers
+
+    def grads_batch(self, x, yo, yt, v, z):
+
+        if self.ff_layer.ff_weights.grad is None:
+            self.ff_layer.ff_weights.grad = torch.zeros_like(self.ff_layer.ff_weights)
+        if self.rec_layer.ff_weights.grad is None:
+            self.rec_layer.ff_weights.grad = torch.zeros_like(self.rec_layer.ff_weights)
+        if self.rec_layer.rec_weights.grad is None:
+            self.rec_layer.rec_weights.grad = torch.zeros_like(self.rec_layer.rec_weights)
+        # Surrogate derivatives
+        h = self.gamma * torch.max(torch.zeros_like(v), 1 - torch.abs((v - self.firing_threshold) / self.firing_threshold))
+
+        # Crea una variabile di errore vuota con le stesse dimensioni di yo
+        err = torch.zeros_like(yo)
+
+        '''
+        print('x are equal: ', torch.equal(x, x_orig))
+        print('yo are equal: ', torch.equal(yo, yo_orig))
+        print('yt are equal: ', torch.equal(yt, yt_orig))
+        print('v are equal: ', torch.equal(v, v_orig))
+        print('z are equal: ', torch.equal(z, z_orig))
+        '''
+        # Eligibility traces convolution
+        beta_conv     = torch.tensor([self.beta_trace_rec ** (data_steps - i - 1) for i in range(data_steps)]).float().view(1, 1, -1).to(self.device)
+        beta_rec_conv = torch.tensor([self.beta_trace ** (data_steps - i - 1) for i in range(data_steps)]).float().view(1, 1, -1).to(self.device)
+
+        # Convoluzione Input eligibility traces
+        trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(nb_inputs, -1, -1), padding=data_steps, groups=nb_inputs)[:, :, 1:data_steps+1]
+        trace_in = trace_in.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
+        trace_in = torch.einsum('tbr,brit->brit', h, trace_in)
+
+        # Convoluzione Recurrent eligibility traces
+        trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, :data_steps]
+        trace_rec = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
+        trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
+
+        # Output eligibility vector
+        trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, 1:data_steps+1]
+
+        # Ottimizzazione convoluzioni batch-wise
+        trace_in = F.conv1d(trace_in.reshape(self.batch_size, nb_inputs * nb_hidden, data_steps),
+                            beta_conv.expand(nb_inputs * nb_hidden, -1, -1),
+                            padding=data_steps, groups=nb_inputs * nb_hidden)[:, :, 1:data_steps+1]
+        trace_in = trace_in.reshape(self.batch_size, nb_hidden, nb_inputs, data_steps)
+
+        trace_rec = F.conv1d(trace_rec.reshape(self.batch_size, nb_hidden * nb_hidden, data_steps),
+                            beta_conv.expand(nb_hidden * nb_hidden, -1, -1),
+                            padding=data_steps, groups=nb_hidden * nb_hidden)[:, :, 1:data_steps+1]
+        trace_rec = trace_rec.reshape(self.batch_size, nb_hidden, nb_hidden, data_steps)
+
+        # Ciclo for per calcolare l'errore 'err'
+        for i in range(yo.shape[0]):
+            err[i,:,:] = yo[i,:,:] - yt
+        err = err.to(self.dtype)
+        # Calcolo dei segnali di apprendimento
+        L = torch.einsum('tbo,or->brt', err, self.ff_layer.ff_weights.t())
+
+        # Weight gradient updates
+        self.rec_layer.ff_weights.grad += (torch.sum(L.unsqueeze(2).expand(-1, -1, nb_inputs, -1) * trace_in, dim=(0, 3))).t()
+        self.rec_layer.rec_weights.grad += (torch.sum(L.unsqueeze(2).expand(-1, -1, nb_hidden, -1) * trace_rec, dim=(0, 3))).t()
+        self.ff_layer.ff_weights.grad += (torch.einsum('tbo,brt->or', err, trace_out)).t()
+
+
+
 
 
 

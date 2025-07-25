@@ -92,7 +92,7 @@ else:
     print("Shuffle data randomly")
 
 
-def load_and_extract(params, file_name, taxels=None, letter_written=letters):
+def load_and_extract(params, file_name, taxels=None, letter_written=letters, prepare_validation=False):
 
     max_time = int(params['max_time'])  # ms
     time_bin_size = int(params['time_bin_size'])  # so far from laoded file, but can be set manually here
@@ -140,20 +140,30 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters):
     data = torch.tensor(data, dtype=torch.float)
     labels = torch.tensor(labels, dtype=torch.long)
 
-    # create 70/20/10 train/test/validation split
-    # first create 70/30 train/(test + validation)
-    x_train, x_test, y_train, y_test = train_test_split(
-        data, labels, test_size=0.30, shuffle=True, stratify=labels)
-    # split test and validation 2/1
-    x_test, x_validation, y_test, y_validation = train_test_split(
-        x_test, y_test, test_size=0.33, shuffle=True, stratify=y_test)
+    if prepare_validation:
+        # create 70/20/10 train/validation/test split
+        # first create 70/30 train/(validation + test)
+        x_train, x_temp, y_train, y_temp = train_test_split(
+            data, labels, test_size=0.30, shuffle=True, stratify=labels)
+        # split temp into validation and test 2/1
+        x_validation, x_test, y_validation, y_test = train_test_split(
+            x_temp, y_temp, test_size=0.33, shuffle=True, stratify=y_temp)
 
-    ds_train = TensorDataset(x_train, y_train)
-    ds_test = TensorDataset(x_test, y_test)
-    ds_validation = TensorDataset(x_validation, y_validation)
+        ds_train = TensorDataset(x_train, y_train)
+        ds_validation = TensorDataset(x_validation, y_validation)
+        ds_test = TensorDataset(x_test, y_test)
 
-    return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
+        return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
+    
+    else:
+        # create 70/30 train/test
+        x_train, x_test, y_train, y_test = train_test_split(
+            data, labels, test_size=0.30, shuffle=True, stratify=labels)
+        
+        ds_train = TensorDataset(x_train, y_train)
+        ds_test = TensorDataset(x_test, y_test)
 
+        return ds_train, ds_test, labels, selected_chans, data_steps
 
 class SurrGradSpike(torch.autograd.Function):
     """

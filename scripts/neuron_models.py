@@ -637,7 +637,7 @@ class CuBaLIF_HW_Aware:
 
     def update_refractory_period_counter(self):
         """
-        Fully vectorized refractory‐period decrement + reset.
+        Fully vectorized refractory-period decrement + reset.
         """
         self.ref_per_counter = torch.clamp(self.ref_per_counter - 1, min=0)
         self.ref_per_counter = torch.where(self.rst > 0,
@@ -789,7 +789,7 @@ class CuBaRLIF_HW_Aware:
 
     def update_refractory_period_counter(self):
         """
-        Fully vectorized refractory‐period decrement + reset.
+        Fully vectorized refractory-period decrement + reset.
         """
         self.ref_per_counter = torch.clamp(self.ref_per_counter - 1, min=0)
         self.ref_per_counter = torch.where(self.rst > 0,

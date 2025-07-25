@@ -96,7 +96,7 @@ default_parser(parser)
 global dict_args
 dict_args = vars(parser.parse_args())
 
-dict_args.update({"eprop": True})
+dict_args.update({"eprop": False})
 dict_args.update({"batch_size": 4})
 dict_args.update({"lr": 0.0008})
 
@@ -111,7 +111,7 @@ else:
     print("Shuffle data randomly")
 
 # Load data and parameters
-file_dir_data = './data/'
+file_dir_data = './data/100Hz/'
 # file_type = 'data_braille_letters_th_new'
 file_type = 'data_braille_letters_100Hz_th'
 file_thr = str(threshold)
@@ -119,7 +119,7 @@ file_name = file_dir_data + file_type + file_thr + '.pkl'
 
 if __name__ == '__main__':
 
-    ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
+    ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
         dict_args, file_name, letter_written=letters)
 
     nb_inputs = nb_channels
@@ -128,4 +128,4 @@ if __name__ == '__main__':
 
     rsnn = SRNN(nb_inputs=nb_inputs, nb_hidden=nb_hidden,
                 nb_output=nb_outputs, dict_args=dict_args)
-    result_rsnn = rsnn.train(ds_train, ds_test)
+    result_rsnn = rsnn.train_bptt(ds_train, ds_test)

@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from neuron_models import LIF, RLIF, CuBaLIF, CuBaRLIF
+from utils.neuron_models import LIF, RLIF, CuBaLIF, CuBaRLIF
 from time import perf_counter
 
 

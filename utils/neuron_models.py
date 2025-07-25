@@ -40,8 +40,30 @@ class SurrGradSpike(torch.autograd.Function):
         grad = grad_input/(SurrGradSpike.scale*torch.abs(input)+1.0)**2
         return grad
 
-
 spike_fn = SurrGradSpike.apply
+
+
+class STEFunction(torch.autograd.Function):
+    """
+    Here we define the Straight-Through Estimator (STE) function.
+    This function allows us to ignore the non-differentiable part
+    in our network, i.e. the discretization of the weights.
+    The function applys the discretization and the clamping.
+    """
+    @staticmethod
+    def forward(ctx, input, possible_weight_values):
+        diffs = torch.abs(input.unsqueeze(-1) - possible_weight_values)
+        min_indices = torch.argmin(diffs, dim=-1)
+        ctx.save_for_backward(input, possible_weight_values, min_indices)
+        return possible_weight_values[min_indices]
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, possible_weight_values, min_indices = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        return grad_input, None
+
+ste_fn = STEFunction.apply
 
 
 class LI:

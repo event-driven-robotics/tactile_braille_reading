@@ -189,7 +189,8 @@ def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, A, ref_count):
         # Bellec; solution to the learning dilemma, page 13. eq 24
         # psi[t] * z[t-1] = e[t]
         # eta[t+1] = e[t] + (rho - psi[t] * beta)*eta[t]
-        trace_rec_a[:,:,t] = trace_rec[:,:,t-1] * h.permute(1,2,0)[:,:,t-1] + (beta_adaptive_thr - h.permute(1,2,0)[:,:,t-1] * dump_thr) * trace_rec_a[:,:,t-1]
+        #i should consider just the first n_alif neuron here
+        trace_rec_a[:,:n_rec_alif,t] = trace_rec[:,:n_rec_alif,t-1] * h.permute(1,2,0)[:,:n_rec_alif,t-1] + (beta_adaptive_thr - h.permute(1,2,0)[:,:n_rec_alif,t-1] * dump_thr) * trace_rec_a[:,:n_rec_alif,t-1]
 
     # Bellec; solution to the learning dilemma, page 13. eq 25 in two lines. First the part in the brackets
     trace_rec = trace_rec - (dump_thr * trace_rec_a)  # x = (z[t-1] - beta*eta[t])

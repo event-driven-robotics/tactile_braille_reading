@@ -584,12 +584,9 @@ class CuBaLIF_HW_Aware:
         syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons).
-        syn_rec (list): List to record synaptic currents over time.
-        mem_rec (list): List to record membrane potentials over time.
-        out_rec (list): List to record spike outputs over time.
     """
 
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, alpha, firing_threshold, beta, device, dtype, lower_bound=None, ref_per_timesteps=None, weights= None, requires_grad=True):
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, alpha, firing_threshold, beta, device, dtype, lower_bound=None, ref_per_timesteps=None, weights=None, requires_grad=True):
         """
         Initialize the feedforward layer with weights and parameters.
 
@@ -613,12 +610,13 @@ class CuBaLIF_HW_Aware:
         self.device = device
         self.dtype = dtype
 
-        self.firing_threshold = firing_threshold * torch.ones((batch_size, self.nb_neurons), device = device, dtype=dtype)
+        self.firing_threshold = firing_threshold * \
+            torch.ones((batch_size, self.nb_neurons),
+                       device=device, dtype=dtype)
 
         if self.ref_per_timesteps is not None:
             self.ref_per_counter = torch.zeros(
                 (batch_size, nb_neurons), device=device, dtype=dtype)
-
 
         if weights is not None:
             self.ff_weights = weights[0]
@@ -637,6 +635,16 @@ class CuBaLIF_HW_Aware:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
+    def update_refractory_period_counter(self):
+        """
+        Fully vectorized refractory‐period decrement + reset.
+        """
+        self.ref_per_counter = torch.clamp(self.ref_per_counter - 1, min=0)
+        self.ref_per_counter = torch.where(self.rst > 0,
+                                           self.ref_per_timesteps,
+                                           self.ref_per_counter)
+        return self.ref_per_counter
+
     def update(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
@@ -650,9 +658,9 @@ class CuBaLIF_HW_Aware:
                 - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
                 - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
         """
-        self.syn   = self.syn[:h1.shape[0],:]
-        self.mem   = self.mem[:h1.shape[0],:]
-        self.rst   = self.rst[:h1.shape[0],:]
+        self.syn = self.syn[:h1.shape[0], :]
+        self.mem = self.mem[:h1.shape[0], :]
+        self.rst = self.rst[:h1.shape[0], :]
 
         mthr = self.mem - self.firing_threshold
         out = spike_fn(mthr)
@@ -660,30 +668,26 @@ class CuBaLIF_HW_Aware:
         h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer)
 
         if self.ref_per_timesteps is not None:
-            self.update_refractory_perdiod_counter()
-            # only update the membrane potential if not in refractory period
-            # take care of last batch
-            mask = self.ref_per_counter[:self.syn.shape[0], :self.syn.shape[1]] == 0.0
-            self.syn = self.alpha * self.syn
-            self.syn[mask] = (self.alpha*self.syn[mask] + h1[mask])
+            # 1) decrement and reset the refractory counter in one kernel
+            self.update_refractory_period_counter()
+            # 2) update syn in two in‐place ops (fast on GPU)
+            mask_ready = (self.ref_per_counter == 0).float()
+            # syn = alpha * syn
+            self.syn.mul_(self.alpha)
+            # syn += h1 * mask_ready
+            self.syn.addcmul_(mask_ready, h1, value=1.0)
+
         else:
             self.syn = self.alpha*self.syn + h1
 
-        if self.lower_bound:
-            # clamp membrane potential
-            self.mem[self.mem < self.lower_bound] = self.lower_bound
-
+        # 3) membrane update as usual
         self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
 
+        if self.lower_bound:
+            # clamp membrane potential
+            self.mem = torch.clamp(self.mem, min=self.lower_bound)
 
         return self.rst, self.syn, self.mem
-
-
-    def update_refractory_perdiod_counter(self):
-        self.ref_per_counter = self.ref_per_counter[:self.rst.shape[0], :self.rst.shape[1]]
-        self.ref_per_counter[self.ref_per_counter > 0.0] -= 1
-        self.ref_per_counter[self.rst > 0.0] = self.ref_per_timesteps
-        return self.ref_per_counter
 
 
 class CuBaRLIF_HW_Aware:
@@ -710,9 +714,6 @@ class CuBaRLIF_HW_Aware:
         syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
         mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
         rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons).
-        syn_rec (list): List to record synaptic currents over time.
-        mem_rec (list): List to record membrane potentials over time.
-        out_rec (list): List to record spike outputs over time.
     """
 
     def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, firing_threshold, beta_thr, dump_thr, beta, device, dtype, n_alif=0, lower_bound=None, ref_per_timesteps=None, weights=None, requires_grad=True):
@@ -749,12 +750,13 @@ class CuBaRLIF_HW_Aware:
         self.device = device
         self.dtype = dtype
 
-        self.firing_threshold = firing_threshold * torch.ones((batch_size, self.nb_neurons), device = device, dtype=dtype)
+        self.firing_threshold = firing_threshold * \
+            torch.ones((batch_size, self.nb_neurons),
+                       device=device, dtype=dtype)
 
         if ref_per_timesteps is not None:
             self.ref_per_counter = torch.zeros(
                 (batch_size, nb_neurons), device=device, dtype=dtype)
-
 
         # Initialize feedforward and recurrent weights
         if weights is not None:
@@ -772,11 +774,11 @@ class CuBaRLIF_HW_Aware:
             torch.nn.init.normal_(self.rec_weights, mean=0.0,
                                   std=rec_scale / np.sqrt(nb_neurons))
 
-
         # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
         # self.rec_layer[torch.arange(nb_neurons),
         #                torch.arange(nb_neurons)] = 0.0
-        self.a_thr = torch.zeros((batch_size, n_alif), device=device, dtype=dtype)
+        self.a_thr = torch.zeros((batch_size, n_alif),
+                                 device=device, dtype=dtype)
         # Initialize synaptic current, membrane potential, and spike output
         self.syn = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
@@ -784,6 +786,16 @@ class CuBaRLIF_HW_Aware:
                                device=device, dtype=dtype)
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
+
+    def update_refractory_period_counter(self):
+        """
+        Fully vectorized refractory‐period decrement + reset.
+        """
+        self.ref_per_counter = torch.clamp(self.ref_per_counter - 1, min=0)
+        self.ref_per_counter = torch.where(self.rst > 0,
+                                           self.ref_per_timesteps,
+                                           self.ref_per_counter)
+        return self.ref_per_counter
 
     def update(self, input_activity_t):
         """
@@ -803,46 +815,39 @@ class CuBaRLIF_HW_Aware:
         h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer) + \
             torch.einsum("ab,bc->ac", self.rst, self.rec_layer)
 
-        self.a_thr = self.a_thr[:h1.shape[0],:]
-        self.syn   = self.syn[:h1.shape[0],:]
-        self.mem   = self.mem[:h1.shape[0],:]
-        self.rst   = self.rst[:h1.shape[0],:]
-        self.firing_threshold = self.firing_threshold[:h1.shape[0],:]
+        self.a_thr = self.a_thr[:h1.shape[0], :]
+        self.syn = self.syn[:h1.shape[0], :]
+        self.mem = self.mem[:h1.shape[0], :]
+        self.rst = self.rst[:h1.shape[0], :]
+        self.firing_threshold = self.firing_threshold[:h1.shape[0], :]
 
-        if(self.n_alif > 0):
+        if (self.n_alif > 0):
             # Update synaptic current and membrane potential
-            self.a_thr = (self.beta_thr*self.a_thr) + self.rst[:,:self.n_alif]  # a[t+1] = rho*a[t] + s[t], a[t] = rho*a[t-1] + s[t-1]
-            self.firing_threshold[:,:self.n_alif] = self.firing_threshold +self.dump_thr * self.a_thr  # A[t] = v_th + beta*a[t]
+            # a[t+1] = rho*a[t] + s[t], a[t] = rho*a[t-1] + s[t-1]
+            self.a_thr = (self.beta_thr*self.a_thr) + self.rst[:, :self.n_alif]
+            self.firing_threshold[:, :self.n_alif] = self.firing_threshold + \
+                self.dump_thr * self.a_thr  # A[t] = v_th + beta*a[t]
 
-        self.syn = self.alpha * self.syn + h1
         mthr = self.mem - self.firing_threshold
         out = spike_fn(mthr)
         self.rst = out.detach()  # Reset spikes
 
         if self.ref_per_timesteps is not None:
-            self.update_refractory_perdiod_counter()
-            # only update the membrane potential if not in refractory period
-            # take care of last batch
-            mask = self.ref_per_counter[:self.syn.shape[0], :self.syn.shape[1]] == 0.0
-            self.syn = self.alpha * self.syn
-            self.syn[mask] = (self.alpha*self.syn[mask] + h1[mask])
+            # 1) decrement and reset the refractory counter in one kernel
+            self.update_refractory_period_counter()
+            # 2) update syn in two in‐place ops (fast on GPU)
+            mask_ready = (self.ref_per_counter == 0).float()
+            # syn = alpha * syn
+            self.syn.mul_(self.alpha)
+            # syn += h1 * mask_ready
+            self.syn.addcmul_(mask_ready, h1, value=1.0)
         else:
-            self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
+            self.syn = self.alpha*self.syn + h1
+
+        self.mem = (self.beta * self.mem + self.syn) * (1.0 - self.rst)
 
         if self.lower_bound:
             # clamp membrane potential
-            self.mem[self.mem < self.lower_bound] = self.lower_bound
-
-        # Record values
-        # self.syn_rec.append(self.syn.detach().cpu().numpy())
-        # self.mem_rec.append(self.mem.detach().cpu().numpy())
-        # self.out_rec.append(self.rst.cpu().numpy())
+            self.mem = torch.clamp(self.mem, min=self.lower_bound)
 
         return self.rst, self.syn, self.mem
-
-
-    def update_refractory_perdiod_counter(self):
-        self.ref_per_counter = self.ref_per_counter[:self.rst.shape[0], :self.rst.shape[1]]
-        self.ref_per_counter[self.ref_per_counter > 0.0] -= 1
-        self.ref_per_counter[self.rst > 0.0] = self.ref_per_timesteps
-        return self.ref_per_counter

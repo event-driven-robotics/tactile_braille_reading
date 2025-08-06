@@ -902,3 +902,282 @@ class CuBaRLIF_HW_Aware:
             self.mem = torch.clamp(self.mem, min=self.lower_bound)
 
         return out, self.syn, self.mem
+
+
+class CuBaLIF_HW_Aware_OG:
+    """
+    Class to initialize and compute spiking feedforward layer of CUBA LIF neurons.
+
+    This class implements a feedforward layer of Current-Based Leaky Integrate-and-Fire (CUBA LIF) neurons.
+    It supports the computation of synaptic currents, membrane potentials, and spike outputs over time.
+    The layer uses surrogate gradients for backpropagation through spikes.
+
+    Attributes:
+        nb_inputs (int): Number of input neurons.
+        nb_neurons (int): Number of feedforward neurons.
+        alpha (float): Synaptic decay constant.
+        beta (float): Membrane decay constant.
+        device (torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
+        dtype (torch.dtype): Data type for tensors (e.g., torch.float).
+        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
+        mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
+        rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons).
+        syn_rec (list): List to record synaptic currents over time.
+        mem_rec (list): List to record membrane potentials over time.
+        out_rec (list): List to record spike outputs over time.
+    """
+
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, alpha, firing_threshold, beta, device, dtype, lower_bound=None, ref_per_timesteps=None, weights=None, requires_grad=True):
+        """
+        Initialize the feedforward layer with weights and parameters.
+
+        Args:
+            batch_size (int): Batch size for input data.
+            nb_inputs (int): Number of input neurons.
+            nb_neurons (int): Number of feedforward neurons.
+            fwd_scale (float): Scaling factor for feedforward weight initialization.
+            alpha (float): Synaptic decay constant.
+            firing_threshold (float): Firing threshold for neurons.
+            beta (float): Membrane decay constant.
+            device (torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
+            dtype (torch.dtype): Data type for tensors (e.g., torch.float).
+            lower_bound (float): Lower bound for membrane potential.
+            ref_per_timesteps (int): Refractory period in time steps.
+            weights (torch.Tensor, optional): Predefined weights.
+        """
+
+        self.nb_inputs = nb_inputs
+        self.nb_neurons = nb_neurons
+        self.alpha = alpha
+        self.beta = beta
+        self.lower_bound = lower_bound
+        self.ref_per_timesteps = ref_per_timesteps
+        self.device = device
+        self.dtype = dtype
+        self.theta = firing_threshold
+        self.firing_threshold = firing_threshold * torch.ones((batch_size, self.nb_neurons), device = device, dtype=dtype)
+
+        if self.ref_per_timesteps is not None:
+            self.ref_per_counter = torch.zeros(
+                (batch_size, nb_neurons), device=device, dtype=dtype)
+
+
+        if weights is not None:
+            self.ff_weights = torch.nn.Parameter(weights.to(device=device, dtype=dtype))
+        else:
+            # Initialize feedforward
+            self.ff_weights = torch.empty((nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
+
+            torch.nn.init.normal_(self.ff_weights, mean=0.0, std=fwd_scale / np.sqrt(nb_inputs))
+
+        # Initialize the synaptic current and membrane potential
+        self.syn     = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.mem     = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.rst     = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.new_mem = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.n_spike = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+
+    def step(self, input_activity_t):
+        """
+        Compute the activity of the feedforward layer for a single time step.
+
+        Args:
+            input_activity_t (torch.Tensor): Input activity tensor of shape (batch_size, nb_inputs) for a single time step.
+
+        Returns:
+            tuple:
+                - out (torch.Tensor): Spike output of shape (batch_size, nb_neurons).
+                - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
+                - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
+        """
+        mthr = self.mem - self.firing_threshold
+        out = spike_fn(mthr)
+
+        self.n_spike[out == 1.0] = self.n_spike[out == 1.0] + 1
+
+        self.rst = out.detach()
+
+        if self.ref_per_timesteps is not None:
+            self.update_refractory_period_counter()
+            # only update the membrane potential if not in refractory period
+            # take care of last batch
+            mask = self.ref_per_counter[:self.syn.shape[0], :self.syn.shape[1]] == 0.0
+            new_syn = self.alpha * self.syn
+            new_syn[mask] = (self.alpha*self.syn[mask] + input_activity_t[mask])
+        else:
+            new_syn = self.alpha*self.syn + input_activity_t
+
+        self.mem = (self.beta*self.mem + self.syn)*(1.0-self.rst)
+
+        if self.lower_bound:
+            # clamp membrane potential
+            self.mem[self.mem < self.lower_bound] = self.lower_bound
+
+        self.syn = new_syn
+        return out.clone(), self.syn, self.mem, self.n_spike
+
+
+    def update_refractory_period_counter(self):
+        """
+        Fully vectorized refractory‐period decrement + reset.
+        """
+        self.ref_per_counter = torch.clamp(self.ref_per_counter - 1, min=0)
+        self.ref_per_counter = torch.where(self.rst > 0,
+                                           self.ref_per_timesteps,
+                                           self.ref_per_counter)
+        return self.ref_per_counter
+
+class CuBaRLIF_HW_Aware_OG:
+    """
+    Class to initialize and compute spiking recurrent layer of CUBA LIF neurons.
+
+    This class implements a recurrent layer of Current-Based Leaky Integrate-and-Fire (CUBA LIF) neurons.
+    It supports the computation of synaptic currents, membrane potentials, and spike outputs over time,
+    with both feedforward and recurrent connections. The layer uses surrogate gradients for backpropagation
+    through spikes.
+
+    Attributes:
+        nb_inputs (int): Number of input neurons.
+        nb_neurons (int): Number of recurrent neurons.
+        alpha (float): Synaptic decay constant.
+        firing_threshold (torch.Tensor): Firing threshold tensor of shape (batch_size, nb_neurons).
+        beta_thr (float): Threshold decay constant for ALIF neuron.
+        dump_thr (float): Dumping threshold for ALIF neuron.
+        beta (float): Membrane decay constant.
+        device (torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
+        dtype (torch.dtype): Data type for tensors (e.g., torch.float).
+        ff_layer (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        rec_layer (torch.Tensor): Recurrent weight matrix of shape (nb_neurons, nb_neurons).
+        syn (torch.Tensor): Synaptic current tensor of shape (batch_size, nb_neurons).
+        mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
+        rst (torch.Tensor): Reset state tensor of shape (batch_size, nb_neurons).
+        syn_rec (list): List to record synaptic currents over time.
+        mem_rec (list): List to record membrane potentials over time.
+        out_rec (list): List to record spike outputs over time.
+    """
+
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, firing_threshold, beta, device, dtype, lower_bound=None, ref_per_timesteps=None, weights=None, requires_grad=True):
+        """
+        Initialize the recurrent layer with weights and parameters.
+
+        Args:
+            batch_size (int): Batch size for input data.
+            nb_inputs (int): Number of input neurons.
+            nb_neurons (int): Number of recurrent neurons.
+            fwd_scale (float): Scaling factor for feedforward weight initialization.
+            rec_scale (float): Scaling factor for recurrent weight initialization.
+            alpha (float): Synaptic decay constant.
+            firing_threshold (float): Firing threshold for neurons.
+            beta (float): Membrane decay constant.
+            device (torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
+            dtype (torch.dtype): Data type for tensors (e.g., torch.float).
+            lower_bound (float): Lower bound for membrane potential.
+            ref_per_timesteps (int): Refractory period in time steps.
+        """
+
+        self.nb_inputs = nb_inputs
+        self.nb_neurons = nb_neurons
+        self.lower_bound = lower_bound
+        self.ref_per_timesteps = ref_per_timesteps
+        self.alpha = alpha
+        self.beta = beta
+        self.device = device
+        self.dtype = dtype
+        self.theta = firing_threshold
+        self.firing_threshold = self.theta * torch.ones((batch_size, self.nb_neurons), device = device, dtype=dtype)
+
+        if self.ref_per_timesteps is not None:
+            self.ref_per_counter = torch.zeros(
+                (batch_size, nb_neurons), device=device, dtype=dtype)
+
+
+        if weights is not None:
+            self.ff_weights = torch.nn.Parameter(weights[0].to(device=device, dtype=dtype))
+            self.rec_weights = torch.nn.Parameter(weights[1].to(device=device, dtype=dtype))
+        else:
+            # Initialize feedforward and recurrent weights
+            self.ff_weights = torch.empty((nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
+
+            torch.nn.init.normal_(self.ff_weights, mean=0.0, std=fwd_scale / np.sqrt(nb_inputs))
+
+            self.rec_weights = torch.empty((nb_neurons, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
+
+            torch.nn.init.normal_(self.rec_weights, mean=0.0, std=fwd_scale*rec_scale / np.sqrt(nb_inputs))
+
+        # # ensure, that recurrent connections to a neuron itself are zero (no self connections)
+        # self.rec_layer[torch.arange(nb_neurons),
+        #                torch.arange(nb_neurons)] = 0.0
+        # Initialize synaptic current, membrane potential, and spike output
+        self.syn = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.mem = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.rst = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+        self.new_mem = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+
+        self.out = torch.zeros((batch_size, nb_neurons),
+                                 device=device, dtype=dtype)
+
+    def step(self, input_activity_t, rec_weights):
+        """
+        Compute the activity of the recurrent layer for a single time step.
+
+        Args:
+            input_activity_t (torch.Tensor): Input activity tensor of shape (batch_size, nb_inputs) for a single time step.
+
+        Returns:
+            tuple:
+                - out (torch.Tensor): Spike output of shape (batch_size, nb_neurons).
+                - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
+                - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
+        """
+        # Compute input and recurrent contributions
+        h1 = input_activity_t + \
+            torch.einsum("ab,bc->ac", self.out[:input_activity_t.shape[0],:], rec_weights)
+
+        mthr = self.mem - self.firing_threshold
+        self.out = spike_fn(mthr)
+        self.rst = self.out.detach()  # Reset spikes
+
+        if self.ref_per_timesteps is not None:
+            self.update_refractory_period_counter()
+            # only update the membrane potential if not in refractory period
+            # take care of last batch
+            mask = self.ref_per_counter[:self.syn.shape[0], :self.syn.shape[1]] == 0.0
+            new_syn = self.alpha * self.syn
+            new_syn[mask] = (self.alpha*self.syn[mask] + h1[mask])
+        else:
+            new_syn = self.alpha*self.syn + h1
+
+        self.mem = (self.beta*self.mem + self.syn)*(1.0-self.rst)
+
+        if self.lower_bound:
+            # clamp membrane potential
+            self.mem[self.mem < self.lower_bound] = self.lower_bound
+        # Record values
+        # self.syn_rec.append(self.syn.detach().cpu().numpy())
+        # self.mem_rec.append(self.mem.detach().cpu().numpy())
+        # self.out_rec.append(self.rst.cpu().numpy())
+
+        self.syn = new_syn
+
+        return self.out.clone(), self.syn, self.mem
+
+
+    def update_refractory_period_counter(self):
+        """
+        Fully vectorized refractory‐period decrement + reset.
+        """
+        self.ref_per_counter = torch.clamp(self.ref_per_counter - 1, min=0)
+        self.ref_per_counter = torch.where(self.rst > 0,
+                                           self.ref_per_timesteps,
+                                           self.ref_per_counter)
+        return self.ref_per_counter

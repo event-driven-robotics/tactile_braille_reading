@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from utils.data_management import load_and_extract
-from utils.network_definition import SRNN
+from utils.network_definition import SRNN, SRNN_OG
 
 torch.cuda.empty_cache()
 # torch.autograd.set_detect_anomaly(True)
@@ -96,9 +96,9 @@ default_parser(parser)
 global dict_args
 dict_args = vars(parser.parse_args())
 
-dict_args.update({"eprop": False})
-dict_args.update({"batch_size": 4})
-dict_args.update({"lr": 0.0008})
+#dict_args.update({"eprop": False})
+#dict_args.update({"batch_size": 4})
+#dict_args.update({"lr": 0.0008})
 
 # use fixed seed for reproducable results
 if use_seed:
@@ -117,6 +117,8 @@ file_type = 'data_braille_letters_100Hz_th'
 file_thr = str(threshold)
 file_name = file_dir_data + file_type + file_thr + '.pkl'
 
+test_og = True
+
 if __name__ == '__main__':
 
     ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
@@ -125,7 +127,12 @@ if __name__ == '__main__':
     nb_inputs = nb_channels
     nb_hidden = 450
     nb_outputs = len(np.unique(labels))
-
-    rsnn = SRNN(nb_inputs=nb_inputs, nb_hidden=nb_hidden,
-                nb_output=nb_outputs, dict_args=dict_args)
-    result_rsnn = rsnn.train_bptt(ds_train, ds_test)
+    if test_og:
+        # Use the original SRNN class
+        rsnn = SRNN_OG(nb_inputs=nb_inputs, nb_hidden=nb_hidden,
+                          nb_output=nb_outputs, dict_args=dict_args)
+        loss_hist, accs_hist, best_acc_layers = rsnn.train(ds_train, ds_test, labels, possible_weight)
+    else:
+        rsnn = SRNN(nb_inputs=nb_inputs, nb_hidden=nb_hidden,
+                    nb_output=nb_outputs, dict_args=dict_args)
+        result_rsnn = rsnn.train_bptt(ds_train, ds_test)

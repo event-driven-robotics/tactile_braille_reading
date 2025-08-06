@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from utils.neuron_models import CuBaLIF, CuBaRLIF
+from utils.neuron_models import CuBaLIF_HW_Aware, CuBaRLIF_HW_Aware
 
 
 class SRNN:
@@ -47,7 +47,7 @@ class SRNN:
         compute_classification_accuracy(dataset):
             Evaluate classification accuracy on a dataset.
     """
-        
+
     def __init__(self, nb_inputs, nb_hidden, nb_output, dict_args):
         """
         Initialize the SRNN model with architecture parameters, dynamics constants,
@@ -112,21 +112,20 @@ class SRNN:
         self.beta_trace = float(np.exp(-time_step / self.tau_trace))
         self.beta_trace_rec = float(np.exp(-time_step / self.tau_trace_rec))
 
-        with open('test_init_weight.pkl', 'rb') as f:
-            layers = pickle.load(f)
+        # with open('test_init_weight.pkl', 'rb') as f:
+        #     layers = pickle.load(f)
 
-        self.ff_layer = CuBaLIF(batch_size=self.batch_size, nb_inputs=self.nb_hidden, nb_neurons=self.nb_output,
-                                fwd_scale=self.fwd_weight_scale, alpha=self.alpha, firing_threshold=self.firing_threshold,
-                                beta=self.beta, device=self.device, dtype=self.dtype, lower_bound=self.lower_bound,
-                                ref_per_timesteps=self.ref_per_timesteps, weights=layers[1], requires_grad=True)
+        self.ff_layer = CuBaLIF_HW_Aware(batch_size=self.batch_size, nb_inputs=self.nb_hidden, nb_neurons=self.nb_output,
+                                         fwd_scale=self.fwd_weight_scale, alpha=self.alpha, firing_threshold=self.firing_threshold,
+                                         beta=self.beta, device=self.device, dtype=self.dtype, lower_bound=self.lower_bound,
+                                         ref_per_timesteps=self.ref_per_timesteps, weights=None, requires_grad=True)
 
-        self.rec_layer = CuBaRLIF(batch_size=self.batch_size, nb_inputs=self.nb_inputs, nb_neurons=self.nb_hidden,
-                                  fwd_scale=self.fwd_weight_scale, rec_scale=self.weight_scale_factor, alpha=self.alpha,
-                                  firing_threshold=self.firing_threshold, beta_thr=self.beta_adaptive_thr,
-                                  dump_thr=self.dump_thr, beta=self.beta, device=self.device, dtype=self.dtype,
-                                  lower_bound=self.lower_bound, ref_per_timesteps=self.ref_per_timesteps, weights=[
-                                      layers[0], layers[2]],
-                                  requires_grad=True)
+        self.rec_layer = CuBaRLIF_HW_Aware(batch_size=self.batch_size, nb_inputs=self.nb_inputs, nb_neurons=self.nb_hidden,
+                                           fwd_scale=self.fwd_weight_scale, rec_scale=self.weight_scale_factor, alpha=self.alpha,
+                                           firing_threshold=self.firing_threshold, beta_thr=self.beta_adaptive_thr,
+                                           dump_thr=self.dump_thr, beta=self.beta, device=self.device, dtype=self.dtype,
+                                           lower_bound=self.lower_bound, ref_per_timesteps=self.ref_per_timesteps, weights=None,
+                                           requires_grad=True)
 
     def forward(self, input):
         """
@@ -144,12 +143,12 @@ class SRNN:
         Returns:
             tuple:
                 rec_outputs (list of torch.Tensor):
-                    [rec_spk_tot, rec_syn_tot, rec_mem_tot]
+                    [rec_spk_rec, rec_syn_rec, rec_mem_rec]
                     Each tensor has shape (batch_size, timesteps, nb_hidden)
                     containing, respectively, the hidden-layer spike trains,
                     synaptic currents, and membrane potentials.
                 ff_outputs (list of torch.Tensor):
-                    [ff_spk_tot, ff_syn_tot, ff_mem_tot, ff_nb_spk_tot]
+                    [ff_spk_rec, ff_syn_rec, ff_mem_rec]
                     Each tensor has shape (batch_size, timesteps, nb_output)
                     where the last entry is the per-time-step spike count.
         """
@@ -157,70 +156,63 @@ class SRNN:
         bs = input.shape[0]
 
         # Reset from previous batch
-        self.rec_layer.syn = torch.zeros(
-            (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
-        self.rec_layer.mem = torch.zeros(
-            (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
-        self.rec_layer.rst = torch.zeros(
-            (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
-        self.rec_layer.ref_per_counter = torch.zeros(
-            (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
-        self.rec_layer.firing_threshold = self.rec_layer.theta * \
-            torch.ones((bs, self.nb_hidden),
-                       device=self.device, dtype=self.dtype)
-        self.rec_layer.out = torch.zeros(
-            (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        # self.rec_layer.syn = torch.zeros(
+        #     (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        # self.rec_layer.mem = torch.zeros(
+        #     (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        # self.rec_layer.rst = torch.zeros(
+        #     (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        # self.rec_layer.ref_per_counter = torch.zeros(
+        #     (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        # self.rec_layer.firing_threshold = self.rec_layer.firing_threshold * \
+        #     torch.ones((bs, self.nb_hidden),
+        #                device=self.device, dtype=self.dtype)
+        # self.rec_layer.out = torch.zeros(
+        #     (bs, self.nb_hidden), device=self.device, dtype=self.dtype)
 
-        self.ff_layer.syn = torch.zeros(
-            (bs, self.nb_output), device=self.device, dtype=self.dtype)
-        self.ff_layer.mem = torch.zeros(
-            (bs, self.nb_output), device=self.device, dtype=self.dtype)
-        self.ff_layer.rst = torch.zeros(
-            (bs, self.nb_output), device=self.device, dtype=self.dtype)
-        self.ff_layer.ref_per_counter = torch.zeros(
-            (bs, self.nb_output), device=self.device, dtype=self.dtype)
-        self.ff_layer.firing_threshold = self.ff_layer.theta * \
-            torch.ones((bs, self.nb_output),
-                       device=self.device, dtype=self.dtype)
-        self.ff_layer.n_spike = torch.zeros(
-            (bs, self.nb_output), device=self.device, dtype=self.dtype)
-
+        # self.ff_layer.syn = torch.zeros(
+        #     (bs, self.nb_output), device=self.device, dtype=self.dtype)
+        # self.ff_layer.mem = torch.zeros(
+        #     (bs, self.nb_output), device=self.device, dtype=self.dtype)
+        # self.ff_layer.rst = torch.zeros(
+        #     (bs, self.nb_output), device=self.device, dtype=self.dtype)
+        # self.ff_layer.ref_per_counter = torch.zeros(
+        #     (bs, self.nb_output), device=self.device, dtype=self.dtype)
+        # self.ff_layer.firing_threshold = self.ff_layer.firing_threshold * \
+        #     torch.ones((bs, self.nb_output),
+        #                device=self.device, dtype=self.dtype)
+        # self.ff_layer.n_spike = torch.zeros(
+        #     (bs, self.nb_output), device=self.device, dtype=self.dtype)
+        
+        self.ff_layer.reset()
+        self.rec_layer.reset()
         # add them as rsnn attribute?
-        rec_spk_tot = torch.zeros(
+        rec_spk_rec = torch.zeros(
             (bs, nb_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
-        rec_syn_tot = torch.zeros(
+        rec_syn_rec = torch.zeros(
             (bs, nb_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
-        rec_syn_tot = torch.zeros(
-            (bs, nb_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
-        rec_mem_tot = torch.zeros(
+        rec_mem_rec = torch.zeros(
             (bs, nb_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
 
-        ff_spk_tot = torch.zeros(
+        ff_spk_rec = torch.zeros(
             (bs, nb_steps, self.nb_output), dtype=self.dtype, device=self.device)
-        ff_syn_tot = torch.zeros(
+        ff_syn_rec = torch.zeros(
             (bs, nb_steps, self.nb_output), dtype=self.dtype, device=self.device)
-        ff_mem_tot = torch.zeros(
+        ff_mem_rec = torch.zeros(
             (bs, nb_steps, self.nb_output), dtype=self.dtype, device=self.device)
-        ff_nb_spk_tot = torch.zeros(
-            (bs, nb_steps, self.nb_output), dtype=self.dtype, device=self.device)
-
-        h = torch.einsum("abc,cd->abd", input, self.rec_layer.ff_weights)
 
         for t in range(nb_steps):
-            rec_spk, rec_syn, rec_mem = self.rec_layer.step(h[:, t, :], t)
-            rec_spk_tot[:, t, :] = rec_spk
-            rec_syn_tot[:, t, :] = rec_syn
-            rec_mem_tot[:, t, :] = rec_mem
+            # input to hidden
+            rec_spk, rec_syn, rec_mem = self.rec_layer.step(input[:, t, :])
+            rec_spk_rec[:, t, :] = rec_spk
+            rec_syn_rec[:, t, :] = rec_syn
+            rec_mem_rec[:, t, :] = rec_mem
+            # hidden to output
 
-        h1 = torch.einsum("abc,cd->abd", rec_spk_tot, self.ff_layer.ff_weights)
-
-        for t in range(nb_steps):
-            ff_spk, ff_syn, ff_mem, ff_nb_spk = self.ff_layer.step(h1[:, t, :])
-
-            ff_spk_tot[:, t, :] = ff_spk
-            ff_syn_tot[:, t, :] = ff_syn
-            ff_mem_tot[:, t, :] = ff_mem
-            ff_nb_spk_tot[:, t, :] = ff_nb_spk
+            ff_spk, ff_syn, ff_mem = self.ff_layer.step(rec_spk)
+            ff_spk_rec[:, t, :] = ff_spk
+            ff_syn_rec[:, t, :] = ff_syn
+            ff_mem_rec[:, t, :] = ff_mem
 
         '''
         with open('other_recs.pkl', 'rb') as f:
@@ -231,12 +223,12 @@ class SRNN:
 
         [mem_rec_hidden, spk_rec_hidden, mem_rec_readout] = other_recs
 
-        print("mem_rec_hidden are equal: ", torch.equal(rec_mem_tot, mem_rec_hidden))
-        print("spk_rec_hidden are equal: ", torch.equal(rec_spk_tot, spk_rec_hidden))
-        print("mem_rec_readout are equal: ", torch.equal(ff_mem_tot, mem_rec_readout))
-        print("spk_rec_readout are equal: ", torch.equal(ff_spk_tot, spk_rec_readout))
+        print("mem_rec_hidden are equal: ", torch.equal(rec_mem_rec, mem_rec_hidden))
+        print("spk_rec_hidden are equal: ", torch.equal(rec_spk_rec, spk_rec_hidden))
+        print("mem_rec_readout are equal: ", torch.equal(ff_mem_rec, mem_rec_readout))
+        print("spk_rec_readout are equal: ", torch.equal(ff_spk_rec, spk_rec_readout))
         '''
-        return [rec_spk_tot, rec_syn_tot, rec_mem_tot], [ff_spk_tot, ff_syn_tot, ff_mem_tot, ff_nb_spk_tot]
+        return [rec_spk_rec, rec_syn_rec, rec_mem_rec], [ff_spk_rec, ff_syn_rec, ff_mem_rec]
 
     def train_bptt(self, dataset_train, dataset_test):
         """
@@ -293,9 +285,9 @@ class SRNN:
                 x_local, y_local = x_local.to(
                     self.device), y_local.to(self.device)
                 recs, ff = self.forward(x_local)
-                # [rec_spk_tot, rec_syn_tot, rec_mem_tot]
+                # [rec_spk_rec, rec_syn_rec, rec_mem_rec]
                 spk_rec_readout = ff[0]
-                # [rec_spk_tot, rec_syn_tot, rec_mem_tot]
+                # [rec_spk_rec, rec_syn_rec, rec_mem_rec]
                 spk_rec_hidden = recs[0]
                 m = torch.sum(spk_rec_readout, 1)  # sum over time
 
@@ -697,7 +689,7 @@ class SRNN:
             with torch.no_grad():
                 rec, ff = self.forward(x_local)
 
-            spk_rec_readout = ff[0]  # [rec_spk_tot, rec_syn_tot, rec_mem_tot]
+            spk_rec_readout = ff[0]  # [rec_spk_rec, rec_syn_rec, rec_mem_rec]
             m = torch.sum(spk_rec_readout, 1)  # sum over time
 
             max_val, am = torch.max(m, 1)     # argmax over output units

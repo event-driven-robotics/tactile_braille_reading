@@ -40,6 +40,7 @@ class SurrGradSpike(torch.autograd.Function):
         grad = grad_input/(SurrGradSpike.scale*torch.abs(input)+1.0)**2
         return grad
 
+
 spike_fn = SurrGradSpike.apply
 
 
@@ -62,6 +63,7 @@ class STEFunction(torch.autograd.Function):
         input, possible_weight_values, min_indices = ctx.saved_tensors
         grad_input = grad_output.clone()
         return grad_input, None
+
 
 ste_fn = STEFunction.apply
 
@@ -120,7 +122,7 @@ class LI:
         self.mem = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the membrane potential of the LI neuron layer for a single time step.
 
@@ -197,7 +199,7 @@ class CuBaLI:
         self.mem = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the synaptic current and membrane potential for the CuBaLI neuron layer for a single time step.
 
@@ -273,7 +275,7 @@ class LIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the membrane potential and spike output of the LIF neuron layer for a single time step.
 
@@ -358,7 +360,7 @@ class CuBaLIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the activity of the feedforward CuBaLIF layer for a single time step.
 
@@ -451,7 +453,7 @@ class RLIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the activity of the recurrent LIF layer for a single time step.
 
@@ -552,7 +554,7 @@ class CuBaRLIF:
         self.rst = torch.zeros((batch_size, nb_neurons),
                                device=device, dtype=dtype)
 
-    def update(self, input_activity_t):
+    def step(self, input_activity_t):
         """
         Compute the activity of the recurrent CuBaRLIF layer for a single time step.
 
@@ -667,7 +669,19 @@ class CuBaLIF_HW_Aware:
                                            self.ref_per_counter)
         return self.ref_per_counter
 
-    def update(self, input_activity_t):
+    def reset(self):
+        """
+        Reset the synaptic current, membrane potential, and reset state tensors.
+        This is useful for reinitializing the layer at the start of a new sequence or epoch.
+        """
+        self.syn.zero_()
+        self.mem.zero_()
+        self.rst.zero_()
+
+        if self.ref_per_timesteps is not None:
+            self.ref_per_counter.zero_()
+
+    def step(self, input_activity_t):
         """
         Compute the activity of the feedforward layer for a single time step.
 
@@ -680,6 +694,8 @@ class CuBaLIF_HW_Aware:
                 - syn (torch.Tensor): Updated synaptic current tensor of shape (batch_size, nb_neurons).
                 - mem (torch.Tensor): Updated membrane potential tensor of shape (batch_size, nb_neurons).
         """
+
+        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights)
         self.syn = self.syn[:h1.shape[0], :]
         self.mem = self.mem[:h1.shape[0], :]
         self.rst = self.rst[:h1.shape[0], :]
@@ -687,7 +703,6 @@ class CuBaLIF_HW_Aware:
         mthr = self.mem - self.firing_threshold
         out = spike_fn(mthr)
         self.rst = out.detach()
-        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer)
 
         if self.ref_per_timesteps is not None:
             # 1) decrement and reset the refractory counter in one kernel
@@ -709,7 +724,7 @@ class CuBaLIF_HW_Aware:
             # clamp membrane potential
             self.mem = torch.clamp(self.mem, min=self.lower_bound)
 
-        return self.rst, self.syn, self.mem
+        return out, self.syn, self.mem
 
 
 class CuBaRLIF_HW_Aware:
@@ -782,6 +797,7 @@ class CuBaRLIF_HW_Aware:
 
         # Initialize feedforward and recurrent weights
         if weights is not None:
+            # TODO ensure, that weights can be loaded/set seperatly. Now both must be set or not.
             self.ff_weights = weights[0]
             self.rec_weights = weights[1]
         else:
@@ -819,7 +835,20 @@ class CuBaRLIF_HW_Aware:
                                            self.ref_per_counter)
         return self.ref_per_counter
 
-    def update(self, input_activity_t):
+    def reset(self):
+        """
+        Reset the synaptic current, membrane potential, and reset state tensors.
+        This is useful for reinitializing the layer at the start of a new sequence or epoch.
+        """
+        self.syn.zero_()
+        self.mem.zero_()
+        self.rst.zero_()
+        self.a_thr.zero_()
+
+        if self.ref_per_timesteps is not None:
+            self.ref_per_counter.zero_()
+
+    def step(self, input_activity_t):
         """
         Compute the activity of the recurrent layer for a single time step.
 
@@ -834,8 +863,8 @@ class CuBaRLIF_HW_Aware:
         """
 
         # Compute input and recurrent contributions
-        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_layer) + \
-            torch.einsum("ab,bc->ac", self.rst, self.rec_layer)
+        h1 = torch.einsum("ab,bc->ac", input_activity_t, self.ff_weights) + \
+            torch.einsum("ab,bc->ac", self.rst, self.rec_weights)
 
         self.a_thr = self.a_thr[:h1.shape[0], :]
         self.syn = self.syn[:h1.shape[0], :]
@@ -872,4 +901,4 @@ class CuBaRLIF_HW_Aware:
             # clamp membrane potential
             self.mem = torch.clamp(self.mem, min=self.lower_bound)
 
-        return self.rst, self.syn, self.mem
+        return out, self.syn, self.mem

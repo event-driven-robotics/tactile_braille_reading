@@ -739,9 +739,13 @@ class SRNN_OG:
         self.beta_trace_rec = float(np.exp(-time_step / self.tau_trace_rec))
 
         self.data_steps = self.max_time // self.time_bin_size
+        if self.eprop:
+            with open('test_init_weight.pkl', 'rb') as f:
+                layers = pickle.load(f)
+        else:
+            with open('test_init_weight_bptt.pkl', 'rb') as f:
+                layers = pickle.load(f)
 
-        with open('test_init_weight.pkl', 'rb') as f:
-            layers = pickle.load(f)
 
         self.ff_layer = CuBaLIF_HW_Aware_OG(batch_size=self.batch_size, nb_inputs=self.nb_hidden, nb_neurons=self.nb_output,
                             fwd_scale=self.fwd_weight_scale, alpha=self.alpha, firing_threshold=self.firing_threshold,
@@ -750,7 +754,7 @@ class SRNN_OG:
 
         self.rec_layer = CuBaRLIF_HW_Aware_OG(batch_size=self.batch_size, nb_inputs=self.nb_inputs, nb_neurons=self.nb_hidden,
                            fwd_scale=self.fwd_weight_scale, rec_scale=self.weight_scale_factor, alpha=self.alpha,
-                           firing_threshold=self.firing_threshol, beta=self.beta, device=self.device, dtype=self.dtype,
+                           firing_threshold=self.firing_threshold, beta=self.beta, device=self.device, dtype=self.dtype,
                            lower_bound=self.lower_bound, ref_per_timesteps=self.ref_per_timesteps, weights=[layers[0], layers[2]],
                            requires_grad=True)
 
@@ -832,7 +836,7 @@ class SRNN_OG:
                                 total=len(generator), leave=False)
             for x_local, y_local in pbar_batches:
                 x_local, y_local = x_local.to(self.device), y_local.to(self.device)
-                recs, ff, layers_update = self.forward(x_local)
+                recs, ff, layers_update = self.forward(x_local, layers)
                 if self.quantization:
                     layers_update = [ste_fn(layer, possible_weight) for layer in layers_update]
                     layers_update = [layer.to(self.dtype) for layer in layers_update]
@@ -1120,3 +1124,4 @@ class SRNN_OG:
             accs.append(tmp)
 
         return np.mean(accs)
+

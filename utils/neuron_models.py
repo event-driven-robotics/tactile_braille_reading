@@ -11,7 +11,7 @@ class SurrGradSpike(torch.autograd.Function):
     as this was done in Zenke & Ganguli (2018).
     """
 
-    scale = 10
+    scale = 15.0
     threshold = 0
 
     @staticmethod

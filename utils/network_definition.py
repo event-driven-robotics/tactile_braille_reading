@@ -1125,3 +1125,417 @@ class SRNN_OG:
 
         return np.mean(accs)
 
+
+
+class SRNN_LI:
+
+    def __init__(self, nb_inputs, nb_hidden, nb_output, dict_args):
+        """
+        Initialize the SRNN model with parameters and layers.
+        All entries from dict_args are set as attributes.
+        """
+
+        self.nb_inputs = nb_inputs
+        self.nb_hidden = nb_hidden
+        self.nb_output = nb_output
+
+        for k, v in dict_args.items():
+            if hasattr(self, k):
+                raise ValueError(f"Cannot override existing attribute {k!r}")
+            setattr(self, k, v)
+
+        if self.eprop:
+            self.train = self.train_eprop
+        else:
+            self.train = self.train_bptt
+
+        time_step = self.time_bin_size / 1000.0
+
+        if self.tau_syn == 0.0:
+            self.alpha = 0.0
+        else:
+            self.alpha = float(np.exp(-time_step / self.tau_syn))
+
+        self.device = torch.device(dict_args['device'])
+        self.dtype = torch.float
+
+        self.beta = float(np.exp(-time_step / self.tau_mem))
+        self.beta_trace = float(np.exp(-time_step / self.tau_trace))
+        self.beta_trace_rec = float(np.exp(-time_step / self.tau_trace_rec))
+
+        self.data_steps = self.max_time // self.time_bin_size
+        if self.eprop:
+            layers = torch.load("test_init_weight.pt", map_location=self.device)
+        else:
+            layers = torch.load("test_init_weight_bptt.pt", map_location=self.device)
+
+
+        self.ff_layer = LI_HW_Aware(batch_size=self.batch_size, nb_inputs=self.nb_hidden, nb_neurons=self.nb_output,
+                            fwd_scale=self.fwd_weight_scale, beta=self.beta, device=self.device, dtype=self.dtype,
+                            lower_bound=self.lower_bound, weights=layers[1], requires_grad=True)
+
+        self.rec_layer = CuBaRLIF_HW_Aware_OG(batch_size=self.batch_size, nb_inputs=self.nb_inputs, nb_neurons=self.nb_hidden,
+                           fwd_scale=self.fwd_weight_scale, rec_scale=self.weight_scale_factor, alpha=self.alpha,
+                           firing_threshold=self.firing_threshold, beta=self.beta, device=self.device, dtype=self.dtype,
+                           lower_bound=self.lower_bound, ref_per_timesteps=self.ref_per_timesteps, weights=[layers[0], layers[2]],
+                           requires_grad=True)
+
+
+    def forward(self, input, weights):
+        self.data_steps = self.max_time // self.time_bin_size
+        bs = input.shape[0]
+        rec_layer_ff_weight, ff_layer_weights, rec_layer_rec_weight = weights
+
+        layers_update = weights
+        # Reset from previous batch
+        self.rec_layer.syn = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        self.rec_layer.mem = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        self.rec_layer.rst = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        self.rec_layer.ref_per_counter = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        self.rec_layer.firing_threshold = self.rec_layer.theta * torch.ones((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+        self.rec_layer.out = torch.zeros((bs, self.nb_hidden), device=self.device, dtype=self.dtype)
+
+        self.ff_layer.mem = torch.zeros((bs, self.nb_output), device=self.device, dtype=self.dtype)
+
+        # add them as rsnn attribute?
+        rec_spk_tot = torch.zeros((bs, self.data_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
+        rec_syn_tot = torch.zeros((bs, self.data_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
+        rec_syn_tot = torch.zeros((bs, self.data_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
+        rec_mem_tot = torch.zeros((bs, self.data_steps, self.nb_hidden), dtype=self.dtype, device=self.device)
+
+        ff_mem_tot = torch.zeros((bs, self.data_steps, self.nb_output), dtype=self.dtype, device=self.device)
+
+        h = torch.einsum("abc,cd->abd", input, rec_layer_ff_weight)
+
+        for t in range(self.data_steps):
+            rec_spk, rec_syn, rec_mem = self.rec_layer.step(h[:,t,:], rec_layer_rec_weight)
+            rec_spk_tot[:,t,:] = rec_spk
+            rec_syn_tot[:,t,:] = rec_syn
+            rec_mem_tot[:,t,:] = rec_mem
+
+        h1 = torch.einsum("abc,cd->abd", rec_spk_tot, ff_layer_weights)
+
+        for t in range(self.data_steps):
+            ff_mem = self.ff_layer.step(h1[:,t,:])
+
+            ff_mem_tot[:,t,:] = ff_mem
+
+        return[rec_spk_tot, rec_syn_tot, rec_mem_tot], [ff_mem_tot], layers_update
+
+    def train_bptt(self, dataset_train, dataset_test, possible_weight):
+        log_softmax_fn = nn.LogSoftmax(dim=1)
+        loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
+
+        generator = DataLoader(dataset=dataset_train, batch_size=self.batch_size, pin_memory=True,
+                            shuffle=True, num_workers=2)
+        layers = []
+        layers.append(self.rec_layer.ff_weights), layers.append(self.ff_layer.ff_weights), layers.append(self.rec_layer.rec_weights)
+
+        loss_hist = []
+        accs_hist = [[], []]
+        pbar_training = tqdm(range(self.epochs), position=1,
+                            total=self.epochs, leave=False)
+        for _ in pbar_training:
+            # learning rate decreases over epochs
+            optimizer = torch.optim.Adamax(layers, lr=self.lr, betas=(0.9, 0.995))
+            # if e > nb_epochs/2:
+            #     lr = lr * 0.9
+            local_loss = []
+            # accs: mean training accuracies for each batch
+            accs = []
+            pbar_batches = tqdm(generator, position=2,
+                                total=len(generator), leave=False)
+            for x_local, y_local in pbar_batches:
+                x_local, y_local = x_local.to(self.device), y_local.to(self.device)
+                recs, ff, layers_update = self.forward(x_local, layers)
+                if self.quantization:
+                    layers_update = [ste_fn(layer, possible_weight) for layer in layers_update]
+                    layers_update = [layer.to(self.dtype) for layer in layers_update]
+                mem_rec_readout = ff[0]  # [rec_mem_tot]
+                spk_rec_hidden = recs[0]  # [rec_spk_tot, rec_syn_tot, rec_mem_tot]
+                m = torch.sum(mem_rec_readout, 1)  # sum over time
+
+                # cross entropy loss on the active read-out layer
+                log_p_y = log_softmax_fn(m)
+
+                #print("m: ", m.sum())
+                # Here we can set up our regularizer loss
+                # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
+                # L1 loss on total number of spikes (hidden layer 1)
+                reg_loss = self.reg_spikes*torch.mean(torch.sum(spk_rec_hidden, 1))
+                # L1 loss on total number of spikes (output layer)
+                # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
+                # print("L1: ", reg_loss)
+                # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
+                # L2 loss on spikes per neuron (hidden layer 1)
+                #print("reg_loss: ", reg_loss)
+                reg_loss += self.reg_neurons * \
+                    torch.mean(torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
+                # L2 loss on spikes per neuron (output layer)
+                # reg_loss += params['reg_neurons'] * \
+                #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
+                # print("L1 + L2: ", reg_loss)
+
+                # Here we combine supervised loss and the regularizer
+                loss_val = loss_fn(log_p_y, y_local) + reg_loss
+                #print(f"{loss_val:.15f}")  # prints 10 decimal places
+
+                optimizer.zero_grad()
+                loss_val.backward()
+                optimizer.step()
+                local_loss.append(loss_val.item())
+                max_val, am = torch.max(m, 1)     # argmax over output units
+                '''
+                # This is a workaround to randomly select one of the neurons that have the maximum spikes
+                max_spikes, _ = torch.max(ff[3], dim=2, keepdim=True)  # [batch, tempo, 1]
+
+                is_max = ff[3] == max_spikes  # [batch, tempo, neurone]
+
+                rand_vals = torch.rand(ff[3].shape)  # Numeri casuali [0,1] per ogni neurone
+                rand_vals[~is_max] = -1  # Imposta a -1 i neuroni che non sono massimi
+
+                _, am = torch.max(rand_vals, dim=2)  # Ora il massimo è scelto casualmente tra i pari
+                '''
+                tmp = np.mean((y_local == am).detach().cpu().numpy())
+                accs.append(tmp)
+
+            mean_loss = np.mean(local_loss)
+            loss_hist.append(mean_loss)
+
+            mean_accs = np.mean(accs)
+            accs_hist[0].append(mean_accs)
+
+            # Calculate test accuracy in each epoch
+            if dataset_test is not None:
+                test_acc = self.compute_classification_accuracy(dataset_test, layers_update)
+                accs_hist[1].append(test_acc)  # only safe best test
+
+                # save best training
+                if mean_accs >= np.max(accs_hist[0]):
+                    best_acc_layers = []
+                    for ii in layers_update:
+                        best_acc_layers.append(ii.detach().clone())
+            else:
+                # save best test
+                if np.max(test_acc) >= np.max(accs_hist[1]):
+                    best_acc_layers = []
+                    for ii in layers_update:
+                        best_acc_layers.append(ii.detach().clone())
+
+            pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
+                accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
+            print("Train acc: ", accs_hist[0][-1]*100, "Test acc", accs_hist[1][-1]*100)
+
+        return loss_hist, accs_hist, best_acc_layers
+
+
+
+    def train_eprop(self, dataset_train, dataset_test, labels, possible_weight):
+        # The log softmax function across output units
+        log_softmax_fn = nn.LogSoftmax(dim=1)
+        loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
+
+        generator = DataLoader(dataset=dataset_train, batch_size=self.batch_size, pin_memory=True,
+                            shuffle=True, num_workers=2)
+
+        layers = []
+        layers.append(self.rec_layer.ff_weights), layers.append(self.ff_layer.ff_weights), layers.append(self.rec_layer.rec_weights)
+
+        # The optimization loop
+        loss_hist = []
+        accs_hist = [[], []]
+        pbar_training = tqdm(range(self.epochs), position=1,
+                            total=self.epochs, leave=False)
+
+        for _ in pbar_training:
+            # learning rate decreases over epochs
+            optimizer = torch.optim.Adamax(layers, lr=self.lr, betas=(0.9, 0.995))
+            # if e > nb_epochs/2:
+            #     lr = lr * 0.9
+            local_loss = []
+            # accs: mean training accuracies for each batch
+            accs = []
+            pbar_batches = tqdm(generator, position=2,
+                                total=len(generator), leave=False)
+            for x_local, y_local in pbar_batches:
+                x_local, y_local = x_local.to(self.device), y_local.to(self.device)
+                # reset refractory period counter for each batch
+                optimizer.zero_grad()
+                one_hot_encoded = torch.nn.functional.one_hot(y_local, num_classes=len(np.unique(labels)))
+
+                rec, ff, layers_update = self.forward(x_local, layers)
+                if self.quantization:
+                    layers_update = [ste_fn(layer, possible_weight) for layer in layers_update]
+                    layers_update = [layer.to(self.dtype) for layer in layers_update]
+                '''
+                m = torch.cumsum(ff[0], 1)  # sum over time
+                m[:] = m[:, -1:, :].expand_as(m)
+                '''
+                m = ff[0].sum(dim=1, keepdim=True).expand_as(ff[0])
+                _, am = torch.max(m, 2)
+
+                '''
+                # This is a workaround to randomly select one of the neurons that have the maximum spikes
+                max_spikes, _ = torch.max(ff[3], dim=2, keepdim=True)  # [batch, tempo, 1]
+
+                is_max = ff[3] == max_spikes  # [batch, tempo, neurone]
+
+                rand_vals = torch.rand(ff[3].shape)  # Numeri casuali [0,1] per ogni neurone
+                rand_vals[~is_max] = -1  # Imposta a -1 i neuroni che non sono massimi
+
+                _, am = torch.max(rand_vals, dim=2)  # Ora il massimo è scelto casualmente tra i pari
+                '''
+
+
+                yo = torch.nn.functional.one_hot(am, num_classes=len(np.unique(labels))).to(self.device)
+
+                spk_rec_hidden= rec[0]
+                spk_rec_readout = ff[0]
+
+                self.grads_batch(x_local.permute(1,0,2), yo.permute(1,0,2), one_hot_encoded, rec[2].permute(1,0,2), rec[0].permute(1,0,2))
+
+                m = torch.sum(spk_rec_readout, 1)  # sum over time
+
+                # cross entropy loss on the active read-out layer
+                log_p_y = log_softmax_fn(m)
+
+                # Here we can set up our regularizer loss
+                # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
+                # L1 loss on total number of spikes (hidden layer 1)
+                reg_loss = self.reg_spikes * torch.mean(torch.sum(spk_rec_hidden, 1))
+                # L1 loss on total number of spikes (output layer)
+                # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
+                # print("L1: ", reg_loss)
+                # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
+                # L2 loss on spikes per neuron (hidden layer 1)
+                reg_loss += self.reg_neurons * \
+                    torch.mean(torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
+                # L2 loss on spikes per neuron (output layer)
+                # reg_loss += params['reg_neurons'] * \
+                #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
+                # print("L1 + L2: ", reg_loss)
+
+                # Here we combine supervised loss and the regularizer
+                loss_val = loss_fn(log_p_y, y_local) + reg_loss
+                optimizer.step()
+                local_loss.append(loss_val.item())
+
+                # compare to labels
+                _, am = torch.max(m, 1)  # argmax over output units
+                tmp = np.mean((y_local == am).detach().cpu().numpy())
+                accs.append(tmp)
+
+            mean_loss = np.mean(local_loss)
+            loss_hist.append(mean_loss)
+
+            # mean_accs: mean training accuracy of current epoch (average over all batches)
+            mean_accs = np.mean(accs)
+            accs_hist[0].append(mean_accs)
+
+            # Calculate test accuracy in each epoch
+            if dataset_test is not None:
+                test_acc = self.compute_classification_accuracy(
+                    dataset_test, layers_update)
+                accs_hist[1].append(test_acc)  # only safe best test
+
+                # save best training
+                if mean_accs >= np.max(accs_hist[0]):
+                    best_acc_layers = []
+                    for ii in layers_update:
+                        best_acc_layers.append(ii.detach().clone())
+            else:
+                # save best test
+                if np.max(test_acc) >= np.max(accs_hist[1]):
+                    best_acc_layers = []
+                    for ii in layers_update:
+                        best_acc_layers.append(ii.detach().clone())
+
+            pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
+                accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
+            print("Train acc: ", accs_hist[0][-1]*100, "Test acc", accs_hist[1][-1]*100)
+        return loss_hist, accs_hist, best_acc_layers
+
+    def grads_batch(self, x, yo, yt, v, z):
+
+        if self.ff_layer.ff_weights.grad is None:
+            self.ff_layer.ff_weights.grad = torch.zeros_like(self.ff_layer.ff_weights)
+        if self.rec_layer.ff_weights.grad is None:
+            self.rec_layer.ff_weights.grad = torch.zeros_like(self.rec_layer.ff_weights)
+        if self.rec_layer.rec_weights.grad is None:
+            self.rec_layer.rec_weights.grad = torch.zeros_like(self.rec_layer.rec_weights)
+
+        # Surrogate derivatives
+        h = self.gamma * torch.max(torch.zeros_like(v), 1 - torch.abs((v - self.firing_threshold) / self.firing_threshold))
+
+        err = torch.zeros_like(yo)
+
+        # Eligibility traces convolution
+        beta_conv     = torch.tensor([self.beta_trace_rec ** (self.data_steps - i - 1) for i in range(self.data_steps)]).float().view(1, 1, -1).to(self.device)
+        beta_rec_conv = torch.tensor([self.beta_trace ** (self.data_steps - i - 1) for i in range(self.data_steps)]).float().view(1, 1, -1).to(self.device)
+
+        # Convoluzione Input eligibility traces
+        trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(self.nb_inputs, -1, -1), padding=self.data_steps, groups=self.nb_inputs)[:, :, 1:self.data_steps+1]
+        trace_in = trace_in.unsqueeze(1).expand(-1, self.nb_hidden, -1, -1)
+        trace_in = torch.einsum('tbr,brit->brit', h, trace_in)
+
+        trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(self.nb_hidden, -1, -1), padding=self.data_steps, groups=self.nb_hidden)[:, :, :self.data_steps]
+        trace_rec = trace_rec.unsqueeze(1).expand(-1, self.nb_hidden, -1, -1)
+        trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
+
+        # Output eligibility vector
+        trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(self.nb_hidden, -1, -1), padding=self.data_steps, groups=self.nb_hidden)[:, :, 1:self.data_steps+1]
+
+        trace_in = F.conv1d(trace_in.reshape(self.batch_size, self.nb_inputs * self.nb_hidden, self.data_steps),
+                            beta_conv.expand(self.nb_inputs * self.nb_hidden, -1, -1),
+                            padding=self.data_steps, groups=self.nb_inputs * self.nb_hidden)[:, :, 1:self.data_steps+1]
+        trace_in = trace_in.reshape(self.batch_size, self.nb_hidden, self.nb_inputs, self.data_steps)
+
+        trace_rec = F.conv1d(trace_rec.reshape(self.batch_size, self.nb_hidden * self.nb_hidden, self.data_steps),
+                            beta_conv.expand(self.nb_hidden * self.nb_hidden, -1, -1),
+                            padding=self.data_steps, groups=self.nb_hidden * self.nb_hidden)[:, :, 1:self.data_steps+1]
+        trace_rec = trace_rec.reshape(self.batch_size, self.nb_hidden, self.nb_hidden, self.data_steps)
+
+        for i in range(yo.shape[0]):
+            err[i,:,:] = yo[i,:,:] - yt
+        err = err.to(self.dtype)
+        # Learning signal
+        L = torch.einsum('tbo,or->brt', err, self.ff_layer.ff_weights.t())
+
+        # Weight gradient updates
+        self.rec_layer.ff_weights.grad += (torch.sum(L.unsqueeze(2).expand(-1, -1, self.nb_inputs, -1) * trace_in, dim=(0, 3))).t()
+        self.rec_layer.rec_weights.grad += (torch.sum(L.unsqueeze(2).expand(-1, -1, self.nb_hidden, -1) * trace_rec, dim=(0, 3))).t()
+        self.ff_layer.ff_weights.grad += (torch.einsum('tbo,brt->or', err, trace_out)).t()
+
+    def compute_classification_accuracy(self, dataset, weights):
+        """ Computes classification accuracy on supplied data in batches. """
+
+        generator = DataLoader(dataset=dataset, batch_size=self.batch_size_test, pin_memory=True,
+                            shuffle=False, num_workers=2)
+        accs = []
+
+        for x_local, y_local in generator:
+            x_local, y_local = x_local.to(self.device), y_local.to(self.device)
+            with torch.no_grad():
+                rec, ff, _ = self.forward(x_local, weights)
+
+            mem_rec_readout = ff[0]  # [rec_spk_rec, rec_syn_rec, rec_mem_rec]
+            m = torch.sum(mem_rec_readout, 1)  # sum over time
+
+            max_val, am = torch.max(m, 1)     # argmax over output units
+            '''
+            # This is a workaround to randomly select one of the neurons that have the maximum spikes
+            max_spikes, _ = torch.max(ff[3], dim=2, keepdim=True)  # [batch, tempo, 1]
+
+            is_max = ff[3] == max_spikes  # [batch, tempo, neurone]
+
+            rand_vals = torch.rand(ff[3].shape)  # Numeri casuali [0,1] per ogni neurone
+            rand_vals[~is_max] = -1  # Imposta a -1 i neuroni che non sono massimi
+
+            _, am = torch.max(rand_vals, dim=2)  # Ora il massimo è scelto casualmente tra i pari
+            '''
+
+            # compare to labels
+            tmp = np.mean((y_local == am).detach().cpu().numpy())
+            accs.append(tmp)
+
+        return np.mean(accs)

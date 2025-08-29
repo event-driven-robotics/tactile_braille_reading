@@ -1181,3 +1181,80 @@ class CuBaRLIF_HW_Aware_OG:
                                            self.ref_per_timesteps,
                                            self.ref_per_counter)
         return self.ref_per_counter
+
+
+class LI_HW_Aware:
+    """
+    Class to initialize and compute a feedforward layer of Leaky Integrator (LI) neurons.
+
+    This class implements a feedforward layer of Leaky Integrator (LI) neurons, which accumulate
+    input over time with a leaky (decaying) membrane potential. The layer supports computation
+    of membrane potentials for each neuron at each time step, using a simple leaky integration
+    model without spiking or synaptic currents.
+
+    Attributes:
+        nb_inputs (int): Number of input neurons.
+        nb_neurons (int): Number of LI neurons in the layer.
+        beta (float): Membrane decay constant (leak rate).
+        device (str or torch.device): Device to store tensors (e.g., 'cuda' or 'cpu').
+        dtype (torch.dtype): Data type for tensors (e.g., torch.float).
+        ff_weights (torch.Tensor): Feedforward weight matrix of shape (nb_inputs, nb_neurons).
+        mem (torch.Tensor): Membrane potential tensor of shape (batch_size, nb_neurons).
+    """
+
+    def __init__(self, batch_size, nb_inputs, nb_neurons, beta, fwd_scale=0.1, lower_bound=None,weights=None, device="cuda", dtype=torch.float, requires_grad=True):
+        """
+        Initialize the LI neuron layer with weights and parameters.
+
+        Args:
+            batch_size (int): Batch size for input data.
+            nb_inputs (int): Number of input neurons.
+            nb_neurons (int): Number of LI neurons in the layer.
+            fwd_scale (float): Scaling factor for feedforward weight initialization.
+            beta (float): Membrane decay constant (leak rate).
+            weights (torch.Tensor, optional): Predefined weight matrix of shape (nb_inputs, nb_neurons).
+            device (str or torch.device, optional): Device to store tensors (default: "cuda").
+            dtype (torch.dtype, optional): Data type for tensors (default: torch.float).
+            requires_grad (bool, optional): Whether the weights require gradients (default: True).
+        """
+
+        self.nb_inputs = nb_inputs
+        self.nb_neurons = nb_neurons
+        self.beta = beta
+        self.device = device
+        self.dtype = dtype
+        self.lower_bound = lower_bound
+
+        if weights is not None:
+            self.ff_weights = weights
+        else:
+            # Initialize the feedforward layer weights
+            self.ff_weights = torch.empty(
+                (nb_inputs, nb_neurons), device=device, dtype=dtype, requires_grad=requires_grad)
+            torch.nn.init.normal_(self.ff_weights, mean=0.0,
+                                  std=fwd_scale / np.sqrt(nb_inputs))
+
+        # Initialize the synaptic current and membrane potential
+        self.mem = torch.zeros((batch_size, nb_neurons),
+                               device=device, dtype=dtype)
+
+    def step(self, input_activity_t):
+        """
+        Compute the membrane potential of the LI neuron layer for a single time step.
+
+        Args:
+            input_activity_t (torch.Tensor): Input activity tensor of shape (batch_size, nb_inputs)
+                                             for a single time step.
+
+        Returns:
+            torch.Tensor: Updated membrane potential tensor of shape (batch_size, nb_neurons).
+        """
+
+        self.mem = (self.beta * self.mem + input_activity_t)
+
+        if self.lower_bound is not None:
+            # clamp membrane potential
+            self.mem[self.mem < self.lower_bound] = self.lower_bound
+
+
+        return self.mem

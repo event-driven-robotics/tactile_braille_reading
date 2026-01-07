@@ -30,7 +30,7 @@ create_validation = False
 use_seed = True
 threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
-epochs = 40
+epochs = 50
 
 
 class experimantal_params:
@@ -640,8 +640,6 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     - Displays progress via tqdm progress bars
     """
 
-    nb_hidden = layers[0].rec_weights.shape[0]
-    nb_outputs = layers[1].ff_weights.shape[0]
     weights = [layers[0].ff_weights, layers[0].rec_weights,
                layers[1].ff_weights]  # TODO chek if this order makes sense?!
     # The log softmax function across output units
@@ -654,6 +652,9 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     # The optimization loop
     loss_hist = []
     accs_hist = [[], []]
+    best_test_acc = 0.0
+    best_acc_layers = []
+    
     pbar_training = tqdm(range(nb_epochs), position=1,
                          total=nb_epochs, leave=False)
     average_spike_recurrent = torch.zeros(nb_epochs, device=device)
@@ -750,29 +751,19 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
         '''
         count_epoch = count_epoch + 1
 
-        # TODO rework this. There MUST be a test set...
         # Calculate test accuracy in each epoch
-        if dataset_test is not None:
-            test_acc = compute_classification_accuracy(
-                dataset=dataset_test, layers=layers, vars_eprop=vars_eprop)
-            accs_hist[1].append(test_acc)  # only safe best test
+        test_acc = compute_classification_accuracy(
+            dataset=dataset_test, layers=layers, vars_eprop=vars_eprop)
+        accs_hist[1].append(test_acc)
+        if np.max(test_acc) >= best_test_acc:
+            best_test_acc = np.max(test_acc)
+            for ii in weights_update:
+                best_acc_layers.append(ii.detach().clone())
 
-            # save best training
-            if mean_accs >= np.max(accs_hist[0]):
-                best_acc_layers = []
-                for ii in weights_update:
-                    best_acc_layers.append(ii.detach().clone())
-        else:
-            # save best test
-            if np.max(test_acc) >= np.max(accs_hist[1]):
-                best_acc_layers = []
-                for ii in weights_update:
-                    best_acc_layers.append(ii.detach().clone())
-
-        pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
-            accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
-        print("Train acc: ", accs_hist[0][-1]*100, "Test acc",
-              accs_hist[1][-1]*100, 'Loss: ', loss_hist[-1])
+        pbar_training.set_description("{:.2f}%, {:.2f}%".format(
+            accs_hist[0][-1]*100, accs_hist[1][-1]*100))
+        # print("Train acc: ", accs_hist[0][-1]*100, "Test acc",
+        #       accs_hist[1][-1]*100, 'Loss: ', loss_hist[-1])
 
     return loss_hist, accs_hist, best_acc_layers
 
@@ -926,7 +917,7 @@ def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.nda
     plt.close(fig)
 
 
-def plot_confusion_matrix(dataset: TensorDataset, layers: list, labels: list, vars_eprop: list) -> None:
+def plot_confusion_matrix(path: str, dataset: TensorDataset, layers: list, labels: list, vars_eprop: list) -> None:
     """
     Generate and save a normalized confusion matrix for network predictions.
     
@@ -994,7 +985,7 @@ def plot_confusion_matrix(dataset: TensorDataset, layers: list, labels: list, va
     plt.ylabel('True\n')
     plt.xticks(rotation=0)
     plt.savefig(
-        f"./figures/rsnn_1layers_train_tc_thr_{threshold}_cm.pdf")
+        f"{path}.pdf")
 
 
 def get_network_activity(dataset: TensorDataset, layers: list) -> tuple:
@@ -1380,7 +1371,7 @@ if __name__ == '__main__':
     acc_test_list = []
     loss_train_list = []
     # here we can set how often we wat to run the training to get some statistics
-    max_repetitions = 1
+    max_nb_neurons = 30
     best_acc = 0.0
 
     # always use the same data split
@@ -1391,14 +1382,13 @@ if __name__ == '__main__':
         ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
             params, file_name, letter_written=letters, create_validation=create_validation)
 
-    pbar_repetitions = tqdm(range(max_repetitions),
-                            position=0, total=max_repetitions, leave=True)
-    for repetition in pbar_repetitions:
-        pbar_repetitions.set_description(
-            f"{repetition+1}/{max_repetitions}")
+    pbar_nb_neurons = tqdm(range(1, max_nb_neurons+1),
+                            position=0, total=max_nb_neurons, leave=True)
+    for nb_hidden in pbar_nb_neurons:
+        pbar_nb_neurons.set_description(
+            f"{nb_hidden}/{max_nb_neurons}")
         # load data for each repetition indepoently to get different splits
-        nb_hidden = 20  # TODO we want to change this number over repetitions later
-        if repetition == 0:
+        if nb_hidden == max_nb_neurons:
             print("Number of training data %i." % len(ds_train))
             print("Number of testing data %i." % len(ds_test))
             if create_validation:
@@ -1429,98 +1419,88 @@ if __name__ == '__main__':
         if create_validation:
             val_acc = compute_classification_accuracy(
                 dataset=ds_validation, layers=best_layers, vars_eprop=vars_eprop)
-        # safe overall best layer
-        if max(acc_hist[1]) > best_acc:
-            if create_validation:
-                print(f"New best validation accuracy: {val_acc*100:.2f}%.")
+
+        # save the best layer
+        torch.save(best_layers, f'./model/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params["threshold"]}_{params["ref_per_timesteps"]}_ref_per.pt')
+
+        # ### Lets plot the training curve and the confusion matrix
+        plot_training_perfromance(
+            path=f"./figures/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per_training_performance", acc_train=acc_train_list, acc_test=acc_test_list, loss_train=loss_train_list)
+        # plotting the confusion matrix
+        plot_confusion_matrix(
+            path=f"./figures/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per_confusion_matrix", dataset=ds_test, layers=best_layers, labels=letters)
+
+        #####################################
+        ### Lets create some raster plots ###
+        #####################################
+
+        # plotting the network activity
+        accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
+            ds_test, layers=best_layers)
+
+        layer_names = ["Hidden layer", "Readout layer"]
+        nb_layers = len(layer_names)
+
+        total_nb_batches = len(accs)
+
+        # select the batches to plot
+        if NB_BATCHES_TO_PLOT > total_nb_batches:
+            print(
+                f"WARNING: Not enough batches to plot. Will plot all {total_nb_batches} batches instead of the asked {NB_BATCHES_TO_PLOT}. Lower the number to avoid this warning.")
+            batch_selection = range(NB_BATCHES_TO_PLOT)
+        elif NB_BATCHES_TO_PLOT == total_nb_batches:
+            print(f"Plotting all {total_nb_batches} batches.")
+            batch_selection = range(NB_BATCHES_TO_PLOT)
+        else:
+            print(
+                f"Plotting {NB_BATCHES_TO_PLOT} random batches (out of {total_nb_batches}).")
+            found_unique = False
+            while not found_unique:
+                batch_selection = np.random.choice(
+                    total_nb_batches, NB_BATCHES_TO_PLOT)
+                if len(np.unique(batch_selection)) == NB_BATCHES_TO_PLOT:
+                    found_unique = True
+
+        for batch_idx in batch_selection:
+            batch_acc = accs[batch_idx]
+            # [trials, timesteps, neurons]
+            spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
+            # [trials, timesteps, neurons]
+            spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
+            # select random trials to plot
+            total_nb_trials = len(spk_rec_readout_batch)
+            if NB_TRIALS_TO_PLOT > total_nb_trials:
+                print(
+                    f"WARNING: Not enough trials to plot. Will plot all {total_nb_trials} trials instead of the asked {NB_TRIALS_TO_PLOT}. Lower the number to avoid this warning.")
+                trial_selection = range(NB_BATCHES_TO_PLOT)
+            elif NB_TRIALS_TO_PLOT == total_nb_trials:
+                print(f"Plotting all {total_nb_trials} trials.")
+                trial_selection = range(NB_TRIALS_TO_PLOT)
             else:
                 print(
-                    f"New best test accuracy: {max(acc_hist[1])*100:.2f}%.")
-            very_best_layer = best_layers
-            best_acc = val_acc
+                    f"Plotting {NB_TRIALS_TO_PLOT} random trials (out of {total_nb_trials}).")
+                found_unique = False
+                while not found_unique:
+                    trial_selection = np.random.choice(
+                        total_nb_trials, NB_TRIALS_TO_PLOT)
+                    if len(np.unique(trial_selection)) == NB_TRIALS_TO_PLOT:
+                        found_unique = True
 
+            for trial_idx in trial_selection:
+                spr_recs = [spk_rec_hidden_batch[trial_idx],
+                            spk_rec_readout_batch[trial_idx]]
+                # TODO include more specifics into the figure name
+                plot_network_activity(
+                    spr_recs, layer_names, figname=f"./figures/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per_network_activity")
+
+        # let's store the training histories
         acc_train_list.append(acc_hist[0])
         acc_test_list.append(acc_hist[1])
         loss_train_list.append(loss_hist)
 
+    # save all the training histories
     acc_train_list = np.array(acc_train_list)
     acc_test_list = np.array(acc_test_list)
     loss_train_list = np.array(loss_train_list)
-
-    print("*************************")
-    print("* Best: ", best_acc*100)
-    print("*************************")
-
-    # save the best layer
-    torch.save(very_best_layer, './model/best_model_net_th_'+str(params["threshold"]) +
-                '_'+str(nb_hidden)+'1ms_2lab_'+str(params["tau_trace"])+'_'+str(params["learning_rate"])+'_.pt')
-
-    # ### Lets plot the training curve and the confusion matrix
-    plot_training_perfromance(
-        path=f"./figures/rsnn_1layers_train_tc_thr_{threshold}_acc", acc_train=acc_train_list, acc_test=acc_test_list, loss_train=loss_train_list)
-    # plotting the confusion matrix
-    plot_confusion_matrix(
-        dataset=ds_test, layers=very_best_layer, labels=letters)
-
-    #####################################
-    ### Lets create some raster plots ###
-    #####################################
-
-    # plotting the network activity
-    accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
-        ds_test, layers=very_best_layer)
-
-    layer_names = ["Hidden layer", "Readout layer"]
-    nb_layers = len(layer_names)
-
-    total_nb_batches = len(accs)
-
-    # select the batches to plot
-    if NB_BATCHES_TO_PLOT > total_nb_batches:
-        print(
-            f"WARNING: Not enough batches to plot. Will plot all {total_nb_batches} batches instead of the asked {NB_BATCHES_TO_PLOT}. Lower the number to avoid this warning.")
-        batch_selection = range(NB_BATCHES_TO_PLOT)
-    elif NB_BATCHES_TO_PLOT == total_nb_batches:
-        print(f"Plotting all {total_nb_batches} batches.")
-        batch_selection = range(NB_BATCHES_TO_PLOT)
-    else:
-        print(
-            f"Plotting {NB_BATCHES_TO_PLOT} random batches (out of {total_nb_batches}).")
-        found_unique = False
-        while not found_unique:
-            batch_selection = np.random.choice(
-                total_nb_batches, NB_BATCHES_TO_PLOT)
-            if len(np.unique(batch_selection)) == NB_BATCHES_TO_PLOT:
-                found_unique = True
-
-    for batch_idx in batch_selection:
-        batch_acc = accs[batch_idx]
-        # [trials, timesteps, neurons]
-        spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
-        # [trials, timesteps, neurons]
-        spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
-        # select random trials to plot
-        total_nb_trials = len(spk_rec_readout_batch)
-        if NB_TRIALS_TO_PLOT > total_nb_trials:
-            print(
-                f"WARNING: Not enough trials to plot. Will plot all {total_nb_trials} trials instead of the asked {NB_TRIALS_TO_PLOT}. Lower the number to avoid this warning.")
-            trial_selection = range(NB_BATCHES_TO_PLOT)
-        elif NB_TRIALS_TO_PLOT == total_nb_trials:
-            print(f"Plotting all {total_nb_trials} trials.")
-            trial_selection = range(NB_TRIALS_TO_PLOT)
-        else:
-            print(
-                f"Plotting {NB_TRIALS_TO_PLOT} random trials (out of {total_nb_trials}).")
-            found_unique = False
-            while not found_unique:
-                trial_selection = np.random.choice(
-                    total_nb_trials, NB_TRIALS_TO_PLOT)
-                if len(np.unique(trial_selection)) == NB_TRIALS_TO_PLOT:
-                    found_unique = True
-
-        for trial_idx in trial_selection:
-            spr_recs = [spk_rec_hidden_batch[trial_idx],
-                        spk_rec_readout_batch[trial_idx]]
-            # TODO include more specifics into the figure name
-            plot_network_activity(
-                spr_recs, layer_names, figname=f'./figures/network_activity_batch_{batch_idx}_trial_{trial_idx}')
+    np.savez(f"./results/braille_reading_rsnn_eprop_reduce_label_1_to_{max_nb_neurons}_neurons_{letters[0]}_vs_{letters[1]}_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per.npz",
+             acc_train=acc_train_list, acc_test=acc_test_list, loss_train=loss_train_list)

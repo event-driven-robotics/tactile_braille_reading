@@ -1,3 +1,8 @@
+"""
+Here we train a minimal model which can discriminate between three braille letters using a recurrent network.
+The code will find the minimum size of the recurrent layer we need to reach good performance.
+"""
+
 import os
 
 import matplotlib.pyplot as plt
@@ -19,6 +24,8 @@ torch.set_default_dtype(torch.float64)
 dtype = torch.float
 
 letters = ['A', 'B', 'C']
+# letters = ['A', 'B']  # a vs. b, c, e, i: difficult; a vs. p, q, y easy
+create_validation = False
 
 # set variables
 use_seed = True
@@ -27,7 +34,7 @@ threshold = 2  # possible values are: 1, 2, 5, 10
 epochs = 40
 
 global batch_size
-batch_size = 90
+batch_size = 128
 global lr
 lr = 0.004 #0.0008
 print("Learning rate: ",lr)
@@ -83,7 +90,7 @@ else:
     print("Shuffle data randomly")
 
 
-def load_and_extract(params, file_name, taxels=None, letter_written=letters):
+def load_and_extract(params, file_name, taxels=None, letter_written=letters, create_validation=False):
 
     max_time = int(3501)  # ms
     time_bin_size = 1 #int(params['time_bin_size'])  # so far from laoded file, but can be set manually here
@@ -136,21 +143,33 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters):
     data = torch.tensor(data, dtype=dtype)
     labels = torch.tensor(labels, dtype=torch.long)
 
-    # create 70/20/10 train/test/validation split
-    # first create 70/30 train/(test + validation)
-    x_train, x_test, y_train, y_test = train_test_split(
-        data, labels, test_size=0.30, shuffle=True, stratify=labels)
-    # split test and validation 2/1
-    x_test, x_validation, y_test, y_validation = train_test_split(
-        x_test, y_test, test_size=0.33, shuffle=True, stratify=y_test)
+    if create_validation:
+        # create 70/20/10 train/test/validation split
+        # first create 70/30 train/(test + validation)
+        x_train, x_test, y_train, y_test = train_test_split(
+            data, labels, test_size=0.30, shuffle=True, stratify=labels)
+        # split test and validation 2/1
+        x_test, x_validation, y_test, y_validation = train_test_split(
+            x_test, y_test, test_size=0.33, shuffle=True, stratify=y_test)
 
-    ds_train = TensorDataset(x_train, y_train)
-    ds_test = TensorDataset(x_test, y_test)
-    ds_validation = TensorDataset(x_validation, y_validation)
+        ds_train = TensorDataset(x_train, y_train)
+        ds_test = TensorDataset(x_test, y_test)
+        ds_validation = TensorDataset(x_validation, y_validation)
 
-    return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
+        return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
+    else:
+        # create 80/20 train/test split
+        x_train, x_test, y_train, y_test = train_test_split(
+            data, labels, test_size=0.20, shuffle=True, stratify=labels)
 
-def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out):
+        ds_train = TensorDataset(x_train, y_train)
+        ds_test = TensorDataset(x_test, y_test)
+
+        return ds_train, ds_test, labels, selected_chans, data_steps
+
+def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, beta_trace, beta_trace_out):
+    nb_inputs = x.shape[-1]
+
     if w_in.grad is None:
         w_in.grad = torch.zeros_like(w_in)
     if w_rec.grad is None:
@@ -209,34 +228,37 @@ def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out):
     w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
 
 
-def run_snn(inputs, layers, trainable, yt = None):
+def run_snn(inputs, layers, vars_eprop, trainable, yt = None):
+    beta_trace, beta_trace_out = vars_eprop
+    rec_layer, ff_layer = layers
+    # w1, w2, v1 = rec_layer.ff_weights, ff_layer.ff_weights, rec_layer.rec_weights
 
-    w1, w2, v1 = layers
+    # bs = inputs.shape[0]
 
-    bs = inputs.shape[0]
-
+    # h1 = torch.einsum(
+    #     "abc,cd->abd", (inputs.tile((nb_input_copies,)), w1.t()))
     h1 = torch.einsum(
-        "abc,cd->abd", (inputs.tile((nb_input_copies,)), w1.t()))
+        "abc,cd->abd", inputs, rec_layer.ff_weights.t())
 
     if ref_per_timesteps:
-        spk_rec_hidden, mem_rec_hidden = recurrent_layer.compute_activity(
-            bs, nb_hidden, h1, v1, nb_steps, lower_bound, ref_counter_hidden)
+        spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
+            h1, data_steps, lower_bound, ref_counter_hidden)
     else:
-        spk_rec_hidden, mem_rec_hidden = recurrent_layer.compute_activity(
-            bs, nb_hidden, h1, v1, nb_steps, lower_bound)
+        spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
+            h1, data_steps, lower_bound)
 
     # Readout layer
-    h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, w2.t()))
+    h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, ff_layer.ff_weights.t()))
 
     if ref_per_timesteps:
-        spk_rec_readout, mem_rec_readout, mem_train, n_spike = feedforward_layer.compute_activity(
-            bs, nb_outputs, h2, nb_steps, lower_bound, ref_counter_readout)
+        spk_rec_readout, mem_rec_readout, mem_train, n_spike = ff_layer.compute_activity(
+            h2, data_steps, lower_bound, ref_counter_readout)
     else:
-        spk_rec_readout, mem_rec_readout, n_spike = feedforward_layer.compute_activity(
-            bs, nb_outputs, h2, nb_steps, lower_bound)
+        spk_rec_readout, mem_rec_readout, n_spike = ff_layer.compute_activity(
+            h2, data_steps, lower_bound)
 
     other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
-    layers_update = layers
+    weights_update = [rec_layer.ff_weights, rec_layer.rec_weights, ff_layer.ff_weights]
 
     if(trainable):
         max_spikes, _ = torch.max(n_spike, dim=2, keepdim=True)  # [batch, tempo, 1]
@@ -251,42 +273,44 @@ def run_snn(inputs, layers, trainable, yt = None):
         am = am.to(device)
         yo = torch.nn.functional.one_hot(am, num_classes=len(np.unique(labels)))
         #print(yo.shape, yt.shape)
-        grads_batch(inputs.tile((nb_input_copies,)).permute(1,0,2), yo.permute(1,0,2), yt, gamma, 1, mem_rec_hidden.permute(1,0,2), spk_rec_hidden.permute(1,0,2), w1, v1, w2)
+        # grads_batch(inputs.tile((nb_input_copies,)).permute(1,0,2), yo.permute(1,0,2), yt, gamma, 1, mem_rec_hidden.permute(1,0,2), spk_rec_hidden.permute(1,0,2), w1, v1, w2)
+        grads_batch(inputs.permute(1,0,2), yo.permute(1,0,2), yt, gamma, 1, mem_rec_hidden.permute(1,0,2), spk_rec_hidden.permute(1,0,2), rec_layer.ff_weights, rec_layer.rec_weights, ff_layer.ff_weights, beta_trace, beta_trace_out)
 
-    return spk_rec_readout, other_recs, layers_update
+    return spk_rec_readout, other_recs, weights_update
 
 
-def build_and_train(params, ds_train, ds_test, epochs=epochs):
+def build_and_train(params, ds_train, ds_test, nb_hidden=20, epochs=epochs):
 
-    global nb_input_copies
+    # global nb_input_copies
     # Num of spiking neurons used to encode each channel
     nb_input_copies = 1 #params['nb_input_copies']
     print("Number of input copies ", nb_input_copies)
     # Network parameters
-    global nb_inputs
+    # global nb_inputs
     nb_inputs = nb_channels*nb_input_copies
-    global nb_outputs
+    # global nb_outputs
     nb_outputs = len(np.unique(labels))
-    global nb_hidden
-    nb_hidden = 20
+    # global nb_hidden
+    nb_hidden = nb_hidden
     print("Number of hidden neurons ", nb_hidden)
-    global nb_steps
-    nb_steps = data_steps
+    # global nb_steps
+    # nb_steps = data_steps
 
     tau_mem = 0.06 #params['tau_mem']  # ms
-    global tau_mem_rec
+    # global tau_mem_rec
     tau_mem_rec = 0.06 #params['tau_mem'] #ms
-    global tau_trace
+    # global tau_trace
     tau_trace = 0.14
-    global tau_trace_out
+    # global tau_trace_out
     tau_trace_out = 0.14
     tau_syn = tau_mem/params['tau_ratio']
     print("tau_mem: ", tau_mem, "tau_mem recurrent: ", tau_mem_rec, "tau trace out: ", tau_trace_out, "tau trace: ", tau_trace)
-    global alpha
-    global beta
-    global beta_rec
-    global beta_trace
-    global beta_trace_out
+    # TODO create list of variables to use for eprop
+    # global alpha
+    # global beta
+    # global beta_rec
+    # global beta_trace
+    # global beta_trace_out
     if no_synapse:
         alpha = 0.0  # here we disable synapse dynamics
     else:
@@ -301,32 +325,39 @@ def build_and_train(params, ds_train, ds_test, epochs=epochs):
         beta_trace_out = float(np.exp(-time_step/tau_trace_out))
     if ref_per_timesteps:
         # initialize as many we have layers with the size of each layer
-        global ref_counter_hidden
+        # global ref_counter_hidden
         ref_counter_hidden = torch.zeros(
             (batch_size, nb_hidden), device=device)
-        global ref_counter_readout
+        # global ref_counter_readout
         ref_counter_readout = torch.zeros(
             (batch_size, nb_outputs), device=device)
 
+    vars_eprop = [beta_trace, beta_trace_out]
     fwd_weight_scale = params['fwd_weight_scale']
     rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']
 
     # Spiking network
     layers = []
+    # weights = []
 
     # recurrent layer
-    w1, v1 = recurrent_layer.create_layer(
-        nb_inputs, nb_hidden, fwd_weight_scale, rec_weight_scale)
+    rec_layer = recurrent_layer(
+        batch_size=batch_size, nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_scale=fwd_weight_scale, rec_scale=rec_weight_scale, alpha=alpha, beta=beta_rec)
+    # w1, v1 = rec_layer.create_layer()
+    rec_layer.create_layer()
 
     # readout layer
-    w2 = feedforward_layer.create_layer(
-        nb_hidden, nb_outputs, fwd_weight_scale)
+    ff_layer = feedforward_layer(
+        batch_size=batch_size, nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta)    
+    # w2 = ff_layer.create_layer()
+    ff_layer.create_layer()
 
-    layers.append(w1), layers.append(w2), layers.append(v1)
+    layers.append(rec_layer), layers.append(ff_layer)
+    # weights.append(w1), weights.append(w2), weights.append(v1)
 
     # a fixed learning rate is already defined within the train function, that's why here it is omitted
     loss_hist, accs_hist, best_layers = train(
-        params=params, dataset=ds_train, layers=layers, lr=lr, nb_epochs=epochs, dataset_test=ds_test)
+        params=params, dataset=ds_train, layers=layers, vars_eprop=vars_eprop, lr=lr, nb_epochs=epochs, dataset_test=ds_test)
 
     # best training and test at best training
     acc_best_train = np.max(accs_hist[0])  # returns max value
@@ -352,8 +383,11 @@ def build_and_train(params, ds_train, ds_test, epochs=epochs):
     return loss_hist, accs_hist, best_layers
 
 
-def train(params, dataset, layers, lr=0.0015, nb_epochs=300, dataset_test=None):
+def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset_test=None):
 
+    nb_hidden = layers[0].rec_weights.shape[0]
+    nb_outputs = layers[1].ff_weights.shape[0]
+    weights = [layers[0].ff_weights, layers[0].rec_weights, layers[1].ff_weights]  # TODO chek if this order makes sense?!
     # The log softmax function across output units
     log_softmax_fn = nn.LogSoftmax(dim=1)
     loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
@@ -371,7 +405,7 @@ def train(params, dataset, layers, lr=0.0015, nb_epochs=300, dataset_test=None):
     count_epoch = 0
     for _ in pbar_training:
         # learning rate decreases over epochs
-        optimizer = torch.optim.Adamax(layers, lr=lr, betas=(0.9, 0.995))
+        optimizer = torch.optim.Adamax(weights, lr=lr, betas=(0.9, 0.995))
         # if e > nb_epochs/2:
         #     lr = lr * 0.9
         local_loss = []
@@ -394,10 +428,10 @@ def train(params, dataset, layers, lr=0.0015, nb_epochs=300, dataset_test=None):
 
             one_hot_encoded = torch.nn.functional.one_hot(y_local, num_classes=len(np.unique(labels)))
 
-            spk_rec_readout, recs, layers_update = run_snn(x_local, layers, True, one_hot_encoded)
-            #weight quantization
-            layers_update = [ste_fn(layer, possible_weight) for layer in layers_update]
-            layers_update = [layer.to(dtype) for layer in layers_update]
+            spk_rec_readout, recs, weights_update = run_snn(x_local, layers, vars_eprop, True, one_hot_encoded)
+            # weight quantization
+            weights_update = [ste_fn(layer, possible_weight) for layer in weights_update]
+            weights_update = [layer.to(dtype) for layer in weights_update]
 
             average_spike_output[count_epoch]    = torch.mean(torch.sum(spk_rec_readout, 1))
             average_spike_recurrent[count_epoch] = torch.mean(torch.sum(recs[1], 1))
@@ -460,23 +494,23 @@ def train(params, dataset, layers, lr=0.0015, nb_epochs=300, dataset_test=None):
         '''
         count_epoch = count_epoch + 1
 
-
+        # TODO rework this. There MUST be a test set...
         # Calculate test accuracy in each epoch
         if dataset_test is not None:
             test_acc = compute_classification_accuracy(
-                dataset=dataset_test, layers=layers_update)
+                dataset=dataset_test, layers=weights_update)
             accs_hist[1].append(test_acc)  # only safe best test
 
             # save best training
             if mean_accs >= np.max(accs_hist[0]):
                 best_acc_layers = []
-                for ii in layers_update:
+                for ii in weights_update:
                     best_acc_layers.append(ii.detach().clone())
         else:
             # save best test
             if np.max(test_acc) >= np.max(accs_hist[1]):
                 best_acc_layers = []
-                for ii in layers_update:
+                for ii in weights_update:
                     best_acc_layers.append(ii.detach().clone())
 
         pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
@@ -696,8 +730,8 @@ def plot_network_activity(spr_recs, layer_names, figname='./figures'):
 
 
 # Load data and parameters
-file_dir_data = './data/'
-file_type = 'data_braille_letters_th_new'
+file_dir_data = './data/100Hz/'
+file_type = 'data_braille_letters_100Hz_th'
 file_thr = str(threshold)
 file_name = file_dir_data + file_type + file_thr + '.pkl'
 
@@ -750,20 +784,27 @@ class feedforward_layer:
     '''
     class to initialize and compute spiking feedforward layer
     '''
-    def create_layer(nb_inputs, nb_outputs, scale):
-        ff_layer = torch.empty((nb_outputs, nb_inputs),
-                               device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(ff_layer, mean=0.0, std=scale/np.sqrt(nb_inputs))
-        return ff_layer
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_weight_scale, alpha, beta):
+        self.batch_size = batch_size
+        self.nb_inputs = nb_inputs
+        self.nb_neurons = nb_neurons
+        self.scale = fwd_weight_scale
+        self.alpha = alpha
+        self.beta = beta
 
-    def compute_activity(nb_input, nb_neurons, input_activity, nb_steps, lower_bound=None, ref_per_counter=None):
-        syn = torch.zeros((nb_input, nb_neurons), device=device, dtype=dtype)
-        new_syn = torch.zeros((nb_input, nb_neurons),
+    def create_layer(self):
+        self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
+                               device=device, dtype=dtype, requires_grad=True)
+        torch.nn.init.normal_(self.ff_weights, mean=0.0, std=self.scale/np.sqrt(self.nb_inputs))
+
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None, ref_per_counter=None):
+        syn = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        new_syn = torch.zeros((self.batch_size, self.nb_neurons),
                               device=device, dtype=dtype)
-        mem       = torch.zeros((nb_input, nb_neurons), device=device, dtype=dtype)
-        mem_t     = torch.zeros((nb_input, nb_neurons), device=device, dtype=dtype)
-        out       = torch.zeros((nb_input, nb_neurons), device=device, dtype=dtype)
-        n_spike   = torch.zeros((nb_input, nb_neurons), device=device, dtype=dtype)
+        mem       = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        mem_t     = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        out       = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        n_spike   = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
 
         mem_rec     = []
         spk_rec     = []
@@ -782,17 +823,17 @@ class feedforward_layer:
                 update_refractory_perdiod_counter(rst, ref_per_counter)
                 # take care of last batch
                 mask = ref_per_counter[:syn.shape[0], :syn.shape[1]] == 0.0
-                new_syn = alpha * syn
-                new_syn[mask] = (alpha*syn[mask] + input_activity[:, t][mask])
+                new_syn = self.alpha * syn
+                new_syn[mask] = (self.alpha*syn[mask] + input_activity[:, t][mask])
             else:
-                new_syn = alpha*syn + input_activity[:, t]
+                new_syn = self.alpha*syn + input_activity[:, t]
 
             if use_linear_decay:
                 # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
-                new_mem = ((mem-torch.sign(mem)*beta) + syn)*(1.0-rst)
+                new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
-                new_mem   = (beta*mem + syn)*(1.0-rst)
-                new_mem_t = (beta*mem_t + syn)
+                new_mem   = (self.beta*mem + syn)*(1.0-rst)
+                new_mem_t = (self.beta*mem_t + syn)
             if lower_bound:
                 new_mem[new_mem < lower_bound] = lower_bound
                 new_mem_t[new_mem_t < lower_bound] = lower_bound
@@ -817,30 +858,38 @@ class recurrent_layer:
     '''
     class to initialize and compute spiking recurrent layer
     '''
-    def create_layer(nb_inputs, nb_outputs, fwd_scale, rec_scale):
-        ff_layer = torch.empty((nb_outputs, nb_inputs),
-                               device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(ff_layer, mean=0.0,
-                              std=fwd_scale/np.sqrt(nb_inputs))
-        rec_layer = torch.empty((nb_outputs, nb_outputs),
-                                device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(rec_layer, mean=0.0,
-                              std=rec_scale/np.sqrt(nb_inputs))
-        return ff_layer,  rec_layer
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, beta):
+        self.batch_size = batch_size
+        self.nb_inputs = nb_inputs
+        self.nb_neurons = nb_neurons
+        self.fwd_scale = fwd_scale
+        self.rec_scale = rec_scale
+        self.alpha = alpha
+        self.beta = beta
 
-    def compute_activity(batch_size, nb_neurons, input_activity, layer, nb_steps, lower_bound=None, ref_per_counter=None):
-        syn = torch.zeros((batch_size, nb_neurons), device=device, dtype=dtype)
-        new_syn = torch.zeros((batch_size, nb_neurons),
+    def create_layer(self):
+        self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
+                               device=device, dtype=dtype, requires_grad=True)
+        torch.nn.init.normal_(self.ff_weights, mean=0.0,
+                              std=self.fwd_scale/np.sqrt(self.nb_inputs))
+        self.rec_weights = torch.empty((self.nb_neurons, self.nb_neurons),
+                                device=device, dtype=dtype, requires_grad=True)
+        torch.nn.init.normal_(self.rec_weights, mean=0.0,
+                              std=self.rec_scale/np.sqrt(self.nb_neurons))
+
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None, ref_per_counter=None):
+        syn = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        new_syn = torch.zeros((self.batch_size, self.nb_neurons),
                               device=device, dtype=dtype)
-        mem = torch.zeros((batch_size, nb_neurons), device=device, dtype=dtype)
-        out = torch.zeros((batch_size, nb_neurons), device=device, dtype=dtype)
+        mem = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        out = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
         mem_rec = []
         spk_rec = []
 
         # Compute recurrent layer activity
         for t in range(nb_steps):
             # input activity plus last step output activity
-            h1 = input_activity[:, t] + torch.einsum("ab,bc->ac", (out, layer.t()))
+            h1 = input_activity[:, t] + torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
             mthr = mem-1.0
             out = torch.zeros_like(mthr)
             out[mthr > 0] = 1
@@ -851,15 +900,15 @@ class recurrent_layer:
                 # only update the membrane potential if not in refractory period
                 # take care of last batch
                 mask = ref_per_counter[:syn.shape[0], :syn.shape[1]] == 0.0
-                new_syn = alpha * syn
-                new_syn[mask] = (alpha*syn[mask] + h1[mask])
+                new_syn = self.alpha * syn
+                new_syn[mask] = (self.alpha*syn[mask] + h1[mask])
             else:
-                new_syn = alpha*syn + h1
+                new_syn = self.alpha*syn + h1
 
             if use_linear_decay:
-                new_mem = ((mem-torch.sign(mem)*beta_rec) + syn)*(1.0-rst)
+                new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
-                new_mem = (beta_rec*mem + syn)*(1.0-rst)
+                new_mem = (self.beta*mem + syn)*(1.0-rst)
 
             if lower_bound:
                 # clamp membrane potential
@@ -879,22 +928,31 @@ class recurrent_layer:
 
 
 if __name__ == '__main__':
-    with torch.no_grad():
+    with torch.no_grad():  # TODO do we need this here?
         acc_train_list = []
         acc_test_list = []
         loss_train_list = []
-        max_repetitions = 1
-
+        max_repetitions = 1  # here we can set how often we wat to run the training to get some statistics
+        best_acc = 0.0
+        
+        # always use the same data split
+        if create_validation:
+            ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
+                params, file_name, letter_written=letters, create_validation=create_validation)
+        else:
+            ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
+                params, file_name, letter_written=letters, create_validation=create_validation)
+            
         pbar_repetitions = tqdm(range(max_repetitions), position=0, total=max_repetitions, leave=True)
         for repetition in pbar_repetitions:
             pbar_repetitions.set_description(f"{repetition+1}/{max_repetitions}")
             # load data for each repetition indepoently to get different splits
-            ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
-                params, file_name, letter_written=letters)
+            nb_hidden = 20  # TODO we want to change this number over repetitions later
             if repetition == 0:
                 print("Number of training data %i." % len(ds_train))
                 print("Number of testing data %i." % len(ds_test))
-                print("Number of validation data %i." % len(ds_validation))
+                if create_validation:
+                    print("Number of validation data %i." % len(ds_validation))
                 print("Number of outputs %i." % len(np.unique(labels)))
                 print("Number of timesteps %i." % data_steps)
                 print("Delayed output ", delayed_output)
@@ -913,20 +971,20 @@ if __name__ == '__main__':
 
             # initialize and train network
             loss_hist, acc_hist, best_layers = build_and_train(
-                params, ds_train, ds_test, epochs=epochs)
+                params, ds_train, ds_test, nb_hidden=nb_hidden, epochs=epochs)
 
             # get validation results
-            val_acc = compute_classification_accuracy(
-                dataset=ds_validation, layers=best_layers)
-
+            if create_validation:
+                val_acc = compute_classification_accuracy(
+                    dataset=ds_validation, layers=best_layers)
             # safe overall best layer
-            if repetition == 0:
+            if max(acc_hist[1]) > best_acc:
+                if create_validation:
+                    print(f"New best validation accuracy: {val_acc*100:.2f}%.")
+                else:
+                    print(f"New best test accuracy: {max(acc_hist[1])*100:.2f}%.")
                 very_best_layer = best_layers
                 best_acc = val_acc
-            else:
-                if val_acc > best_acc:
-                    very_best_layer = best_layers
-                    best_acc = val_acc
 
             acc_train_list.append(acc_hist[0])
             acc_test_list.append(acc_hist[1])

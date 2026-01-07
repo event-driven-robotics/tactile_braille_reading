@@ -11,20 +11,19 @@ import pandas as pd
 import seaborn as sn
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from matplotlib.gridspec import GridSpec  # can be used for nice subplot layout
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-import torch.nn.functional as F
 
 torch.cuda.empty_cache()
 torch.set_default_dtype(torch.float64)
 
 dtype = torch.float
 
-letters = ['A', 'B', 'C']
-# letters = ['A', 'B']  # a vs. b, c, e, i: difficult; a vs. p, q, y easy
+letters = ['A', 'B']  # a vs. b, c, e, i: difficult; a vs. p, q, y easy
 create_validation = False
 
 # set variables
@@ -33,23 +32,54 @@ threshold = 2  # possible values are: 1, 2, 5, 10
 # set the number of epochs you want to train the network (default = 300)
 epochs = 40
 
-global batch_size
-batch_size = 128
-global lr
-lr = 0.004 #0.0008
-print("Learning rate: ",lr)
-global gamma
-gamma = 0.3
 
-global lower_bound
-lower_bound = -1.0  # set to None to disable
-global no_synapse
-no_synapse = True
-global use_linear_decay
-use_linear_decay = False
-global ref_per_timesteps
-# refractory period is set in simulation time steps for now; set to None to disable
-ref_per_timesteps = 3
+class experimantal_params:
+    def __init__(self):
+        self.max_time = 3501
+        self.time_bin_size = 1  # ms
+        self.nb_input_copies = 1
+        self.batch_size = 128
+        self.learning_rate = 0.004
+        self.gamma = 0.3
+        self.lower_bound = -1.0
+        self.no_synapse = True
+        self.use_linear_decay = False
+        self.ref_per_timesteps = 3
+        self.scale = 15
+        self.time_bin_size = 1
+        self.tau_mem = 0.05
+        self.tau_ratio = 10
+        self.fwd_weight_scale = 1
+        self.weight_scale_factor = 0.02
+        self.reg_spikes = 0.0015
+        self.reg_neurons = 0.0
+        self.tau_mem = 0.06  # params['tau_mem']  # ms
+        # global tau_mem_rec
+        self.tau_mem_rec = 0.06  # params['tau_mem'] #ms
+        # global tau_trace
+        self.tau_trace = 0.14
+        self.tau_trace_out = 0.14
+
+
+params = experimantal_params().__dict__
+
+# global batch_size
+# batch_size = 128
+# global lr
+# lr = 0.004  # 0.0008
+# print("Learning rate: ", lr)
+# global gamma
+# gamma = 0.3
+
+# global lower_bound
+# lower_bound = -1.0  # set to None to disable
+# global no_synapse
+# no_synapse = True
+# global use_linear_decay
+# use_linear_decay = False
+# global ref_per_timesteps
+# # refractory period is set in simulation time steps for now; set to None to disable
+# ref_per_timesteps = 3
 
 # some options for plotting
 NB_BATCHES_TO_PLOT = 1
@@ -76,7 +106,7 @@ possible_weight = diff_cap * q
 
 factor = 10 ** 3
 possible_weight = torch.floor(possible_weight * factor) / factor
-#print(possible_weight)
+# print(possible_weight)
 
 
 # use fixed seed for reproducable results
@@ -90,21 +120,69 @@ else:
     print("Shuffle data randomly")
 
 
-def load_and_extract(params, file_name, taxels=None, letter_written=letters, create_validation=False):
+def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=letters, create_validation=False) -> tuple:
+    """
+    Load and preprocess braille letter tactile sensor data from a pickle file.
+    
+    This function loads event-based tactile sensor data, bins it into time windows,
+    optionally filters by specific taxels (tactile sensors) and letters, and creates
+    train/test (and optionally validation) datasets.
+    
+    Parameters
+    ----------
+    params : dict
+        Dictionary containing experimental parameters:
+        - 'max_time' : int
+            Maximum time duration in milliseconds
+        - 'time_bin_size' : int
+            Size of time bins in milliseconds
+    file_name : str
+        Path to the pickle file containing braille letter data
+    taxels : list or None, optional
+        List of specific taxel indices to use. If None, all taxels are used (default: None)
+    letter_written : list, optional
+        List of letter labels to include in the dataset (default: letters global variable)
+    create_validation : bool, optional
+        If True, creates a 70/20/10 train/test/validation split.
+        If False, creates an 80/20 train/test split (default: False)
+    
+    Returns
+    -------
+    tuple
+        If create_validation is True:
+            (ds_train, ds_test, ds_validation, labels, selected_chans, data_steps)
+        If create_validation is False:
+            (ds_train, ds_test, labels, selected_chans, data_steps)
+        
+        Where:
+        - ds_train, ds_test, ds_validation : TensorDataset
+            PyTorch datasets containing (data, labels) pairs
+        - labels : torch.Tensor
+            All label values in the dataset
+        - selected_chans : int
+            Number of selected channels (2 * number of taxels for ON/OFF events)
+        - data_steps : int
+            Number of time steps in the data
+    
+    Notes
+    -----
+    - Events are binned into time windows of size time_bin_size
+    - Each taxel has two channels (ON and OFF events)
+    - Data is converted to torch tensors with appropriate dtypes
+    - Splits are stratified to maintain class balance
+    """
 
-    max_time = int(3501)  # ms
-    time_bin_size = 1 #int(params['time_bin_size'])  # so far from laoded file, but can be set manually here
-    global time
+    max_time = params["max_time"]  # ms
+    # int(params['time_bin_size'])  # so far from laoded file, but can be set manually here
+    time_bin_size = params["time_bin_size"]
     time = range(0, max_time, time_bin_size)
 
-    global time_step
-    time_step = time_bin_size*0.001  # ms
+    params["time_step"] = time_bin_size*0.001  # ms
     data_steps = len(time)
-    global delayed_output
-    delayed_output = data_steps
+    params["delayed_output"] = data_steps
 
     data_dict = pd.read_pickle(file_name)
-    #data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
+    # data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
     data_dict = pd.DataFrame(data_dict)
 
     # Extract data
@@ -157,6 +235,7 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters, cre
         ds_validation = TensorDataset(x_validation, y_validation)
 
         return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
+
     else:
         # create 80/20 train/test split
         x_train, x_test, y_train, y_test = train_test_split(
@@ -167,7 +246,65 @@ def load_and_extract(params, file_name, taxels=None, letter_written=letters, cre
 
         return ds_train, ds_test, labels, selected_chans, data_steps
 
-def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, beta_trace, beta_trace_out):
+
+def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: float, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, beta_trace: float, beta_trace_out: float) -> None:
+    """
+    Compute weight gradients using e-prop (eligibility propagation) for spiking neural networks.
+    
+    This function implements the e-prop learning algorithm for recurrent spiking neural networks.
+    It computes eligibility traces for input, recurrent, and output connections, then uses these
+    traces along with the error signal to calculate weight gradients. Gradients are accumulated
+    directly into the .grad attributes of the weight tensors.
+    
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input spike trains with shape [time, batch, input_features]
+    yo : torch.Tensor
+        Network output (predicted labels) with shape [time, batch, output_units]
+    yt : torch.Tensor
+        Target labels (one-hot encoded) with shape [batch, output_units]
+    gamma : float
+        Surrogate gradient scaling factor for the spike function derivative approximation
+    thr : int
+        Firing threshold for neurons (typically 1)
+    v : torch.Tensor
+        Membrane potential traces of hidden neurons with shape [time, batch, hidden_neurons]
+    z : torch.Tensor
+        Spike trains of hidden neurons with shape [time, batch, hidden_neurons]
+    w_in : torch.Tensor
+        Input-to-hidden weight matrix with shape [hidden_neurons, input_features]
+        Gradients are accumulated in w_in.grad
+    w_rec : torch.Tensor
+        Recurrent (hidden-to-hidden) weight matrix with shape [hidden_neurons, hidden_neurons]
+        Gradients are accumulated in w_rec.grad
+    w_out : torch.Tensor
+        Hidden-to-output weight matrix with shape [output_units, hidden_neurons]
+        Gradients are accumulated in w_out.grad
+    beta_trace : float
+        Decay factor for eligibility traces of hidden layer (exp(-dt/tau_trace))
+    beta_trace_out : float
+        Decay factor for output eligibility traces (exp(-dt/tau_trace_out))
+    
+    Returns
+    -------
+    None
+        This function modifies weight gradients in-place (w_in.grad, w_rec.grad, w_out.grad)
+    
+    Notes
+    -----
+    - Implements the e-prop algorithm for online learning in spiking neural networks
+    - Uses surrogate gradients to approximate the non-differentiable spike function
+    - Eligibility traces track the causal relationship between weight changes and neuron spikes
+    - Convolutions are used to efficiently compute eligibility traces over time
+    - The delayed_output parameter from params dict controls which time steps contribute to gradients
+    - All computations are performed on the device specified by the global 'device' variable
+    
+    References
+    ----------
+    Bellec et al. (2020). "A solution to the learning dilemma for recurrent networks 
+    of spiking neurons." Nature Communications.
+    """
     nb_inputs = x.shape[-1]
 
     if w_in.grad is None:
@@ -183,87 +320,129 @@ def grads_batch(x, yo, yt, gamma, thr, v, z, w_in, w_rec, w_out, beta_trace, bet
     err = torch.zeros_like(yo)
 
     # Eligibility traces convolution
-    beta_conv     = torch.tensor([beta_trace_out ** (data_steps - i - 1) for i in range(data_steps)]).float().view(1, 1, -1).to(device)
-    beta_rec_conv = torch.tensor([beta_trace ** (data_steps - i - 1) for i in range(data_steps)]).float().view(1, 1, -1).to(device)
+    beta_conv = torch.tensor([beta_trace_out ** (data_steps - i - 1)
+                             for i in range(data_steps)]).float().view(1, 1, -1).to(device)
+    beta_rec_conv = torch.tensor([beta_trace ** (data_steps - i - 1)
+                                 for i in range(data_steps)]).float().view(1, 1, -1).to(device)
 
     # Convoluzione Input eligibility traces
-    trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(nb_inputs, -1, -1), padding=data_steps, groups=nb_inputs)[:, :, 1:data_steps+1]
+    trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(
+        nb_inputs, -1, -1), padding=data_steps, groups=nb_inputs)[:, :, 1:data_steps+1]
     trace_in = trace_in.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
     trace_in = torch.einsum('tbr,brit->brit', h, trace_in)
 
     # Convoluzione Recurrent eligibility traces
-    trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, :data_steps]
+    trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(
+        nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, :data_steps]
     trace_rec = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
     trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
 
     # Output eligibility vector
-    trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, 1:data_steps+1]
+    trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(
+        nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, 1:data_steps+1]
 
     # Ottimizzazione convoluzioni batch-wise
-    trace_in = F.conv1d(trace_in.reshape(batch_size, nb_inputs * nb_hidden, data_steps),
+    trace_in = F.conv1d(trace_in.reshape(x.shape[1], nb_inputs * nb_hidden, data_steps),
                         beta_conv.expand(nb_inputs * nb_hidden, -1, -1),
                         padding=data_steps, groups=nb_inputs * nb_hidden)[:, :, 1:data_steps+1]
-    trace_in = trace_in.reshape(batch_size, nb_hidden, nb_inputs, data_steps)
+    trace_in = trace_in.reshape(
+        x.shape[1], nb_hidden, nb_inputs, data_steps)
 
-    trace_rec = F.conv1d(trace_rec.reshape(batch_size, nb_hidden * nb_hidden, data_steps),
+    trace_rec = F.conv1d(trace_rec.reshape(x.shape[1], nb_hidden * nb_hidden, data_steps),
                          beta_conv.expand(nb_hidden * nb_hidden, -1, -1),
                          padding=data_steps, groups=nb_hidden * nb_hidden)[:, :, 1:data_steps+1]
-    trace_rec = trace_rec.reshape(batch_size, nb_hidden, nb_hidden, data_steps)
+    trace_rec = trace_rec.reshape(
+        x.shape[1], nb_hidden, nb_hidden, data_steps)
 
     for i in range(yo.shape[0]):
-        err[i,:,:] = yo[i,:,:] - yt
+        err[i, :, :] = yo[i, :, :] - yt
     err = err.to(dtype)
 
     L = torch.einsum('tbo,or->brt', err, w_out)
 
-    if delayed_output != 0:
-        L         =          L[:,:,-delayed_output:]
-        err       =        err[-delayed_output:,:,:]
-        trace_in  =   trace_in[:,:,:,-delayed_output:]
-        trace_rec =  trace_rec[:,:,:,-delayed_output:]
-        trace_out =  trace_out[:,:,-delayed_output:]
+    if params["delayed_output"] != 0:
+        L = L[:, :, -params["delayed_output"]:]
+        err = err[-params["delayed_output"]:, :, :]
+        trace_in = trace_in[:, :, :, -params["delayed_output"]:]
+        trace_rec = trace_rec[:, :, :, -params["delayed_output"]:]
+        trace_out = trace_out[:, :, -params["delayed_output"]:]
+
     # Weight gradient updates
-    w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1, nb_inputs, -1) * trace_in, dim=(0, 3))
-    w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1, nb_hidden, -1) * trace_rec, dim=(0, 3))
+    w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
+                           nb_inputs, -1) * trace_in, dim=(0, 3))
+    w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
+                            nb_hidden, -1) * trace_rec, dim=(0, 3))
     w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
 
 
-def run_snn(inputs, layers, vars_eprop, trainable, yt = None):
+def run_snn(inputs: torch.Tensor, layers: list, vars_eprop: list, trainable: bool, yt=None) -> tuple:
+    """
+    Execute forward pass through a spiking neural network with optional e-prop gradient computation.
+    
+    This function runs input data through a two-layer spiking neural network (recurrent hidden layer
+    and feedforward readout layer), computes network activity, and optionally calculates gradients
+    using the e-prop learning algorithm.
+    
+    Parameters
+    ----------
+    inputs : torch.Tensor
+        Input spike trains with shape [batch, time, input_features]
+    layers : list
+        List containing [recurrent_layer, feedforward_layer] layer objects
+    vars_eprop : list
+        List containing [beta_trace, beta_trace_out] decay factors for eligibility traces
+    trainable : bool
+        If True, compute gradients using e-prop. If False, only perform forward pass
+    yt : torch.Tensor, optional
+        Target labels (one-hot encoded) with shape [batch, output_units].
+        Required when trainable=True
+    
+    Returns
+    -------
+    tuple
+        (spk_rec_readout, other_recs, weights_update) where:
+        - spk_rec_readout : torch.Tensor
+            Output layer spike recordings [batch, time, output_neurons]
+        - other_recs : list
+            [mem_rec_hidden, spk_rec_hidden, mem_rec_readout] recordings from layers
+        - weights_update : list
+            [ff_weights, rec_weights, out_weights] weight matrices (potentially quantized)
+    
+    Notes
+    -----
+    - When trainable=True, selects winning output neuron based on spike counts and
+      calls grads_batch to compute e-prop gradients
+    - Supports input replication via params["nb_input_copies"] for increased input representation
+    - Winner selection uses random tie-breaking when multiple neurons have equal spike counts
+    """
     beta_trace, beta_trace_out = vars_eprop
     rec_layer, ff_layer = layers
-    # w1, w2, v1 = rec_layer.ff_weights, ff_layer.ff_weights, rec_layer.rec_weights
 
-    # bs = inputs.shape[0]
-
-    # h1 = torch.einsum(
-    #     "abc,cd->abd", (inputs.tile((nb_input_copies,)), w1.t()))
-    h1 = torch.einsum(
-        "abc,cd->abd", inputs, rec_layer.ff_weights.t())
-
-    if ref_per_timesteps:
-        spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
-            h1, data_steps, lower_bound, ref_counter_hidden)
+    if params["nb_input_copies"] > 1:
+        h1 = torch.einsum(
+            "abc,cd->abd", (inputs.tile((params["nb_input_copies"],)), rec_layer.ff_weights.t()))
     else:
-        spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
-            h1, data_steps, lower_bound)
+        h1 = torch.einsum(
+            "abc,cd->abd", inputs, rec_layer.ff_weights.t())
+
+    spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
+        h1, data_steps, params["lower_bound"])
 
     # Readout layer
     h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, ff_layer.ff_weights.t()))
 
-    if ref_per_timesteps:
-        spk_rec_readout, mem_rec_readout, mem_train, n_spike = ff_layer.compute_activity(
-            h2, data_steps, lower_bound, ref_counter_readout)
-    else:
-        spk_rec_readout, mem_rec_readout, n_spike = ff_layer.compute_activity(
-            h2, data_steps, lower_bound)
+    spk_rec_readout, mem_rec_readout, mem_train, n_spike = ff_layer.compute_activity(
+        h2, data_steps, params["lower_bound"])
 
     other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
-    weights_update = [rec_layer.ff_weights, rec_layer.rec_weights, ff_layer.ff_weights]
+    weights_update = [rec_layer.ff_weights,
+                      rec_layer.rec_weights, ff_layer.ff_weights]
 
-    if(trainable):
-        max_spikes, _ = torch.max(n_spike, dim=2, keepdim=True)  # [batch, tempo, 1]
+    if (trainable):
+        max_spikes, _ = torch.max(
+            n_spike, dim=2, keepdim=True)  # [batch, tempo, 1]
 
-        #If multiple neurons emit the highest number of spikes, select one of them randomly
+        # If multiple neurons emit the highest number of spikes, select one of them randomly
         is_max = n_spike == max_spikes
 
         rand_vals = torch.rand(n_spike.shape)
@@ -271,93 +450,118 @@ def run_snn(inputs, layers, vars_eprop, trainable, yt = None):
 
         _, am = torch.max(rand_vals, dim=2)
         am = am.to(device)
-        yo = torch.nn.functional.one_hot(am, num_classes=len(np.unique(labels)))
-        #print(yo.shape, yt.shape)
+        yo = torch.nn.functional.one_hot(
+            am, num_classes=len(np.unique(labels)))
+        # print(yo.shape, yt.shape)
         # grads_batch(inputs.tile((nb_input_copies,)).permute(1,0,2), yo.permute(1,0,2), yt, gamma, 1, mem_rec_hidden.permute(1,0,2), spk_rec_hidden.permute(1,0,2), w1, v1, w2)
-        grads_batch(inputs.permute(1,0,2), yo.permute(1,0,2), yt, gamma, 1, mem_rec_hidden.permute(1,0,2), spk_rec_hidden.permute(1,0,2), rec_layer.ff_weights, rec_layer.rec_weights, ff_layer.ff_weights, beta_trace, beta_trace_out)
-
+        grads_batch(inputs.permute(1, 0, 2), yo.permute(1, 0, 2), yt, params["gamma"], 1, mem_rec_hidden.permute(1, 0, 2), spk_rec_hidden.permute(
+            1, 0, 2), rec_layer.ff_weights, rec_layer.rec_weights, ff_layer.ff_weights, beta_trace, beta_trace_out)
     return spk_rec_readout, other_recs, weights_update
 
 
-def build_and_train(params, ds_train, ds_test, nb_hidden=20, epochs=epochs):
+def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset, nb_hidden=20, epochs=epochs) -> tuple:
+    """
+    Build and train a recurrent spiking neural network for braille letter classification.
+    
+    This function constructs a two-layer spiking neural network (recurrent hidden layer and
+    feedforward readout layer), trains it using e-prop, and reports the best performance metrics.
+    
+    Parameters
+    ----------
+    params : dict
+        Dictionary containing experimental parameters including:
+        - 'nb_input_copies' : int
+            Number of copies for each input channel
+        - 'tau_mem', 'tau_mem_rec', 'tau_trace', 'tau_trace_out' : float
+            Time constants for membrane potentials and eligibility traces
+        - 'batch_size', 'learning_rate' : int, float
+            Training hyperparameters
+        - 'no_synapse', 'use_linear_decay', 'ref_per_timesteps' : bool/int
+            Neuron model configuration
+        - 'fwd_weight_scale', 'weight_scale_factor' : float
+            Weight initialization scales
+    ds_train : TensorDataset
+        Training dataset containing (input_data, labels) pairs
+    ds_test : TensorDataset
+        Test dataset containing (input_data, labels) pairs
+    nb_hidden : int, optional
+        Number of neurons in the recurrent hidden layer (default: 20)
+    epochs : int, optional
+        Number of training epochs (default: global epochs variable)
+    
+    Returns
+    -------
+    tuple
+        (loss_hist, accs_hist, best_layers, vars_eprop) where:
+        - loss_hist : list
+            Training loss values per epoch
+        - accs_hist : list of lists
+            [[train_accuracies], [test_accuracies]] per epoch
+        - best_layers : list
+            Weight matrices of the best performing model
+        - vars_eprop : list
+            [beta_trace, beta_trace_out] eligibility trace decay factors
+    
+    Notes
+    -----
+    - Computes and prints best training/test accuracies and their corresponding epochs
+    - Uses exponential or linear decay for membrane potential dynamics
+    - Supports optional synaptic dynamics and refractory periods
+    - Saves the model with best training accuracy during training
+    """
 
-    # global nb_input_copies
     # Num of spiking neurons used to encode each channel
-    nb_input_copies = 1 #params['nb_input_copies']
+    nb_input_copies = params['nb_input_copies']
     print("Number of input copies ", nb_input_copies)
     # Network parameters
-    # global nb_inputs
     nb_inputs = nb_channels*nb_input_copies
-    # global nb_outputs
     nb_outputs = len(np.unique(labels))
-    # global nb_hidden
     nb_hidden = nb_hidden
     print("Number of hidden neurons ", nb_hidden)
-    # global nb_steps
-    # nb_steps = data_steps
 
-    tau_mem = 0.06 #params['tau_mem']  # ms
-    # global tau_mem_rec
-    tau_mem_rec = 0.06 #params['tau_mem'] #ms
-    # global tau_trace
-    tau_trace = 0.14
-    # global tau_trace_out
-    tau_trace_out = 0.14
-    tau_syn = tau_mem/params['tau_ratio']
-    print("tau_mem: ", tau_mem, "tau_mem recurrent: ", tau_mem_rec, "tau trace out: ", tau_trace_out, "tau trace: ", tau_trace)
-    # TODO create list of variables to use for eprop
-    # global alpha
-    # global beta
-    # global beta_rec
-    # global beta_trace
-    # global beta_trace_out
-    if no_synapse:
+    # tau_mem = 0.06  # params['tau_mem']  # ms
+    # # global tau_mem_rec
+    # tau_mem_rec = 0.06  # params['tau_mem'] #ms
+    # # global tau_trace
+    # tau_trace = 0.14
+    # tau_trace_out = 0.14
+    tau_syn = params['tau_mem']/params['tau_ratio']
+    print("tau_mem: ", params['tau_mem'], "tau_mem recurrent: ", params['tau_mem_rec'],
+          "tau trace out: ", params['tau_trace_out'], "tau trace: ", params['tau_trace'])
+    if params["no_synapse"]:
         alpha = 0.0  # here we disable synapse dynamics
     else:
-        alpha = float(np.exp(-time_step/tau_syn))
+        alpha = float(np.exp(-params["time_step"]/tau_syn))
 
-    if use_linear_decay:
+    if params["use_linear_decay"]:
         beta = 0.005  # 0.05 < 0.01 says how much to lose
     else:
-        beta = float(np.exp(-time_step/tau_mem))  # says how much to keep
-        beta_rec = float(np.exp(-time_step/tau_mem_rec))  # says how much to keep
-        beta_trace = float(np.exp(-time_step/tau_trace))
-        beta_trace_out = float(np.exp(-time_step/tau_trace_out))
-    if ref_per_timesteps:
-        # initialize as many we have layers with the size of each layer
-        # global ref_counter_hidden
-        ref_counter_hidden = torch.zeros(
-            (batch_size, nb_hidden), device=device)
-        # global ref_counter_readout
-        ref_counter_readout = torch.zeros(
-            (batch_size, nb_outputs), device=device)
+        # says how much to keep
+        beta = float(np.exp(-params["time_step"]/params['tau_mem']))
+        beta_rec = float(np.exp(-params["time_step"]/params['tau_mem_rec'])
+                         )  # says how much to keep
+        beta_trace = float(np.exp(-params["time_step"]/params['tau_trace']))
+        beta_trace_out = float(
+            np.exp(-params["time_step"]/params['tau_trace_out']))
 
     vars_eprop = [beta_trace, beta_trace_out]
     fwd_weight_scale = params['fwd_weight_scale']
     rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']
 
     # Spiking network
-    layers = []
-    # weights = []
-
     # recurrent layer
     rec_layer = recurrent_layer(
-        batch_size=batch_size, nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_scale=fwd_weight_scale, rec_scale=rec_weight_scale, alpha=alpha, beta=beta_rec)
-    # w1, v1 = rec_layer.create_layer()
-    rec_layer.create_layer()
+        batch_size=params["batch_size"], nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_scale=fwd_weight_scale, rec_scale=rec_weight_scale, alpha=alpha, beta=beta_rec, ref_per=params["ref_per_timesteps"])
 
     # readout layer
     ff_layer = feedforward_layer(
-        batch_size=batch_size, nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta)    
-    # w2 = ff_layer.create_layer()
-    ff_layer.create_layer()
+        batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta, ref_per=params["ref_per_timesteps"])
 
-    layers.append(rec_layer), layers.append(ff_layer)
-    # weights.append(w1), weights.append(w2), weights.append(v1)
+    layers = [rec_layer, ff_layer]
 
     # a fixed learning rate is already defined within the train function, that's why here it is omitted
     loss_hist, accs_hist, best_layers = train(
-        params=params, dataset=ds_train, layers=layers, vars_eprop=vars_eprop, lr=lr, nb_epochs=epochs, dataset_test=ds_test)
+        params=params, dataset=ds_train, layers=layers, vars_eprop=vars_eprop, lr=params["learning_rate"], nb_epochs=epochs, dataset_test=ds_test)
 
     # best training and test at best training
     acc_best_train = np.max(accs_hist[0])  # returns max value
@@ -380,19 +584,71 @@ def build_and_train(params, ds_train, ds_test, nb_hidden=20, epochs=epochs):
         acc_best_test, acc_train_at_best_test, idx_best_test+1))
     print("------------------------------------------------------------------------------------\n")
 
-    return loss_hist, accs_hist, best_layers
+    return loss_hist, accs_hist, best_layers, vars_eprop
 
 
-def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset_test=None):
+def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, lr=0.0015, nb_epochs=300, dataset_test=None) -> tuple:
+    """
+    Train a spiking neural network using e-prop and evaluate on test data.
+    
+    This function implements the training loop for a spiking neural network using the e-prop
+    algorithm. It processes data in batches, computes gradients, updates weights, and tracks
+    training/test performance over epochs.
+    
+    Parameters
+    ----------
+    params : dict
+        Dictionary containing experimental parameters including:
+        - 'batch_size' : int
+            Number of samples per batch
+        - 'reg_spikes', 'reg_neurons' : float
+            L1 and L2 regularization coefficients for spike activity
+        - 'delayed_output' : int
+            Number of timesteps to use for output computation
+    dataset : TensorDataset
+        Training dataset containing (input_data, labels) pairs
+    layers : list
+        List containing [recurrent_layer, feedforward_layer] layer objects
+    vars_eprop : list
+        List containing [beta_trace, beta_trace_out] decay factors for eligibility traces
+    lr : float, optional
+        Learning rate for Adamax optimizer (default: 0.0015)
+    nb_epochs : int, optional
+        Number of training epochs (default: 300)
+    dataset_test : TensorDataset, optional
+        Test dataset for evaluation after each epoch (default: None)
+    
+    Returns
+    -------
+    tuple
+        (loss_hist, accs_hist, best_acc_layers) where:
+        - loss_hist : list
+            Training loss values per epoch
+        - accs_hist : list of lists
+            [[train_accuracies], [test_accuracies]] per epoch
+        - best_acc_layers : list
+            Weight matrices of the best performing model
+    
+    Notes
+    -----
+    - Uses Adamax optimizer with betas=(0.9, 0.995)
+    - Applies weight quantization via Straight-Through Estimator
+    - Implements NLL loss with optional spike regularization (currently disabled)
+    - Handles ties in output predictions via random selection
+    - Tracks average spike counts for hidden and output layers
+    - Saves model with best training accuracy
+    - Displays progress via tqdm progress bars
+    """
 
     nb_hidden = layers[0].rec_weights.shape[0]
     nb_outputs = layers[1].ff_weights.shape[0]
-    weights = [layers[0].ff_weights, layers[0].rec_weights, layers[1].ff_weights]  # TODO chek if this order makes sense?!
+    weights = [layers[0].ff_weights, layers[0].rec_weights,
+               layers[1].ff_weights]  # TODO chek if this order makes sense?!
     # The log softmax function across output units
     log_softmax_fn = nn.LogSoftmax(dim=1)
     loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
 
-    generator = DataLoader(dataset=dataset, batch_size=batch_size, pin_memory=True,
+    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
                            shuffle=True, num_workers=2)
 
     # The optimization loop
@@ -401,7 +657,7 @@ def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset
     pbar_training = tqdm(range(nb_epochs), position=1,
                          total=nb_epochs, leave=False)
     average_spike_recurrent = torch.zeros(nb_epochs, device=device)
-    average_spike_output    = torch.zeros(nb_epochs, device=device)
+    average_spike_output = torch.zeros(nb_epochs, device=device)
     count_epoch = 0
     for _ in pbar_training:
         # learning rate decreases over epochs
@@ -415,26 +671,23 @@ def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset
                             total=len(generator), leave=False)
         for x_local, y_local in pbar_batches:
             x_local, y_local = x_local.to(device), y_local.to(device)
-            # reset refractory period counter for each batch
-            if ref_per_timesteps:
-                # initialize as many we have layers with the size of each layer
-                global ref_counter_hidden
-                ref_counter_hidden = torch.zeros(
-                    (batch_size, nb_hidden), device=device)
-                global ref_counter_readout
-                ref_counter_readout = torch.zeros(
-                    (batch_size, nb_outputs), device=device)
+
             optimizer.zero_grad()
 
-            one_hot_encoded = torch.nn.functional.one_hot(y_local, num_classes=len(np.unique(labels)))
+            one_hot_encoded = torch.nn.functional.one_hot(
+                y_local, num_classes=len(np.unique(labels)))
 
-            spk_rec_readout, recs, weights_update = run_snn(x_local, layers, vars_eprop, True, one_hot_encoded)
+            spk_rec_readout, recs, weights_update = run_snn(
+                x_local, layers, vars_eprop, True, one_hot_encoded)
             # weight quantization
-            weights_update = [ste_fn(layer, possible_weight) for layer in weights_update]
+            weights_update = [ste_fn(layer, possible_weight)
+                              for layer in weights_update]
             weights_update = [layer.to(dtype) for layer in weights_update]
 
-            average_spike_output[count_epoch]    = torch.mean(torch.sum(spk_rec_readout, 1))
-            average_spike_recurrent[count_epoch] = torch.mean(torch.sum(recs[1], 1))
+            average_spike_output[count_epoch] = torch.mean(
+                torch.sum(spk_rec_readout, 1))
+            average_spike_recurrent[count_epoch] = torch.mean(
+                torch.sum(recs[1], 1))
 
             _, spk_rec_hidden, _ = recs
             m = torch.sum(spk_rec_readout, 1)  # sum over time
@@ -445,21 +698,23 @@ def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset
             # Here we can set up our regularizer loss
             # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
             # L1 loss on total number of spikes (hidden layer 1)
-            reg_loss = params['reg_spikes']*torch.mean(torch.sum(spk_rec_hidden, 1))
+            reg_loss = params['reg_spikes'] * \
+                torch.mean(torch.sum(spk_rec_hidden, 1))
             # L1 loss on total number of spikes (output layer)
             # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
             # print("L1: ", reg_loss)
             # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
             # L2 loss on spikes per neuron (hidden layer 1)
             reg_loss += params['reg_neurons'] * \
-                torch.mean(torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
+                torch.mean(
+                    torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
             # L2 loss on spikes per neuron (output layer)
             # reg_loss += params['reg_neurons'] * \
             #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
             # print("L1 + L2: ", reg_loss)
 
             # Here we combine supervised loss and the regularizer
-            loss_val = loss_fn(log_p_y, y_local) #+ reg_loss
+            loss_val = loss_fn(log_p_y, y_local)  # + reg_loss
             optimizer.step()
 
             local_loss.append(loss_val.item())
@@ -470,17 +725,18 @@ def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset
             # with output spikes
             mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
             if mask.any():
-                #print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
+                # print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
                 # compare to labels
                 true_indices = torch.nonzero(mask, as_tuple=True)
                 for i in true_indices:
-                    candidates = torch.nonzero(m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0] # Find the output with the maximum value
-                    am[i] = candidates[torch.randint(0, len(candidates), (1,))] #select randomly among the candidates
+                    # Find the output with the maximum value
+                    candidates = torch.nonzero(
+                        m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
+                    # select randomly among the candidates
+                    am[i] = candidates[torch.randint(0, len(candidates), (1,))]
 
             tmp = np.mean((y_local == am).detach().cpu().numpy())
             accs.append(tmp)
-
-
 
         mean_loss = np.mean(local_loss)
         loss_hist.append(mean_loss)
@@ -498,7 +754,7 @@ def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset
         # Calculate test accuracy in each epoch
         if dataset_test is not None:
             test_acc = compute_classification_accuracy(
-                dataset=dataset_test, layers=weights_update)
+                dataset=dataset_test, layers=layers, vars_eprop=vars_eprop)
             accs_hist[1].append(test_acc)  # only safe best test
 
             # save best training
@@ -515,57 +771,118 @@ def train(params, dataset, layers, vars_eprop, lr=0.0015, nb_epochs=300, dataset
 
         pbar_training.set_description("{:.2f}%, {:.2f}%, {:.2f}.".format(
             accs_hist[0][-1]*100, accs_hist[1][-1]*100, loss_hist[-1]))
-        print("Train acc: ", accs_hist[0][-1]*100, "Test acc", accs_hist[1][-1]*100, 'Loss: ', loss_hist[-1])
-
-
+        print("Train acc: ", accs_hist[0][-1]*100, "Test acc",
+              accs_hist[1][-1]*100, 'Loss: ', loss_hist[-1])
 
     return loss_hist, accs_hist, best_acc_layers
 
 
-def compute_classification_accuracy(dataset, layers):
-    """ Computes classification accuracy on supplied data in batches. """
+def compute_classification_accuracy(dataset: TensorDataset, layers: list, vars_eprop: list) -> float:
+    """
+    Compute classification accuracy on a dataset using a trained spiking neural network.
+    
+    This function evaluates network performance by running inference on all samples in the dataset
+    (processed in batches) and comparing predicted labels to ground truth labels.
+    
+    Parameters
+    ----------
+    dataset : TensorDataset
+        Dataset containing (input_data, labels) pairs for evaluation
+    layers : list
+        List containing [recurrent_layer, feedforward_layer] trained layer objects
+    vars_eprop : list
+        List containing [beta_trace, beta_trace_out] decay factors (used for consistency)
+    
+    Returns
+    -------
+    float
+        Mean classification accuracy across all samples (range: 0.0 to 1.0)
+    
+    Notes
+    -----
+    - Predictions are made by counting output spikes during the delayed_output window
+    - Winner selection uses random tie-breaking when multiple neurons have equal spike counts
+    - All computations are performed with torch.no_grad() for efficiency
+    - Uses the global params['delayed_output'] to determine which timesteps to consider
+    """
 
-    generator = DataLoader(dataset=dataset, batch_size=batch_size, pin_memory=True,
+    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
                            shuffle=False, num_workers=2)
     accs = []
 
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(device), y_local.to(device)
         with torch.no_grad():
-            spk_rec_readout, _, _ = run_snn(x_local, layers, False)
+            one_hot_encoded = torch.nn.functional.one_hot(
+                y_local, num_classes=len(np.unique(labels)))
+            spk_rec_readout, _, _ = run_snn(
+                x_local, layers, vars_eprop, True, one_hot_encoded)
 
         # with output spikes
-        m = torch.sum(spk_rec_readout[:, -delayed_output:, :], dim=1)  # sum over time
+        # sum over time
+        m = torch.sum(spk_rec_readout[:, -params["delayed_output"]:, :], dim=1)
         max_val, am = torch.max(m, 1)     # argmax over output units
 
         # with output spikes
         mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
-        #If multiple neurons emit the highest number of spikes, select one of them randomly
+        # If multiple neurons emit the highest number of spikes, select one of them randomly
         if mask.any():
-            #print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
+            # print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
             # compare to labels
             true_indices = torch.nonzero(mask, as_tuple=True)
-            #am[true_indices] = torch.randint(0, len(letters), (len(true_indices),), device=device)
+            # am[true_indices] = torch.randint(0, len(letters), (len(true_indices),), device=device)
             for i in true_indices:
-                candidates = torch.nonzero(m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
+                candidates = torch.nonzero(
+                    m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
                 am[i] = candidates[torch.randint(0, len(candidates), (1,))]
-
 
         # compare to labels
         tmp = np.mean((y_local == am).detach().cpu().numpy())
         accs.append(tmp)
-    #print("Test mean accuracy", np.mean(accs))
+    # print("Test mean accuracy", np.mean(accs))
     return np.mean(accs)
 
 
-def plot_training_perfromance(path, acc_train, acc_test, loss_train):
-    """Visualize the training performance."""
+def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
+    """
+    Visualize training performance with accuracy and loss plots across multiple runs.
+    
+    Creates a two-panel figure showing training/test accuracies and training loss over epochs.
+    Displays mean ± standard deviation across multiple runs and highlights the best trial.
+    
+    Parameters
+    ----------
+    path : str
+        File path (without extension) where the PDF figure will be saved
+    acc_train : np.ndarray
+        Training accuracies with shape [n_runs, n_epochs]
+    acc_test : np.ndarray
+        Test accuracies with shape [n_runs, n_epochs]
+    loss_train : np.ndarray
+        Training loss values with shape [n_runs, n_epochs]
+    
+    Returns
+    -------
+    None
+        Saves figure to {path}.pdf and closes the figure
+    
+    Notes
+    -----
+    - Top panel: Training and test accuracy (%) with shaded standard deviation regions
+    - Bottom panel: Training loss with shaded standard deviation region
+    - Best trial is highlighted with solid lines (trial with maximum test accuracy)
+    - Mean across trials shown with dashed lines
+    - Figure size: 8x12 inches, saved as PDF
+    """
     # calc mean and std
-    acc_mean_train, acc_std_train = np.mean(acc_train, axis=0), np.std(acc_train, axis=0)
-    acc_mean_test, acc_std_test = np.mean(acc_test, axis=0), np.std(acc_test, axis=0)
+    acc_mean_train, acc_std_train = np.mean(
+        acc_train, axis=0), np.std(acc_train, axis=0)
+    acc_mean_test, acc_std_test = np.mean(
+        acc_test, axis=0), np.std(acc_test, axis=0)
     best_trial, best_val_idx = np.where(np.max(acc_test) == acc_test)
     best_trial, best_val_idx = best_trial[0], best_val_idx[0]
-    loss_train_mean, loss_train_std = np.mean(loss_train, axis=0), np.std(loss_train, axis=0)
+    loss_train_mean, loss_train_std = np.mean(
+        loss_train, axis=0), np.std(loss_train, axis=0)
 
     fig = plt.figure(figsize=(8, 12))
     ax = fig.add_subplot(2, 1, 1)
@@ -587,16 +904,21 @@ def plot_training_perfromance(path, acc_train, acc_test, loss_train):
     ax.set_ylabel("Accuracy (%)")
     ax.set_ylim((0, 105))
     ax.set_title("Accuracy")
-    ax.legend(["Training std", "Test std", r"$\overline{\mathrm{Training}}$", r"$\overline{\mathrm{Test}}$", "Training @ best test", "Best test"], loc='lower right')
+    ax.legend(["Training std", "Test std", r"$\overline{\mathrm{Training}}$",
+              r"$\overline{\mathrm{Test}}$", "Training @ best test", "Best test"], loc='lower right')
 
     ax = fig.add_subplot(2, 1, 2)
-    ax.fill_between(range(1, len(loss_train_mean)+1), loss_train_mean+loss_train_std, loss_train_mean-loss_train_std, color='cornflowerblue')
-    ax.plot(range(1, len(loss_train_mean)+1), loss_train_mean, color='blue', linestyle='dashed')
-    ax.plot(range(1, len(loss_train[best_trial])+1), loss_train[best_trial], color='blue')
+    ax.fill_between(range(1, len(loss_train_mean)+1), loss_train_mean +
+                    loss_train_std, loss_train_mean-loss_train_std, color='cornflowerblue')
+    ax.plot(range(1, len(loss_train_mean)+1),
+            loss_train_mean, color='blue', linestyle='dashed')
+    ax.plot(range(1, len(loss_train[best_trial])+1),
+            loss_train[best_trial], color='blue')
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_ylim((0, None))
-    ax.legend(["Training std", r"$\overline{\mathrm{Training}}$", "Training loss @ best test"])
+    ax.legend(
+        ["Training std", r"$\overline{\mathrm{Training}}$", "Training loss @ best test"])
     ax.set_title("Training loss")
     fig.align_ylabels()
     fig.tight_layout()
@@ -604,10 +926,38 @@ def plot_training_perfromance(path, acc_train, acc_test, loss_train):
     plt.close(fig)
 
 
-def plot_confusion_matrix(dataset, layers, labels):
-    '''Takes a dataset and the weight matrix to compute the network activity and compare it to the labels.
-    Labels are used to write the ticks.'''
-    generator = DataLoader(dataset=dataset, batch_size=batch_size, pin_memory=True,
+def plot_confusion_matrix(dataset: TensorDataset, layers: list, labels: list, vars_eprop: list) -> None:
+    """
+    Generate and save a normalized confusion matrix for network predictions.
+    
+    Runs the trained network on all samples in the dataset, collects predictions and ground truth
+    labels, then creates a heatmap visualization of the confusion matrix.
+    
+    Parameters
+    ----------
+    dataset : TensorDataset
+        Dataset containing (input_data, labels) pairs for evaluation
+    layers : list
+        List containing [recurrent_layer, feedforward_layer] trained layer objects
+    labels : list
+        List of label names (e.g., ['A', 'B']) for axis tick labels
+    vars_eprop : list
+        List containing [beta_trace, beta_trace_out] decay factors (used for consistency)
+    
+    Returns
+    -------
+    None
+        Saves confusion matrix heatmap to ./figures/rsnn_1layers_train_tc_thr_{threshold}_cm.pdf
+    
+    Notes
+    -----
+    - Confusion matrix is normalized by true labels (rows sum to 1.0)
+    - Uses seaborn heatmap with YlGnBu colormap
+    - Figure size: 12x9 inches
+    - Predictions are based on total spike counts per output neuron
+    - Global 'threshold' variable is used in the filename
+    """
+    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
                            shuffle=False, num_workers=2)
     accs = []
     trues = []
@@ -615,7 +965,10 @@ def plot_confusion_matrix(dataset, layers, labels):
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(device), y_local.to(device)
         with torch.no_grad():
-            spk_rec_readout, _, _ = run_snn(x_local, layers, False)
+            one_hot_encoded = torch.nn.functional.one_hot(
+                y_local, num_classes=len(np.unique(labels)))
+            spk_rec_readout, _, _ = run_snn(
+                x_local, layers, vars_eprop, True, one_hot_encoded)
 
         # with output spikes
         m = torch.sum(spk_rec_readout, 1)  # sum over time
@@ -641,13 +994,43 @@ def plot_confusion_matrix(dataset, layers, labels):
     plt.ylabel('True\n')
     plt.xticks(rotation=0)
     plt.savefig(
-            f"./figures/rsnn_1layers_train_tc_thr_{threshold}_cm.pdf")
+        f"./figures/rsnn_1layers_train_tc_thr_{threshold}_cm.pdf")
 
 
-def get_network_activity(dataset, layers):
-    '''Takes a dataset and the weight matrix to compute the network activity.'''
+def get_network_activity(dataset: TensorDataset, layers: list) -> tuple:
+    """
+    Record network activity (spike trains) for all samples in a dataset.
+    
+    Runs the trained network in inference mode on all samples and collects spike recordings
+    from both hidden and output layers for subsequent analysis or visualization.
+    
+    Parameters
+    ----------
+    dataset : TensorDataset
+        Dataset containing (input_data, labels) pairs for evaluation
+    layers : list
+        List containing [recurrent_layer, feedforward_layer] trained layer objects
+    
+    Returns
+    -------
+    tuple
+        (accs, spk_rec_readout_list, spk_rec_hidden_list) where:
+        - accs : list
+            Classification accuracy for each batch
+        - spk_rec_readout_list : list of numpy arrays
+            Output layer spike trains [batch][samples, timesteps, neurons]
+        - spk_rec_hidden_list : list of numpy arrays
+            Hidden layer spike trains [batch][samples, timesteps, neurons]
+    
+    Notes
+    -----
+    - All computations performed with torch.no_grad() for efficiency
+    - Returns data as numpy arrays (moved from GPU to CPU)
+    - Predictions based on total spike counts per output neuron
+    - Useful for creating raster plots and analyzing network dynamics
+    """
 
-    generator = DataLoader(dataset=dataset, batch_size=batch_size, pin_memory=True,
+    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
                            shuffle=False, num_workers=2)
     accs = []
     spk_rec_readout_list = []
@@ -672,10 +1055,38 @@ def get_network_activity(dataset, layers):
     return accs, spk_rec_readout_list, spk_rec_hidden_list
 
 
-def plot_network_activity(spr_recs, layer_names, figname='./figures'):
+def plot_network_activity(spr_recs: list, layer_names: list, figname: str='./figures') -> None:
     """
-    Creates raster plots for all layers using matplotlib.eventplot().
-    Input dimension: [timesteps, neurons]
+    Create and save raster plots visualizing spike activity across network layers.
+    
+    Generates a multi-panel figure showing spike raster plots for each layer, where each
+    spike is plotted as a vertical line at its occurrence time for the corresponding neuron.
+    
+    Parameters
+    ----------
+    spr_recs : list
+        List of spike recordings for each layer, where each element is a numpy array
+        with shape [timesteps, neurons]. Each array contains binary spike data (0 or 1)
+    layer_names : list
+        List of layer names (e.g., ['Hidden layer', 'Readout layer']) for subplot titles
+    figname : str, optional
+        File path (without extension) where the PDF figure will be saved (default: './figures')
+    
+    Returns
+    -------
+    None
+        Saves figure to {figname}.pdf and closes the figure
+    
+    Notes
+    -----
+    - Creates one subplot per layer in a vertical arrangement
+    - Spike times are converted from timesteps to seconds using params['time_bin_size']
+    - X-axis: Time in seconds
+    - Y-axis: Neuron ID (one row per neuron)
+    - Uses matplotlib.eventplot for efficient raster visualization
+    - Line width is set to 0.3 for visibility
+    - Figure is automatically sized and saved as PDF
+    - Prints debug information about number of neurons and spike lists
     """
     nb_layers = len(layer_names)
     fig = plt.figure()
@@ -688,7 +1099,8 @@ def plot_network_activity(spr_recs, layer_names, figname='./figures'):
         spikes_per_neuron = []
         for neuron_idx in range(spk_per_layer.shape[-1]):
             spk_times_per_neuron = np.where(spk_per_layer[:, neuron_idx])[0]
-            spk_times_per_neuron = spk_times_per_neuron*0.001*int(params['time_bin_size'])
+            spk_times_per_neuron = spk_times_per_neuron * \
+                0.001*int(params['time_bin_size'])
             spikes_per_neuron.append(spk_times_per_neuron)
 
         # # TODO possible optimization
@@ -715,11 +1127,11 @@ def plot_network_activity(spr_recs, layer_names, figname='./figures'):
         # # Include empty lists for neurons with no spikes
         # spikes_per_neuron = {neuron: sorted_spike_times[sorted_neuron_ids == neuron].tolist() for neuron in range(num_neurons)}
 
-
         # TODO possible colorcode by nb spikes
         print(len(spikes_per_neuron))
         print(len(range(num_neurons)))
-        ax.eventplot(spikes_per_neuron, orientation="horizontal", lineoffsets=range(num_neurons), linewidth=0.3, colors="k")
+        ax.eventplot(spikes_per_neuron, orientation="horizontal",
+                     lineoffsets=range(num_neurons), linewidth=0.3, colors="k")
         ax.set_ylabel("Neuron ID")
         ax.set_title(f"{name} activity")
     ax.set_xlabel("Time [sec]")
@@ -735,24 +1147,6 @@ file_type = 'data_braille_letters_100Hz_th'
 file_thr = str(threshold)
 file_name = file_dir_data + file_type + file_thr + '.pkl'
 
-file_dir_params = './parameters/'
-param_filename = 'parameters_th' + str(threshold) + '.txt'
-file_name_parameters = file_dir_params + param_filename
-params = {}
-with open(file_name_parameters) as file:
-    for line in file:
-        (key, value) = line.split()
-        if key == 'time_bin_size' or key == 'nb_input_copies':
-            params[key] = int(value)
-        else:
-            params[key] = np.double(value)
-
-
-def update_refractory_perdiod_counter(spk, counter):
-    counter = counter[:spk.shape[0], :spk.shape[1]]
-    counter[counter > 0.0] -= 1
-    counter[spk > 0.0] = ref_per_timesteps
-    return counter
 
 class STEFunction(torch.autograd.Function):
     """
@@ -778,37 +1172,63 @@ class STEFunction(torch.autograd.Function):
 ste_fn = STEFunction.apply
 
 
-
-
 class feedforward_layer:
     '''
     class to initialize and compute spiking feedforward layer
     '''
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_weight_scale, alpha, beta):
+
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_weight_scale, alpha, beta, ref_per=None):
         self.batch_size = batch_size
         self.nb_inputs = nb_inputs
         self.nb_neurons = nb_neurons
         self.scale = fwd_weight_scale
         self.alpha = alpha
         self.beta = beta
+        self.ref_per = ref_per
+        if ref_per is not None or ref_per > 0:
+            self.ref_per_tensor = torch.zeros(
+                (batch_size, nb_neurons), device=device)
+        self.create_layer()
+
+    def reset_refractory_perdiod_counter(self):
+        self.ref_per_tensor = torch.zeros_like(self.ref_per_tensor)
+
+    def update_refractory_perdiod_counter(self, spk):
+        current_batch_size = spk.shape[0]
+        current_neurons = spk.shape[1]
+        # Only operate on the current batch slice
+        batch_slice = self.ref_per_tensor[:current_batch_size, :current_neurons]
+        batch_slice[batch_slice > 0.0] -= 1
+        batch_slice[spk > 0.0] = self.ref_per
+        self.ref_per_tensor[:current_batch_size, :current_neurons] = batch_slice
 
     def create_layer(self):
         self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
-                               device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(self.ff_weights, mean=0.0, std=self.scale/np.sqrt(self.nb_inputs))
+                                      device=device, dtype=dtype, requires_grad=True)
+        torch.nn.init.normal_(self.ff_weights, mean=0.0,
+                              std=self.scale/np.sqrt(self.nb_inputs))
 
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None, ref_per_counter=None):
-        syn = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
-        new_syn = torch.zeros((self.batch_size, self.nb_neurons),
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None):
+        syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                          device=device, dtype=dtype)
+        new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                               device=device, dtype=dtype)
-        mem       = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
-        mem_t     = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
-        out       = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
-        n_spike   = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                          device=device, dtype=dtype)
+        mem_t = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                            device=device, dtype=dtype)
+        out = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                          device=device, dtype=dtype)
+        n_spike = torch.zeros(
+            (input_activity.shape[0], self.nb_neurons), device=device, dtype=dtype)
 
-        mem_rec     = []
-        spk_rec     = []
-        mem_t_rec   = []
+        # always reset the refractory period counter at the beginning of a new forward pass
+        if self.ref_per is not None:
+            self.reset_refractory_perdiod_counter()
+
+        mem_rec = []
+        spk_rec = []
+        mem_t_rec = []
         n_spike_tot = []
         # Compute feedforward layer activity
         for t in range(nb_steps):
@@ -819,20 +1239,21 @@ class feedforward_layer:
             rst = out.detach()
 
             # update the correct counter
-            if ref_per_counter is not None:
-                update_refractory_perdiod_counter(rst, ref_per_counter)
+            if self.ref_per is not None:
+                self.update_refractory_perdiod_counter(rst)
                 # take care of last batch
-                mask = ref_per_counter[:syn.shape[0], :syn.shape[1]] == 0.0
+                mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
                 new_syn = self.alpha * syn
-                new_syn[mask] = (self.alpha*syn[mask] + input_activity[:, t][mask])
+                new_syn[mask] = (self.alpha*syn[mask] +
+                                 input_activity[:, t][mask])
             else:
                 new_syn = self.alpha*syn + input_activity[:, t]
 
-            if use_linear_decay:
+            if params["use_linear_decay"]:
                 # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
                 new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
-                new_mem   = (self.beta*mem + syn)*(1.0-rst)
+                new_mem = (self.beta*mem + syn)*(1.0-rst)
                 new_mem_t = (self.beta*mem_t + syn)
             if lower_bound:
                 new_mem[new_mem < lower_bound] = lower_bound
@@ -848,17 +1269,19 @@ class feedforward_layer:
             syn = new_syn
 
         # Now we merge the recorded membrane potentials into a single tensor
-        mem_rec     = torch.stack(mem_rec, dim=1)
-        spk_rec     = torch.stack(spk_rec, dim=1)
-        mem_t_rec   = torch.stack(mem_t_rec, dim=1)
+        mem_rec = torch.stack(mem_rec, dim=1)
+        spk_rec = torch.stack(spk_rec, dim=1)
+        mem_t_rec = torch.stack(mem_t_rec, dim=1)
         n_spike_tot = torch.stack(n_spike_tot, dim=1)
         return spk_rec, mem_rec, mem_t_rec, n_spike_tot
+
 
 class recurrent_layer:
     '''
     class to initialize and compute spiking recurrent layer
     '''
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, beta):
+
+    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, beta, ref_per=None):
         self.batch_size = batch_size
         self.nb_inputs = nb_inputs
         self.nb_neurons = nb_neurons
@@ -866,46 +1289,72 @@ class recurrent_layer:
         self.rec_scale = rec_scale
         self.alpha = alpha
         self.beta = beta
+        self.ref_per = ref_per
+        if ref_per is not None or ref_per > 0:
+            self.ref_per_tensor = torch.zeros(
+                (batch_size, nb_neurons), device=device)
+        self.create_layer()
+
+    def reset_refractory_perdiod_counter(self):
+        self.ref_per_tensor = torch.zeros_like(self.ref_per_tensor)
+
+    def update_refractory_perdiod_counter(self, spk):
+        current_batch_size = spk.shape[0]
+        current_neurons = spk.shape[1]
+        # Only operate on the current batch slice
+        batch_slice = self.ref_per_tensor[:current_batch_size, :current_neurons]
+        batch_slice[batch_slice > 0.0] -= 1
+        batch_slice[spk > 0.0] = self.ref_per
+        self.ref_per_tensor[:current_batch_size, :current_neurons] = batch_slice
 
     def create_layer(self):
         self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
-                               device=device, dtype=dtype, requires_grad=True)
+                                      device=device, dtype=dtype, requires_grad=True)
         torch.nn.init.normal_(self.ff_weights, mean=0.0,
                               std=self.fwd_scale/np.sqrt(self.nb_inputs))
         self.rec_weights = torch.empty((self.nb_neurons, self.nb_neurons),
-                                device=device, dtype=dtype, requires_grad=True)
+                                       device=device, dtype=dtype, requires_grad=True)
         torch.nn.init.normal_(self.rec_weights, mean=0.0,
                               std=self.rec_scale/np.sqrt(self.nb_neurons))
 
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None, ref_per_counter=None):
-        syn = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
-        new_syn = torch.zeros((self.batch_size, self.nb_neurons),
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None):
+        syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                          device=device, dtype=dtype)
+        new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                               device=device, dtype=dtype)
-        mem = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
-        out = torch.zeros((self.batch_size, self.nb_neurons), device=device, dtype=dtype)
+        mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                          device=device, dtype=dtype)
+        out = torch.zeros((input_activity.shape[0], self.nb_neurons),
+                          device=device, dtype=dtype)
+
+        # always reset the refractory period counter at the beginning of a new forward pass
+        if self.ref_per is not None:
+            self.reset_refractory_perdiod_counter()
+
         mem_rec = []
         spk_rec = []
 
         # Compute recurrent layer activity
         for t in range(nb_steps):
             # input activity plus last step output activity
-            h1 = input_activity[:, t] + torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
+            h1 = input_activity[:, t] + \
+                torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
             mthr = mem-1.0
             out = torch.zeros_like(mthr)
             out[mthr > 0] = 1
             rst = out.detach()  # We do not want to backprop through the reset
 
-            if ref_per_counter is not None:
-                update_refractory_perdiod_counter(rst, ref_per_counter)
+            if self.ref_per is not None:
+                self.update_refractory_perdiod_counter(rst)
                 # only update the membrane potential if not in refractory period
                 # take care of last batch
-                mask = ref_per_counter[:syn.shape[0], :syn.shape[1]] == 0.0
+                mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
                 new_syn = self.alpha * syn
                 new_syn[mask] = (self.alpha*syn[mask] + h1[mask])
             else:
                 new_syn = self.alpha*syn + h1
 
-            if use_linear_decay:
+            if params["use_linear_decay"]:
                 new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
                 new_mem = (self.beta*mem + syn)*(1.0-rst)
@@ -926,136 +1375,152 @@ class recurrent_layer:
         return spk_rec, mem_rec
 
 
-
 if __name__ == '__main__':
-    with torch.no_grad():  # TODO do we need this here?
-        acc_train_list = []
-        acc_test_list = []
-        loss_train_list = []
-        max_repetitions = 1  # here we can set how often we wat to run the training to get some statistics
-        best_acc = 0.0
-        
-        # always use the same data split
-        if create_validation:
-            ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
-                params, file_name, letter_written=letters, create_validation=create_validation)
-        else:
-            ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
-                params, file_name, letter_written=letters, create_validation=create_validation)
-            
-        pbar_repetitions = tqdm(range(max_repetitions), position=0, total=max_repetitions, leave=True)
-        for repetition in pbar_repetitions:
-            pbar_repetitions.set_description(f"{repetition+1}/{max_repetitions}")
-            # load data for each repetition indepoently to get different splits
-            nb_hidden = 20  # TODO we want to change this number over repetitions later
-            if repetition == 0:
-                print("Number of training data %i." % len(ds_train))
-                print("Number of testing data %i." % len(ds_test))
-                if create_validation:
-                    print("Number of validation data %i." % len(ds_validation))
-                print("Number of outputs %i." % len(np.unique(labels)))
-                print("Number of timesteps %i." % data_steps)
-                print("Delayed output ", delayed_output)
-                if no_synapse:
-                    print(f"No synapse dynamics.")
-                if lower_bound:
-                    print(f"Clamp membrane voltage to: {lower_bound}.")
-                if use_linear_decay:
-                    print(f"Use linear decay.")
-                else:
-                    print(f"Use exponential decay.")
-                if ref_per_timesteps:
-                    print(f"Refractory period set to {ref_per_timesteps} simulation timesteps.")
-                print("Input duration %fs" % (data_steps*time_step))
-                print("---------------------------\n")
+    acc_train_list = []
+    acc_test_list = []
+    loss_train_list = []
+    # here we can set how often we wat to run the training to get some statistics
+    max_repetitions = 1
+    best_acc = 0.0
 
-            # initialize and train network
-            loss_hist, acc_hist, best_layers = build_and_train(
-                params, ds_train, ds_test, nb_hidden=nb_hidden, epochs=epochs)
+    # always use the same data split
+    if create_validation:
+        ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
+            params, file_name, letter_written=letters, create_validation=create_validation)
+    else:
+        ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
+            params, file_name, letter_written=letters, create_validation=create_validation)
 
-            # get validation results
+    pbar_repetitions = tqdm(range(max_repetitions),
+                            position=0, total=max_repetitions, leave=True)
+    for repetition in pbar_repetitions:
+        pbar_repetitions.set_description(
+            f"{repetition+1}/{max_repetitions}")
+        # load data for each repetition indepoently to get different splits
+        nb_hidden = 20  # TODO we want to change this number over repetitions later
+        if repetition == 0:
+            print("Number of training data %i." % len(ds_train))
+            print("Number of testing data %i." % len(ds_test))
             if create_validation:
-                val_acc = compute_classification_accuracy(
-                    dataset=ds_validation, layers=best_layers)
-            # safe overall best layer
-            if max(acc_hist[1]) > best_acc:
-                if create_validation:
-                    print(f"New best validation accuracy: {val_acc*100:.2f}%.")
-                else:
-                    print(f"New best test accuracy: {max(acc_hist[1])*100:.2f}%.")
-                very_best_layer = best_layers
-                best_acc = val_acc
+                print("Number of validation data %i." % len(ds_validation))
+            print("Number of outputs %i." % len(np.unique(labels)))
+            print("Number of timesteps %i." % data_steps)
+            print("Delayed output ", params["delayed_output"])
+            if params["no_synapse"]:
+                print(f"No synapse dynamics.")
+            if params["lower_bound"]:
+                print(
+                    f"Clamp membrane voltage to: {params['lower_bound']}.")
+            if params["use_linear_decay"]:
+                print(f"Use linear decay.")
+            else:
+                print(f"Use exponential decay.")
+            if params["ref_per_timesteps"]:
+                print(
+                    f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
+            print("Input duration %fs" % (data_steps*params["time_step"]))
+            print("---------------------------\n")
 
-            acc_train_list.append(acc_hist[0])
-            acc_test_list.append(acc_hist[1])
-            loss_train_list.append(loss_hist)
+        # initialize and train network
+        loss_hist, acc_hist, best_layers, vars_eprop = build_and_train(
+            params, ds_train, ds_test, nb_hidden=nb_hidden, epochs=epochs)
 
-        acc_train_list = np.array(acc_train_list)
-        acc_test_list = np.array(acc_test_list)
-        loss_train_list = np.array(loss_train_list)
+        # get validation results
+        if create_validation:
+            val_acc = compute_classification_accuracy(
+                dataset=ds_validation, layers=best_layers, vars_eprop=vars_eprop)
+        # safe overall best layer
+        if max(acc_hist[1]) > best_acc:
+            if create_validation:
+                print(f"New best validation accuracy: {val_acc*100:.2f}%.")
+            else:
+                print(
+                    f"New best test accuracy: {max(acc_hist[1])*100:.2f}%.")
+            very_best_layer = best_layers
+            best_acc = val_acc
 
-        print("*************************")
-        print("* Best: ", best_acc*100)
-        print("*************************")
+        acc_train_list.append(acc_hist[0])
+        acc_test_list.append(acc_hist[1])
+        loss_train_list.append(loss_hist)
 
+    acc_train_list = np.array(acc_train_list)
+    acc_test_list = np.array(acc_test_list)
+    loss_train_list = np.array(loss_train_list)
 
-        # save the best layer
-        torch.save(very_best_layer, './model/best_model_net_th_'+str(threshold)+'_'+str(nb_hidden)+'1ms_2lab_'+str(tau_trace)+'_'+str(lr)+'_.pt')
+    print("*************************")
+    print("* Best: ", best_acc*100)
+    print("*************************")
 
-        # ### Lets plot the training curve and the confusion matrix
-        plot_training_perfromance(path=f"./figures/rsnn_1layers_train_tc_thr_{threshold}_acc", acc_train=acc_train_list, acc_test=acc_test_list, loss_train=loss_train_list)
-        # plotting the confusion matrix
-        plot_confusion_matrix(dataset=ds_test, layers=very_best_layer, labels=letters)
+    # save the best layer
+    torch.save(very_best_layer, './model/best_model_net_th_'+str(params["threshold"]) +
+                '_'+str(nb_hidden)+'1ms_2lab_'+str(params["tau_trace"])+'_'+str(params["learning_rate"])+'_.pt')
 
-        #####################################
-        ### Lets create some raster plots ###
-        #####################################
+    # ### Lets plot the training curve and the confusion matrix
+    plot_training_perfromance(
+        path=f"./figures/rsnn_1layers_train_tc_thr_{threshold}_acc", acc_train=acc_train_list, acc_test=acc_test_list, loss_train=loss_train_list)
+    # plotting the confusion matrix
+    plot_confusion_matrix(
+        dataset=ds_test, layers=very_best_layer, labels=letters)
 
-        # plotting the network activity
-        accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(ds_test, layers=very_best_layer)
-        #
-        layer_names = ["Hidden layer", "Readout layer"]
-        nb_layers = len(layer_names)
+    #####################################
+    ### Lets create some raster plots ###
+    #####################################
 
-        total_nb_batches = len(accs)
+    # plotting the network activity
+    accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
+        ds_test, layers=very_best_layer)
 
-        # select the batches to plot
-        if NB_BATCHES_TO_PLOT > total_nb_batches:
-            print(f"WARNING: Not enough batches to plot. Will plot all {total_nb_batches} batches instead of the asked {NB_BATCHES_TO_PLOT}. Lower the number to avoid this warning.")
-            batch_selection = range(NB_BATCHES_TO_PLOT)
-        elif NB_BATCHES_TO_PLOT == total_nb_batches:
-            print(f"Plotting all {total_nb_batches} batches.")
-            batch_selection = range(NB_BATCHES_TO_PLOT)
+    layer_names = ["Hidden layer", "Readout layer"]
+    nb_layers = len(layer_names)
+
+    total_nb_batches = len(accs)
+
+    # select the batches to plot
+    if NB_BATCHES_TO_PLOT > total_nb_batches:
+        print(
+            f"WARNING: Not enough batches to plot. Will plot all {total_nb_batches} batches instead of the asked {NB_BATCHES_TO_PLOT}. Lower the number to avoid this warning.")
+        batch_selection = range(NB_BATCHES_TO_PLOT)
+    elif NB_BATCHES_TO_PLOT == total_nb_batches:
+        print(f"Plotting all {total_nb_batches} batches.")
+        batch_selection = range(NB_BATCHES_TO_PLOT)
+    else:
+        print(
+            f"Plotting {NB_BATCHES_TO_PLOT} random batches (out of {total_nb_batches}).")
+        found_unique = False
+        while not found_unique:
+            batch_selection = np.random.choice(
+                total_nb_batches, NB_BATCHES_TO_PLOT)
+            if len(np.unique(batch_selection)) == NB_BATCHES_TO_PLOT:
+                found_unique = True
+
+    for batch_idx in batch_selection:
+        batch_acc = accs[batch_idx]
+        # [trials, timesteps, neurons]
+        spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
+        # [trials, timesteps, neurons]
+        spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
+        # select random trials to plot
+        total_nb_trials = len(spk_rec_readout_batch)
+        if NB_TRIALS_TO_PLOT > total_nb_trials:
+            print(
+                f"WARNING: Not enough trials to plot. Will plot all {total_nb_trials} trials instead of the asked {NB_TRIALS_TO_PLOT}. Lower the number to avoid this warning.")
+            trial_selection = range(NB_BATCHES_TO_PLOT)
+        elif NB_TRIALS_TO_PLOT == total_nb_trials:
+            print(f"Plotting all {total_nb_trials} trials.")
+            trial_selection = range(NB_TRIALS_TO_PLOT)
         else:
-            print(f"Plotting {NB_BATCHES_TO_PLOT} random batches (out of {total_nb_batches}).")
+            print(
+                f"Plotting {NB_TRIALS_TO_PLOT} random trials (out of {total_nb_trials}).")
             found_unique = False
             while not found_unique:
-                batch_selection = np.random.choice(total_nb_batches, NB_BATCHES_TO_PLOT)
-                if len(np.unique(batch_selection)) == NB_BATCHES_TO_PLOT:
+                trial_selection = np.random.choice(
+                    total_nb_trials, NB_TRIALS_TO_PLOT)
+                if len(np.unique(trial_selection)) == NB_TRIALS_TO_PLOT:
                     found_unique = True
 
-        for batch_idx in batch_selection:
-            batch_acc = accs[batch_idx]
-            spk_rec_readout_batch = spk_rec_readout_array[batch_idx]  # [trials, timesteps, neurons]
-            spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]  # [trials, timesteps, neurons]
-            # select random trials to plot
-            total_nb_trials = len(spk_rec_readout_batch)
-            if NB_TRIALS_TO_PLOT > total_nb_trials:
-                print(f"WARNING: Not enough trials to plot. Will plot all {total_nb_trials} trials instead of the asked {NB_TRIALS_TO_PLOT}. Lower the number to avoid this warning.")
-                trial_selection = range(NB_BATCHES_TO_PLOT)
-            elif NB_TRIALS_TO_PLOT == total_nb_trials:
-                print(f"Plotting all {total_nb_trials} trials.")
-                trial_selection = range(NB_TRIALS_TO_PLOT)
-            else:
-                print(f"Plotting {NB_TRIALS_TO_PLOT} random trials (out of {total_nb_trials}).")
-                found_unique = False
-                while not found_unique:
-                    trial_selection = np.random.choice(total_nb_trials, NB_TRIALS_TO_PLOT)
-                    if len(np.unique(trial_selection)) == NB_TRIALS_TO_PLOT:
-                        found_unique = True
-
-            for trial_idx in trial_selection:
-                spr_recs = [spk_rec_hidden_batch[trial_idx], spk_rec_readout_batch[trial_idx]]
-                # TODO include more specifics into the figure name
-                plot_network_activity(spr_recs, layer_names, figname=f'./figures/network_activity_batch_{batch_idx}_trial_{trial_idx}')
-
+        for trial_idx in trial_selection:
+            spr_recs = [spk_rec_hidden_batch[trial_idx],
+                        spk_rec_readout_batch[trial_idx]]
+            # TODO include more specifics into the figure name
+            plot_network_activity(
+                spr_recs, layer_names, figname=f'./figures/network_activity_batch_{batch_idx}_trial_{trial_idx}')

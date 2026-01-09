@@ -3,19 +3,20 @@ Here we train a minimal model which can discriminate between three braille lette
 The code will find the minimum size of the recurrent layer we need to reach good performance.
 """
 
-from tqdm import tqdm
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix
-from matplotlib.gridspec import GridSpec  # can be used for nice subplot layout
-import torch.nn.functional as F
-import torch.nn as nn
-import torch
-import seaborn as sn
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sn
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from matplotlib.gridspec import GridSpec  # can be used for nice subplot layout
+from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -28,6 +29,7 @@ torch.set_default_dtype(torch.float64)
 dtype = torch.float
 
 letters = ['A', 'B']  # difficult: a vs. b, c, e, i; easy: a vs. p, q, y
+letters = ['J', 'U']  # difficult: a vs. b, c, e, i; easy: a vs. p, q, y
 create_validation = False
 
 # set variables
@@ -40,12 +42,11 @@ epochs = 20  # TODO bring back to 50
 
 class experimantal_params:
     def __init__(self):
-        self.epochs = 50  # TODO remove the  one above for consistency and use this instead
+        # self.epochs = 50  # TODO remove the  one above for consistency and use this instead
         self.threshold = 2  # possible values are: 1, 2, 5, 10
-        self.max_time = 3501
         self.time_bin_size = 1  # ms
         self.nb_input_copies = 1
-        self.batch_size = 64  # default: 128
+        self.batch_size = 128  # default: 128
         self.learning_rate = 0.004
         self.gamma = 0.3  # used for the surrogate gradient
         self.lower_bound = -1.0
@@ -55,8 +56,8 @@ class experimantal_params:
         self.time_bin_size = 1
         self.tau_mem = 0.05
         self.tau_ratio = 10
-        self.fwd_weight_scale = 1
-        self.weight_scale_factor = 0.02
+        self.fwd_weight_scale = 10
+        self.weight_scale_factor = 0.2
         self.reg_spikes = 0.0015
         self.reg_neurons = 0.0
         self.tau_mem = 0.06  # params['tau_mem']  # ms
@@ -65,6 +66,12 @@ class experimantal_params:
         # global tau_trace
         self.tau_trace = 0.14
         self.tau_trace_out = 0.14
+        self.use_eprop = False  # if False, use BPTT (backpropagation through time)
+        self.use_mechanoreceptor_encoding = True  # if True, use mechanoreceptor encoding, if False sigma-delta encoding
+        if self.use_mechanoreceptor_encoding:
+            self.max_time = 3700
+        else:
+            self.max_time = 3501
 
 
 params = experimantal_params().__dict__
@@ -185,7 +192,8 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
 
     params["time_step"] = time_bin_size*0.001  # ms
     data_steps = len(time)
-    params["delayed_output"] = data_steps
+    # params["delayed_output"] = data_steps
+    params["delayed_output"] = 0  # data_steps
 
     data_dict = pd.read_pickle(file_name)
     # data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
@@ -394,13 +402,13 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
     del trace_out, L, err
 
 
-def run_snn(inputs: torch.Tensor, layers: list, vars_eprop: list, trainable: bool, yt=None) -> tuple:
+def run_snn(inputs: torch.Tensor, layers: list) -> tuple:
     """
-    Execute forward pass through a spiking neural network with optional e-prop gradient computation.
+    Execute forward pass through a spiking neural network.
 
     This function runs input data through a two-layer spiking neural network (recurrent hidden layer
-    and feedforward readout layer), computes network activity, and optionally calculates gradients
-    using the e-prop learning algorithm.
+    and feedforward readout layer) and computes network activity. Gradient computation is handled
+    in the training loop based on params["use_eprop"] setting.
 
     Parameters
     ----------
@@ -408,33 +416,25 @@ def run_snn(inputs: torch.Tensor, layers: list, vars_eprop: list, trainable: boo
         Input spike trains with shape [batch, time, input_features]
     layers : list
         List containing [recurrent_layer, feedforward_layer] layer objects
-    vars_eprop : list
-        List containing [beta_trace, beta_trace_out] decay factors for eligibility traces
-    trainable : bool
-        If True, compute gradients using e-prop. If False, only perform forward pass
-    yt : torch.Tensor, optional
-        Target labels (one-hot encoded) with shape [batch, output_units].
-        Required when trainable=True
 
     Returns
     -------
     tuple
-        (spk_rec_readout, other_recs, layers) where:
+        (spk_rec_readout, other_recs) where:
         - spk_rec_readout : torch.Tensor
             Output layer spike recordings [batch, time, output_neurons]
         - other_recs : list
             [mem_rec_hidden, spk_rec_hidden, mem_rec_readout] recordings from layers
-        - layers : list
-            [recurrent_layer, feedforward_layer] layer objects (not copies, references)
 
     Notes
     -----
-    - When trainable=True, selects winning output neuron based on spike counts and
-      calls grads_batch to compute e-prop gradients
+    - This function only performs the forward pass
+    - Gradient computation (e-prop or BPTT) is handled in the train() function
+    - For e-prop mode: uses hard threshold spike generation (no gradient through spikes)
+    - For BPTT mode: uses surrogate gradient function for differentiable spike generation
     - Supports input replication via params["nb_input_copies"] for increased input representation
-    - Winner selection uses random tie-breaking when multiple neurons have equal spike counts
+    - n_spike can be computed externally via torch.cumsum(spk_rec_readout, dim=1) when needed
     """
-    beta_trace, beta_trace_out = vars_eprop
     rec_layer, ff_layer = layers
 
     if params["nb_input_copies"] > 1:
@@ -450,33 +450,12 @@ def run_snn(inputs: torch.Tensor, layers: list, vars_eprop: list, trainable: boo
     # Readout layer
     h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, ff_layer.ff_weights.t()))
 
-    spk_rec_readout, mem_rec_readout, mem_train, n_spike = ff_layer.compute_activity(
+    spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
         h2, data_steps, params["lower_bound"])
 
     other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
-    weights_update = [rec_layer.ff_weights,
-                      rec_layer.rec_weights, ff_layer.ff_weights]
 
-    if (trainable):
-        max_spikes, _ = torch.max(
-            n_spike, dim=2, keepdim=True)  # [batch, tempo, 1]
-
-        # If multiple neurons emit the highest number of spikes, select one of them randomly
-        is_max = n_spike == max_spikes
-
-        rand_vals = torch.rand(n_spike.shape)
-        rand_vals[~is_max] = -1
-
-        _, am = torch.max(rand_vals, dim=2)
-        am = am.to(device)
-        yo = torch.nn.functional.one_hot(
-            am, num_classes=len(np.unique(labels)))
-        # print(yo.shape, yt.shape)
-        # grads_batch(inputs.tile((nb_input_copies,)).permute(1,0,2), yo.permute(1,0,2), yt, gamma, 1, mem_rec_hidden.permute(1,0,2), spk_rec_hidden.permute(1,0,2), w1, v1, w2)
-        grads_batch(inputs.permute(1, 0, 2), yo.permute(1, 0, 2), yt, params["gamma"], 1, mem_rec_hidden.permute(1, 0, 2), spk_rec_hidden.permute(
-            1, 0, 2), rec_layer.ff_weights, rec_layer.rec_weights, ff_layer.ff_weights, beta_trace, beta_trace_out)
-    # Return layers, not just weights
-    return spk_rec_readout, other_recs, layers
+    return spk_rec_readout, other_recs
 
 
 def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset, nb_hidden=20, epochs=epochs) -> tuple:
@@ -578,6 +557,17 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
         batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta, ref_per=params["ref_per_timesteps"])
 
     layers = [rec_layer, ff_layer]
+    
+    # # Debug: Check initial weight statistics
+    # print(f"\nInitial weight statistics for {nb_hidden} hidden neurons:")
+    # print(f"  Recurrent layer input weights: mean={rec_layer.ff_weights.data.mean():.4f}, std={rec_layer.ff_weights.data.std():.4f}")
+    # print(f"  Recurrent layer recurrent weights: mean={rec_layer.rec_weights.data.mean():.4f}, std={rec_layer.rec_weights.data.std():.4f}")
+    # print(f"  Output layer weights shape: {ff_layer.ff_weights.shape}")
+    # print(f"  Output layer weights per neuron:")
+    # for neuron_idx in range(ff_layer.ff_weights.shape[0]):
+    #     w = ff_layer.ff_weights[neuron_idx]
+    #     print(f"    Neuron {neuron_idx}: mean={w.data.mean():.4f}, std={w.data.std():.4f}, min={w.data.min():.4f}, max={w.data.max():.4f}")
+    # print()
 
     # a fixed learning rate is already defined within the train function, that's why here it is omitted
     loss_hist, accs_hist, best_layers = train(
@@ -745,10 +735,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             optimizer.zero_grad()
 
-            one_hot_encoded = torch.nn.functional.one_hot(
-                y_local, num_classes=len(np.unique(labels)))
-            spk_rec_readout, recs, _ = run_snn(
-                inputs=x_local, layers=layers, vars_eprop=vars_eprop, trainable=True, yt=one_hot_encoded)
+            spk_rec_readout, recs = run_snn(inputs=x_local, layers=layers)
             # weight quantization - apply directly to layer weights
             layers[0].ff_weights.data = ste_fn(
                 layers[0].ff_weights, possible_weight).to(dtype)
@@ -763,7 +750,9 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                 torch.sum(recs[1], 1))
 
             _, spk_rec_hidden, _ = recs
-            m = torch.sum(spk_rec_readout, 1)  # sum over time
+
+            # Use only the delayed_output window for spike counting (consistent with test evaluation)
+            m = torch.sum(spk_rec_readout[:, -params["delayed_output"]:, :], dim=1)
 
             # cross entropy loss on the active read-out layer
             log_p_y = log_softmax_fn(m)
@@ -788,28 +777,79 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             # Here we combine supervised loss and the regularizer
             loss_val = loss_fn(log_p_y, y_local)  # + reg_loss
+            
+            # Select winner based on spike counts (used for both e-prop and accuracy)
+            max_val, am = torch.max(m, 1)     # argmax over output units
+            # Handle ties: if multiple neurons have the same max spike count, select randomly
+            mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
+            if mask.any():
+                true_indices = torch.nonzero(mask, as_tuple=True)
+                for i in true_indices:
+                    candidates = torch.nonzero(
+                        m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
+                    am[i] = candidates[torch.randint(0, len(candidates), (1,))]
+            
+            # Compute gradients based on selected learning algorithm
+            if params["use_eprop"]:
+                one_hot_encoded = torch.nn.functional.one_hot(
+                    y_local, num_classes=len(np.unique(labels)))
+                # E-prop: manual gradient computation via eligibility traces
+                # Create one-hot encoded predictions from selected winners
+                yo = torch.nn.functional.one_hot(
+                    am, num_classes=len(np.unique(labels)))
+                # Expand to match temporal dimension for e-prop
+                yo = yo.unsqueeze(1).expand(-1, spk_rec_readout.shape[1], -1)
+                
+                # Compute e-prop gradients
+                mem_rec_hidden, spk_rec_hidden, _ = recs
+                grads_batch(x_local.permute(1, 0, 2), yo.permute(1, 0, 2), one_hot_encoded, 
+                           params["gamma"], 1, mem_rec_hidden.permute(1, 0, 2), 
+                           spk_rec_hidden.permute(1, 0, 2), layers[0].ff_weights, 
+                           layers[0].rec_weights, layers[1].ff_weights, 
+                           vars_eprop[0], vars_eprop[1])
+            else:
+                # BPTT: standard backpropagation
+                loss_val.backward()
+            
             optimizer.step()
 
             local_loss.append(loss_val.item())
 
-            # compare to labels
-            max_val, am = torch.max(m, 1)     # argmax over output units
-
-            # with output spikes
-            mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
-            if mask.any():
-                # print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
-                # compare to labels
-                true_indices = torch.nonzero(mask, as_tuple=True)
-                for i in true_indices:
-                    # Find the output with the maximum value
-                    candidates = torch.nonzero(
-                        m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
-                    # select randomly among the candidates
-                    am[i] = candidates[torch.randint(0, len(candidates), (1,))]
-
             tmp = np.mean((y_local == am).detach().cpu().numpy())
             accs.append(tmp)
+            
+            # Debug: Print first batch of first epoch to check predictions
+            # if count_epoch == 0 and len(accs) == 1:
+            #     print(f"\nDebug - First batch:")
+            #     print(f"  True labels (y_local): {y_local[:10].cpu().numpy()}")
+            #     print(f"  Predictions (am): {am[:10].cpu().numpy()}")
+            #     print(f"  Spike counts (m): {m[:10].detach().cpu().numpy()}")
+            #     print(f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
+            #     print(f"  Prediction distribution: 0={torch.sum(am==0).item()}, 1={torch.sum(am==1).item()}")
+            #     print(f"  Batch accuracy: {tmp:.4f}")
+                
+            #     # Check input data
+            #     print(f"\n  Input data statistics:")
+            #     print(f"    Shape: {x_local.shape}")
+            #     print(f"    Total input spikes (first 10 samples): {torch.sum(x_local[:10], dim=(0,1)).cpu().numpy()}")
+            #     print(f"    Input spike rate (mean): {x_local.mean().item():.6f}")
+                
+            #     # Check hidden layer
+            #     print(f"\n  Hidden layer statistics:")
+            #     hidden_spike_counts = torch.sum(spk_rec_hidden, dim=0)  # sum over time: [batch, neurons]
+            #     print(f"    Spike count distribution (mean across batch): {hidden_spike_counts.mean(dim=0).cpu().numpy()}")
+            #     print(f"    Spike count (min, max): ({hidden_spike_counts.min().item()}, {hidden_spike_counts.max().item()})")
+            #     print(f"    First 10 samples total spikes: {torch.sum(spk_rec_hidden[:10], dim=(0,1)).cpu().numpy()}")
+                
+            #     # Check output layer
+            #     print(f"\n  Output layer statistics:")
+            #     print(f"    Weights shape: {layers[1].ff_weights.shape}")
+            #     print(f"    Weights mean per neuron: {torch.mean(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
+            #     print(f"    Weights std per neuron: {torch.std(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
+            #     h2_sample = torch.einsum("abc,cd->abd", (spk_rec_hidden[:10], layers[1].ff_weights.t()))
+            #     print(f"    Input current (h2) mean per output neuron: {h2_sample.mean(dim=(0,1)).detach().cpu().numpy()}")
+            #     print(f"    Number of positive weights: neuron0={torch.sum(layers[1].ff_weights[0] > 0).item()}, neuron1={torch.sum(layers[1].ff_weights[1] > 0).item()}")
+            #     print()
 
             # Free up memory by deleting large intermediate tensors
             del spk_rec_readout, recs, spk_rec_hidden, m, log_p_y, reg_loss, max_val, am, mask
@@ -827,8 +867,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
         count_epoch = count_epoch + 1
 
         # Calculate test accuracy in each epoch
-        test_acc = compute_classification_accuracy(
-            dataset=dataset_test, layers=layers, vars_eprop=vars_eprop)
+        test_acc = compute_classification_accuracy(dataset=dataset_test, layers=layers)
         accs_hist[1].append(test_acc)
         if np.max(test_acc) >= best_test_acc:
             best_test_acc = np.max(test_acc)
@@ -843,7 +882,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     return loss_hist, accs_hist, best_acc_layers
 
 
-def compute_classification_accuracy(dataset: TensorDataset, layers: list, vars_eprop: list) -> float:
+def compute_classification_accuracy(dataset: TensorDataset, layers: list) -> float:
     """
     Compute classification accuracy on a dataset using a trained spiking neural network.
 
@@ -879,10 +918,7 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, vars_e
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(device), y_local.to(device)
         with torch.no_grad():
-            one_hot_encoded = torch.nn.functional.one_hot(
-                y_local, num_classes=len(np.unique(labels)))
-            spk_rec_readout, _, _ = run_snn(
-                inputs=x_local, layers=layers, vars_eprop=vars_eprop, trainable=True, yt=one_hot_encoded)
+            spk_rec_readout, _ = run_snn(inputs=x_local, layers=layers)
 
         # with output spikes
         # sum over time
@@ -905,8 +941,11 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, vars_e
         # compare to labels
         tmp = np.mean((y_local == am).detach().cpu().numpy())
         accs.append(tmp)
-    # print("Test mean accuracy", np.mean(accs))
-    return np.mean(accs)
+    
+    mean_acc = np.mean(accs)
+    # Optionally print for debugging (can comment out after verification)
+    # print(f"Test mean accuracy: {mean_acc:.4f}")
+    return mean_acc
 
 
 def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
@@ -993,7 +1032,7 @@ def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.nda
     plt.close(fig)
 
 
-def plot_confusion_matrix(path: str, dataset: TensorDataset, layers: list, labels: list, vars_eprop: list) -> None:
+def plot_confusion_matrix(path: str, dataset: TensorDataset, layers: list, labels: list) -> None:
     """
     Generate and save a normalized confusion matrix for network predictions.
 
@@ -1033,10 +1072,7 @@ def plot_confusion_matrix(path: str, dataset: TensorDataset, layers: list, label
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(device), y_local.to(device)
         with torch.no_grad():
-            one_hot_encoded = torch.nn.functional.one_hot(
-                y_local, num_classes=len(np.unique(labels)))
-            spk_rec_readout, _, _ = run_snn(
-                inputs=x_local, layers=layers, vars_eprop=vars_eprop, trainable=True, yt=one_hot_encoded)
+            spk_rec_readout, _ = run_snn(inputs=x_local, layers=layers)
 
         # with output spikes
         m = torch.sum(spk_rec_readout, 1)  # sum over time
@@ -1065,7 +1101,7 @@ def plot_confusion_matrix(path: str, dataset: TensorDataset, layers: list, label
         f"{path}.pdf")
 
 
-def get_network_activity(dataset: TensorDataset, layers: list, vars_eprop: list) -> tuple:
+def get_network_activity(dataset: TensorDataset, layers: list) -> tuple:
     """
     Record network activity (spike trains) for all samples in a dataset.
 
@@ -1108,8 +1144,8 @@ def get_network_activity(dataset: TensorDataset, layers: list, vars_eprop: list)
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(device), y_local.to(device)
         with torch.no_grad():
-            spk_rec_readout, recs, _ = run_snn(
-                inputs=x_local, layers=layers, vars_eprop=vars_eprop, trainable=False, yt=None)
+            spk_rec_readout, recs = run_snn(
+                inputs=x_local, layers=layers)
 
         _, spk_rec_hidden, _ = recs
 
@@ -1215,9 +1251,12 @@ def plot_network_activity(spr_recs: list, layer_names: list, figname: str = './f
 
 # Load data and parameters
 file_dir_data = './data/100Hz/'
-file_type = 'data_braille_letters_100Hz_th'
-file_thr = str(params["threshold"])
-file_name = file_dir_data + file_type + file_thr + '.pkl'
+if params["use_mechanoreceptor_encoding"]:
+    file_name = file_dir_data + 'mechanoreceptor_encoded.pkl'
+else:
+    file_type = 'data_braille_letters_100Hz_th'
+    file_thr = str(params["threshold"])
+    file_name = file_dir_data + file_type + file_thr + '.pkl'
 
 
 class STEFunction(torch.autograd.Function):
@@ -1231,25 +1270,112 @@ class STEFunction(torch.autograd.Function):
     def forward(ctx, input, possible_weight_values):
         diffs = torch.abs(input.unsqueeze(-1) - possible_weight_values)
         min_indices = torch.argmin(diffs, dim=-1)
-        ctx.save_for_backward(input, possible_weight_values, min_indices)
         return possible_weight_values[min_indices]
 
     @staticmethod
     def backward(ctx, grad_output):
-        input, possible_weight_values, min_indices = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        return grad_input, None
+        # Straight-through estimator: gradient passes through unchanged
+        return grad_output.clone(), None
 
 
 ste_fn = STEFunction.apply
 
 
+class SurrogateSpike(torch.autograd.Function):
+    """
+    Surrogate gradient function for spike generation.
+    Forward pass: Hard threshold (Heaviside step function)
+    Backward pass: Smooth surrogate gradient (derivative of fast sigmoid)
+    """
+    @staticmethod
+    def forward(ctx, input, gamma):
+        """
+        Forward pass: Generate spikes using hard threshold
+        input: membrane potential minus threshold (mthr = mem - threshold)
+        gamma: surrogate gradient scale factor
+        """
+        ctx.save_for_backward(input)
+        ctx.gamma = gamma
+        out = torch.zeros_like(input)
+        out[input > 0] = 1.0
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        Backward pass: Use surrogate gradient
+        Approximates derivative with: gamma * max(0, 1 - |input|)
+        """
+        input, = ctx.saved_tensors
+        gamma = ctx.gamma
+        # Surrogate gradient: piecewise linear approximation
+        grad_input = grad_output.clone()
+        # Only compute gradient where surrogate is non-zero
+        surrogate = gamma * torch.clamp(1 - torch.abs(input), min=0)
+        grad_input = grad_input * surrogate
+        return grad_input, None
+
+
+spike_fn = SurrogateSpike.apply
+
+
 class feedforward_layer:
-    '''
-    class to initialize and compute spiking feedforward layer
-    '''
+    """
+    Spiking feedforward layer with Leaky Integrate-and-Fire (LIF) neurons.
+
+    This class implements a fully-connected feedforward layer of spiking neurons with
+    optional synaptic dynamics, exponential or linear membrane potential decay, and
+    optional refractory period. Supports both e-prop and BPTT learning via surrogate gradients.
+
+    Attributes
+    ----------
+    batch_size : int
+        Maximum batch size for pre-allocation
+    nb_inputs : int
+        Number of input features/channels
+    nb_neurons : int
+        Number of neurons in this layer
+    scale : float
+        Weight initialization scale factor
+    alpha : float
+        Synaptic current decay factor (0 for no synapse, or exp(-dt/tau_syn))
+    beta : float
+        Membrane potential decay factor (exp(-dt/tau_mem) or linear decay rate)
+    ref_per : int or None
+        Refractory period duration in timesteps (None to disable)
+    ff_weights : torch.Tensor
+        Feedforward weight matrix [nb_neurons, nb_inputs]
+    ref_per_tensor : torch.Tensor
+        Tracks remaining refractory period timesteps per neuron [batch_size, nb_neurons]
+
+    Notes
+    -----
+    - Weights initialized with Gaussian distribution and positive constraint applied
+    - Spike generation uses hard threshold for e-prop, surrogate gradient for BPTT
+    - Refractory period prevents neurons from spiking during cooldown
+    """
 
     def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_weight_scale, alpha, beta, ref_per=None):
+        """
+        Initialize feedforward spiking layer.
+
+        Parameters
+        ----------
+        batch_size : int
+            Maximum batch size for memory pre-allocation
+        nb_inputs : int
+            Number of input features/channels
+        nb_neurons : int
+            Number of neurons in this layer
+        fwd_weight_scale : float
+            Weight initialization scale (weights drawn from N(0, scale/sqrt(nb_inputs)))
+        alpha : float
+            Synaptic current decay factor (0.0 to disable synaptic dynamics)
+        beta : float
+            Membrane potential decay factor (exp(-dt/tau_mem) for exponential decay)
+        ref_per : int or None, optional
+            Refractory period duration in timesteps (default: None, disabled)
+        """
         self.batch_size = batch_size
         self.nb_inputs = nb_inputs
         self.nb_neurons = nb_neurons
@@ -1263,9 +1389,30 @@ class feedforward_layer:
         self.create_layer()
 
     def reset_refractory_perdiod_counter(self):
+        """
+        Reset all refractory period counters to zero.
+
+        Called at the start of each forward pass to clear refractory states
+        from previous batches.
+        """
         self.ref_per_tensor = torch.zeros_like(self.ref_per_tensor)
 
     def update_refractory_perdiod_counter(self, spk):
+        """
+        Update refractory period counters based on spike activity.
+
+        Decrements active counters by 1 and sets counters to ref_per for
+        neurons that just spiked.
+
+        Parameters
+        ----------
+        spk : torch.Tensor
+            Binary spike tensor [batch, neurons] where 1 indicates a spike
+
+        Notes
+        -----
+        Only operates on the current batch slice to handle variable batch sizes.
+        """
         current_batch_size = spk.shape[0]
         current_neurons = spk.shape[1]
         # Only operate on the current batch slice
@@ -1277,24 +1424,69 @@ class feedforward_layer:
                             :current_neurons] = batch_slice
 
     def create_layer(self):
+        """
+        Initialize feedforward weight matrix.
+
+        Creates and initializes the weight matrix with Gaussian distribution
+        and ensures all weights are positive.
+
+        Notes
+        -----
+        - Feedforward weights: [nb_neurons, nb_inputs]
+          Initialization: N(0, scale/sqrt(nb_inputs))
+        - Positive constraint applied to ensure excitatory connections only
+        - Requires gradient for learning
+        """
         self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
                                       device=device, dtype=dtype, requires_grad=True)
         torch.nn.init.normal_(self.ff_weights, mean=0.0,
                               std=self.scale/np.sqrt(self.nb_inputs))
 
     def compute_activity(self, input_activity, nb_steps, lower_bound=None):
+        """
+        Compute spiking activity of feedforward layer over time.
+
+        Simulates LIF neuron dynamics with optional synaptic filtering,
+        refractory period, and membrane potential clamping. Supports both e-prop
+        (hard threshold) and BPTT (surrogate gradient) spike generation.
+
+        Parameters
+        ----------
+        input_activity : torch.Tensor
+            Input currents with shape [batch, timesteps, nb_inputs]
+        nb_steps : int
+            Number of simulation timesteps
+        lower_bound : float or None, optional
+            Minimum membrane potential (clamping threshold, default: None)
+
+        Returns
+        -------
+        tuple
+            (spk_rec, mem_rec) where:
+            - spk_rec : torch.Tensor
+                Spike recordings [batch, timesteps, nb_neurons]
+            - mem_rec : torch.Tensor
+                Membrane potential recordings [batch, timesteps, nb_neurons]
+
+        Notes
+        -----
+        - Spike threshold: 1.0
+        - Reset mechanism: multiplicative (voltage * (1 - spike))
+        - For e-prop: uses hard threshold (no gradient through spikes)
+        - For BPTT: uses surrogate gradient function for differentiability
+        - Synaptic dynamics: syn = alpha * syn + input (if alpha > 0)
+        - Membrane dynamics: mem = beta * mem + syn (exponential decay)
+          or mem = mem - sign(mem)*beta + syn (linear decay)
+        - Refractory period blocks synaptic input when active
+        """
         syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=device, dtype=dtype)
         new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                               device=device, dtype=dtype)
         mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=device, dtype=dtype)
-        mem_t = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                            device=device, dtype=dtype)
         out = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=device, dtype=dtype)
-        n_spike = torch.zeros(
-            (input_activity.shape[0], self.nb_neurons), device=device, dtype=dtype)
 
         # always reset the refractory period counter at the beginning of a new forward pass
         if self.ref_per is not None:
@@ -1302,14 +1494,17 @@ class feedforward_layer:
 
         mem_rec = []
         spk_rec = []
-        mem_t_rec = []
-        n_spike_tot = []
         # Compute feedforward layer activity
         for t in range(nb_steps):
             mthr = mem-1.0
-            out = torch.zeros_like(mthr)
-            out[mthr > 0] = 1
-            n_spike[out == 1] = n_spike[out == 1] + 1
+            # Use surrogate gradient for BPTT compatibility
+            if params["use_eprop"]:
+                # For e-prop, use hard threshold (no gradient needed through spikes)
+                out = torch.zeros_like(mthr)
+                out[mthr > 0] = 1
+            else:
+                # For BPTT, use surrogate gradient
+                out = spike_fn(mthr, params["gamma"])
             rst = out.detach()
 
             # update the correct counter
@@ -1328,34 +1523,86 @@ class feedforward_layer:
                 new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
                 new_mem = (self.beta*mem + syn)*(1.0-rst)
-                new_mem_t = (self.beta*mem_t + syn)
             if lower_bound:
                 new_mem[new_mem < lower_bound] = lower_bound
-                new_mem_t[new_mem_t < lower_bound] = lower_bound
 
             mem_rec.append(mem)
             spk_rec.append(out)
-            mem_t_rec.append(mem_t)
-            n_spike_tot.append(n_spike)
 
             mem = new_mem
-            mem_t = new_mem_t
             syn = new_syn
 
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)
         spk_rec = torch.stack(spk_rec, dim=1)
-        mem_t_rec = torch.stack(mem_t_rec, dim=1)
-        n_spike_tot = torch.stack(n_spike_tot, dim=1)
-        return spk_rec, mem_rec, mem_t_rec, n_spike_tot
+        return spk_rec, mem_rec
 
 
 class recurrent_layer:
-    '''
-    class to initialize and compute spiking recurrent layer
-    '''
+    """
+    Spiking recurrent layer with Leaky Integrate-and-Fire (LIF) neurons.
+
+    This class implements a fully-connected recurrent layer of spiking neurons with
+    recurrent connections, optional synaptic dynamics, exponential or linear membrane
+    potential decay, and optional refractory period. Supports both e-prop and BPTT
+    learning via surrogate gradients.
+
+    Attributes
+    ----------
+    batch_size : int
+        Maximum batch size for pre-allocated tensors
+    nb_inputs : int
+        Number of input features/channels
+    nb_neurons : int
+        Number of recurrent neurons in this layer
+    fwd_scale : float
+        Feedforward weight initialization scale factor
+    rec_scale : float
+        Recurrent weight initialization scale factor
+    alpha : float
+        Synaptic current decay factor (0 for no synapse, or exp(-dt/tau_syn))
+    beta : float
+        Membrane potential decay factor (exp(-dt/tau_mem) or linear decay rate)
+    ref_per : int or None
+        Refractory period duration in timesteps (None to disable)
+    ff_weights : torch.Tensor
+        Feedforward weight matrix [nb_neurons, nb_inputs]
+    rec_weights : torch.Tensor
+        Recurrent weight matrix [nb_neurons, nb_neurons]
+    ref_per_tensor : torch.Tensor
+        Tracks remaining refractory period timesteps per neuron [batch_size, nb_neurons]
+
+    Notes
+    -----
+    - Feedforward and recurrent weights initialized with Gaussian distribution
+    - Spike generation uses hard threshold for e-prop, surrogate gradient for BPTT
+    - Recurrent connections provide temporal memory and dynamics
+    - Refractory period prevents neurons from spiking during cooldown
+    """
 
     def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, beta, ref_per=None):
+        """
+        Initialize recurrent spiking layer.
+
+        Parameters
+        ----------
+        batch_size : int
+            Maximum batch size for memory pre-allocation
+        nb_inputs : int
+            Number of input features/channels
+        nb_neurons : int
+            Number of recurrent neurons in this layer
+        fwd_scale : float
+            Feedforward weight initialization scale (N(0, fwd_scale/sqrt(nb_inputs)))
+        rec_scale : float
+            Recurrent weight initialization scale (N(0, rec_scale/sqrt(nb_neurons)))
+        alpha : float
+            Synaptic current decay factor (0.0 to disable synaptic dynamics)
+        beta : float
+            Membrane potential decay factor (exp(-dt/tau_mem) for exponential decay)
+        ref_per : int or None, optional
+            Refractory period duration in timesteps (default: None, disabled)
+        """
         self.batch_size = batch_size
         self.nb_inputs = nb_inputs
         self.nb_neurons = nb_neurons
@@ -1370,9 +1617,30 @@ class recurrent_layer:
         self.create_layer()
 
     def reset_refractory_perdiod_counter(self):
+        """
+        Reset all refractory period counters to zero.
+
+        Called at the start of each forward pass to clear refractory states
+        from previous batches.
+        """
         self.ref_per_tensor = torch.zeros_like(self.ref_per_tensor)
 
     def update_refractory_perdiod_counter(self, spk):
+        """
+        Update refractory period counters based on spike activity.
+
+        Decrements active counters by 1 and sets counters to ref_per for
+        neurons that just spiked.
+
+        Parameters
+        ----------
+        spk : torch.Tensor
+            Binary spike tensor [batch, neurons] where 1 indicates a spike
+
+        Notes
+        -----
+        Only operates on the current batch slice to handle variable batch sizes.
+        """
         current_batch_size = spk.shape[0]
         current_neurons = spk.shape[1]
         # Only operate on the current batch slice
@@ -1384,6 +1652,19 @@ class recurrent_layer:
                             :current_neurons] = batch_slice
 
     def create_layer(self):
+        """
+        Initialize feedforward and recurrent weight matrices.
+
+        Creates and initializes both weight matrices with Gaussian distributions.
+
+        Notes
+        -----
+        - Feedforward weights: [nb_neurons, nb_inputs]
+          Initialization: N(0, fwd_scale/sqrt(nb_inputs))
+        - Recurrent weights: [nb_neurons, nb_neurons]
+          Initialization: N(0, rec_scale/sqrt(nb_neurons))
+        - Both require gradients for learning
+        """
         self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
                                       device=device, dtype=dtype, requires_grad=True)
         torch.nn.init.normal_(self.ff_weights, mean=0.0,
@@ -1394,6 +1675,44 @@ class recurrent_layer:
                               std=self.rec_scale/np.sqrt(self.nb_neurons))
 
     def compute_activity(self, input_activity, nb_steps, lower_bound=None):
+        """
+        Compute spiking activity of recurrent layer over time.
+
+        Simulates recurrent LIF neuron dynamics with optional synaptic filtering,
+        refractory period, and membrane potential clamping. Includes recurrent
+        connections for temporal processing. Supports both e-prop (hard threshold)
+        and BPTT (surrogate gradient) spike generation.
+
+        Parameters
+        ----------
+        input_activity : torch.Tensor
+            Input currents with shape [batch, timesteps, nb_inputs]
+        nb_steps : int
+            Number of simulation timesteps
+        lower_bound : float or None, optional
+            Minimum membrane potential (clamping threshold, default: None)
+
+        Returns
+        -------
+        tuple
+            (spk_rec, mem_rec) where:
+            - spk_rec : torch.Tensor
+                Spike recordings [batch, timesteps, nb_neurons]
+            - mem_rec : torch.Tensor
+                Membrane potential recordings [batch, timesteps, nb_neurons]
+
+        Notes
+        -----
+        - Spike threshold: 1.0
+        - Reset mechanism: multiplicative (voltage * (1 - spike))
+        - For e-prop: uses hard threshold (no gradient through spikes)
+        - For BPTT: uses surrogate gradient function for differentiability
+        - Total input: feedforward input + recurrent input (previous spikes)
+        - Synaptic dynamics: syn = alpha * syn + total_input (if alpha > 0)
+        - Membrane dynamics: mem = beta * mem + syn (exponential decay)
+          or mem = mem - sign(mem)*beta + syn (linear decay)
+        - Refractory period blocks synaptic input when active
+        """
         syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=device, dtype=dtype)
         new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
@@ -1416,8 +1735,14 @@ class recurrent_layer:
             h1 = input_activity[:, t] + \
                 torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
             mthr = mem-1.0
-            out = torch.zeros_like(mthr)
-            out[mthr > 0] = 1
+            # Use surrogate gradient for BPTT compatibility
+            if params["use_eprop"]:
+                # For e-prop, use hard threshold (no gradient needed through spikes)
+                out = torch.zeros_like(mthr)
+                out[mthr > 0] = 1
+            else:
+                # For BPTT, use surrogate gradient
+                out = spike_fn(mthr, params["gamma"])
             rst = out.detach()  # We do not want to backprop through the reset
 
             if self.ref_per is not None:
@@ -1452,9 +1777,15 @@ class recurrent_layer:
 
 
 if __name__ == '__main__':
+    # Print learning algorithm being used
+    print(f"\n{'='*60}")
+    print(f"Training with: {'e-prop' if params['use_eprop'] else 'BPTT (Backpropagation Through Time)'}")
+    print(f"{'='*60}\n")
+    
     # here we can set how often we wat to run the training to get some statistics
-    min_nb_neurons = 5
-    max_nb_neurons = 30
+    min_nb_neurons = 50
+    max_nb_neurons = 100
+    nb_neurons_step = 10
     best_acc = 0.0
     
     # Define results file path
@@ -1488,7 +1819,7 @@ if __name__ == '__main__':
         ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
             params, file_name, letter_written=letters, create_validation=create_validation)
 
-    pbar_nb_neurons = tqdm(range(min_nb_neurons, max_nb_neurons+1),
+    pbar_nb_neurons = tqdm(range(min_nb_neurons, max_nb_neurons+1, nb_neurons_step),
                            position=0, total=max_nb_neurons, leave=True)
     for nb_hidden in pbar_nb_neurons:
         # Clear GPU cache at the start of each iteration
@@ -1527,7 +1858,7 @@ if __name__ == '__main__':
         # get validation results
         if create_validation:
             val_acc = compute_classification_accuracy(
-                dataset=ds_validation, layers=best_layers, vars_eprop=vars_eprop)
+                dataset=ds_validation, layers=best_layers)
 
         # save the best layer
         torch.save(

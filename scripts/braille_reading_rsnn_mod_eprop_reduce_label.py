@@ -30,7 +30,8 @@ dtype = torch.float
 
 # letters = ['A', 'B']  # difficult: a vs. b, c, e, i; easy: a vs. p, q, y
 # letters = ['J', 'U']  # difficult: a vs. b, c, e, i; easy: a vs. p, q, y
-letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'Space', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
+letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+           'N', 'O', 'P', 'Q', 'R', 'S', 'Space', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
 create_validation = False
 
 # set variables
@@ -50,7 +51,7 @@ class experimantal_params:
         self.nb_input_copies = 1
         self.batch_size = 128  # default: 128
         self.learning_rate = 0.004
-        self.gamma = 15.0 # 0.3  # used for the surrogate gradient
+        self.gamma = 15.0  # 0.3  # used for the surrogate gradient
         self.lower_bound = -1.0
         self.no_synapse = True
         self.use_linear_decay = False
@@ -68,8 +69,10 @@ class experimantal_params:
         # global tau_trace
         self.tau_trace = 0.14
         self.tau_trace_out = 0.14
-        self.use_eprop = False  # if False, use BPTT (backpropagation through time)
-        self.use_mechanoreceptor_encoding = True  # if True, use mechanoreceptor encoding, if False sigma-delta encoding
+        # if False, use BPTT (backpropagation through time)
+        self.use_eprop = False
+        # if True, use mechanoreceptor encoding, if False sigma-delta encoding
+        self.use_mechanoreceptor_encoding = True
         if self.use_mechanoreceptor_encoding:
             self.max_time = 3700
         else:
@@ -195,7 +198,7 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
     params["time_step"] = time_bin_size*0.001  # ms
     data_steps = len(time)
     # params["delayed_output"] = data_steps
-    params["delayed_output"] = 0  # data_steps
+    params["delayed_output"] = None  # 0  # data_steps
 
     data_dict = pd.read_pickle(file_name)
     # data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
@@ -206,7 +209,7 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
     labels = []
     if params['use_mechanoreceptor_encoding']:
         nchan = len(data_dict['taxel_data'][0][0])
-        
+
         # Determine which channels to use
         if taxels is not None:
             # User specified specific taxels - use only those
@@ -216,32 +219,38 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
             # Use all taxels
             selected_taxels = list(range(nchan))
             selected_chans = 2 * nchan
-        
+
         # Total channels: FA channels for selected taxels + SA channels for selected taxels
         for letter, fa_spikes, sa_spikes in zip(data_dict['letter'], data_dict['fa_spikes'], data_dict['sa_spikes']):
-            events_array = np.zeros([selected_chans, round((max_time/time_bin_size)+0.5)])
-            
-            fa_spike_times, fa_spike_idc = (fa_spikes[:, 0]*1000).astype(int), fa_spikes[:, 1].astype(int)-1
-            sa_spike_times, sa_spike_idc = (sa_spikes[:, 0]*1000).astype(int), (sa_spikes[:, 1].astype(int)-1)
-            
+            events_array = np.zeros(
+                [selected_chans, round((max_time/time_bin_size)+0.5)])
+
+            fa_spike_times, fa_spike_idc = (
+                fa_spikes[:, 0]*1000).astype(int), fa_spikes[:, 1].astype(int)-1
+            sa_spike_times, sa_spike_idc = (
+                sa_spikes[:, 0]*1000).astype(int), (sa_spikes[:, 1].astype(int)-1)
+
             # Process only selected taxels
             for local_idx, taxel in enumerate(selected_taxels):
                 # FA channel (first half of channels)
                 spike_times = fa_spike_times[fa_spike_idc == taxel]
                 if spike_times.size > 0:
-                    idc = np.array((spike_times/time_bin_size).round(), dtype=int)
+                    idc = np.array(
+                        (spike_times/time_bin_size).round(), dtype=int)
                     idc = idc[idc < max_time//time_bin_size]
                     events_array[local_idx, idc] = 1
-                
+
                 # SA channel (second half of channels)
                 spike_times = sa_spike_times[sa_spike_idc == taxel]
                 if spike_times.size > 0:
-                    idc = np.array((spike_times/time_bin_size).round(), dtype=int)
+                    idc = np.array(
+                        (spike_times/time_bin_size).round(), dtype=int)
                     idc = idc[idc < max_time//time_bin_size]
                     events_array[local_idx + len(selected_taxels), idc] = 1
-            
+
             if letter in letter_written:
-                data.append(events_array.T)  # Transpose to match expected shape [time, channels]
+                # Transpose to match expected shape [time, channels]
+                data.append(events_array.T)
                 labels.append(letter_written.index(letter))
     else:
         bins = 1000  # ms conversion
@@ -256,11 +265,12 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
                 for event_type in range(len(sample[taxel])):
                     if sample[taxel][event_type]:
                         indx = bins*(np.array(sample[taxel][event_type]))
-                        indx = np.array((indx/time_bin_size).round(), dtype=int)
+                        indx = np.array(
+                            (indx/time_bin_size).round(), dtype=int)
                         events_array[taxel, indx, event_type] = 1
             if taxels != None:
                 events_array = np.reshape(np.transpose(events_array, (1, 0, 2))[
-                                        :, taxels, :], (events_array.shape[1], -1))
+                    :, taxels, :], (events_array.shape[1], -1))
                 selected_chans = 2*len(taxels)
             else:
                 events_array = np.reshape(np.transpose(
@@ -290,7 +300,6 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
         ds_test = TensorDataset(x_test, y_test)
         ds_validation = TensorDataset(x_validation, y_validation)
 
-
     else:
         # create 80/20 train/test split
         x_train, x_test, y_train, y_test = train_test_split(
@@ -300,7 +309,6 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
         ds_test = TensorDataset(x_test, y_test)
         ds_validation = None
 
-        
     return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
 
 
@@ -393,7 +401,7 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
         nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, :data_steps]
     trace_rec = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
     trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
-    
+
     # Free h as it's no longer needed
     del h
 
@@ -420,7 +428,7 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
 
     L = torch.einsum('tbo,or->brt', err, w_out)
 
-    if params["delayed_output"] != 0:
+    if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
         L = L[:, :, -params["delayed_output"]:]
         err = err[-params["delayed_output"]:, :, :]
         trace_in = trace_in[:, :, :, -params["delayed_output"]:]
@@ -430,17 +438,17 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
     # Weight gradient updates
     w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
                            nb_inputs, -1) * trace_in, dim=(0, 3))
-    
+
     # Free trace_in immediately after use
     del trace_in
-    
+
     w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
                             nb_hidden, -1) * trace_rec, dim=(0, 3))
-    
+
     # Free trace_rec immediately after use
     del trace_rec
     w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
-    
+
     # Free remaining large tensors
     del trace_out, L, err
 
@@ -600,7 +608,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
         batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta, ref_per=params["ref_per_timesteps"])
 
     layers = [rec_layer, ff_layer]
-    
+
     # # Debug: Check initial weight statistics
     # print(f"\nInitial weight statistics for {nb_hidden} hidden neurons:")
     # print(f"  Recurrent layer input weights: mean={rec_layer.ff_weights.data.mean():.4f}, std={rec_layer.ff_weights.data.std():.4f}")
@@ -794,33 +802,13 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             _, spk_rec_hidden, _ = recs
 
-            # Use only the delayed_output window for spike counting (consistent with test evaluation)
-            m = torch.sum(spk_rec_readout[:, -params["delayed_output"]:, :], dim=1)
+            # Use all timesteps for BPTT, optionally use delayed_output window for e-prop
+            if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
+                m = torch.sum(
+                    spk_rec_readout[:, -params["delayed_output"]:, :], dim=1)
+            else:
+                m = torch.sum(spk_rec_readout, dim=1)
 
-            # cross entropy loss on the active read-out layer
-            log_p_y = log_softmax_fn(m)
-
-            # Here we can set up our regularizer loss
-            # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
-            # L1 loss on total number of spikes (hidden layer 1)
-            reg_loss = params['reg_spikes'] * \
-                torch.mean(torch.sum(spk_rec_hidden, 1))
-            # L1 loss on total number of spikes (output layer)
-            # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
-            # print("L1: ", reg_loss)
-            # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
-            # L2 loss on spikes per neuron (hidden layer 1)
-            reg_loss += params['reg_neurons'] * \
-                torch.mean(
-                    torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
-            # L2 loss on spikes per neuron (output layer)
-            # reg_loss += params['reg_neurons'] * \
-            #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
-            # print("L1 + L2: ", reg_loss)
-
-            # Here we combine supervised loss and the regularizer
-            loss_val = loss_fn(log_p_y, y_local)  # + reg_loss
-            
             # Select winner based on spike counts (used for both e-prop and accuracy)
             max_val, am = torch.max(m, 1)     # argmax over output units
             # Handle ties: if multiple neurons have the same max spike count, select randomly
@@ -831,7 +819,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                     candidates = torch.nonzero(
                         m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
                     am[i] = candidates[torch.randint(0, len(candidates), (1,))]
-            
+
             # Compute gradients based on selected learning algorithm
             if params["use_eprop"]:
                 one_hot_encoded = torch.nn.functional.one_hot(
@@ -842,25 +830,50 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                     am, num_classes=len(np.unique(labels)))
                 # Expand to match temporal dimension for e-prop
                 yo = yo.unsqueeze(1).expand(-1, spk_rec_readout.shape[1], -1)
-                
+
                 # Compute e-prop gradients
                 mem_rec_hidden, spk_rec_hidden, _ = recs
-                grads_batch(x_local.permute(1, 0, 2), yo.permute(1, 0, 2), one_hot_encoded, 
-                           params["gamma"], 1, mem_rec_hidden.permute(1, 0, 2), 
-                           spk_rec_hidden.permute(1, 0, 2), layers[0].ff_weights, 
-                           layers[0].rec_weights, layers[1].ff_weights, 
-                           vars_eprop[0], vars_eprop[1])
+                grads_batch(x_local.permute(1, 0, 2), yo.permute(1, 0, 2), one_hot_encoded,
+                            params["gamma"], 1, mem_rec_hidden.permute(
+                                1, 0, 2),
+                            spk_rec_hidden.permute(
+                                1, 0, 2), layers[0].ff_weights,
+                            layers[0].rec_weights, layers[1].ff_weights,
+                            vars_eprop[0], vars_eprop[1])
             else:
+                # cross entropy loss on the active read-out layer
+                log_p_y = log_softmax_fn(m)
+
+                # Here we can set up our regularizer loss
+                # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
+                # L1 loss on total number of spikes (hidden layer 1)
+                reg_loss = params['reg_spikes'] * \
+                    torch.mean(torch.sum(spk_rec_hidden, 1))
+                # L1 loss on total number of spikes (output layer)
+                # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
+                # print("L1: ", reg_loss)
+                # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
+                # L2 loss on spikes per neuron (hidden layer 1)
+                reg_loss += params['reg_neurons'] * \
+                    torch.mean(
+                        torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
+                # L2 loss on spikes per neuron (output layer)
+                # reg_loss += params['reg_neurons'] * \
+                #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
+                # print("L1 + L2: ", reg_loss)
+
+                # Here we combine supervised loss and the regularizer
+                loss_val = loss_fn(log_p_y, y_local) + reg_loss
                 # BPTT: standard backpropagation
                 loss_val.backward()
-            
+
             optimizer.step()
 
             local_loss.append(loss_val.item())
 
             tmp = np.mean((y_local == am).detach().cpu().numpy())
             accs.append(tmp)
-            
+
             # Debug: Print first batch of first epoch to check predictions
             # if count_epoch == 0 and len(accs) == 1:
             #     print(f"\nDebug - First batch:")
@@ -870,20 +883,20 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             #     print(f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
             #     print(f"  Prediction distribution: 0={torch.sum(am==0).item()}, 1={torch.sum(am==1).item()}")
             #     print(f"  Batch accuracy: {tmp:.4f}")
-                
+
             #     # Check input data
             #     print(f"\n  Input data statistics:")
             #     print(f"    Shape: {x_local.shape}")
             #     print(f"    Total input spikes (first 10 samples): {torch.sum(x_local[:10], dim=(0,1)).cpu().numpy()}")
             #     print(f"    Input spike rate (mean): {x_local.mean().item():.6f}")
-                
+
             #     # Check hidden layer
             #     print(f"\n  Hidden layer statistics:")
             #     hidden_spike_counts = torch.sum(spk_rec_hidden, dim=0)  # sum over time: [batch, neurons]
             #     print(f"    Spike count distribution (mean across batch): {hidden_spike_counts.mean(dim=0).cpu().numpy()}")
             #     print(f"    Spike count (min, max): ({hidden_spike_counts.min().item()}, {hidden_spike_counts.max().item()})")
             #     print(f"    First 10 samples total spikes: {torch.sum(spk_rec_hidden[:10], dim=(0,1)).cpu().numpy()}")
-                
+
             #     # Check output layer
             #     print(f"\n  Output layer statistics:")
             #     print(f"    Weights shape: {layers[1].ff_weights.shape}")
@@ -910,7 +923,8 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
         count_epoch = count_epoch + 1
 
         # Calculate test accuracy in each epoch
-        test_acc = compute_classification_accuracy(dataset=dataset_test, layers=layers)
+        test_acc = compute_classification_accuracy(
+            dataset=dataset_test, layers=layers)
         accs_hist[1].append(test_acc)
         if np.max(test_acc) >= best_test_acc:
             best_test_acc = np.max(test_acc)
@@ -938,8 +952,6 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list) -> flo
         Dataset containing (input_data, labels) pairs for evaluation
     layers : list
         List containing [recurrent_layer, feedforward_layer] trained layer objects
-    vars_eprop : list
-        List containing [beta_trace, beta_trace_out] decay factors (used for consistency)
 
     Returns
     -------
@@ -948,10 +960,10 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list) -> flo
 
     Notes
     -----
-    - Predictions are made by counting output spikes during the delayed_output window
+    - For e-prop: uses delayed_output window if specified
+    - For BPTT: always uses all timesteps
     - Winner selection uses random tie-breaking when multiple neurons have equal spike counts
     - All computations are performed with torch.no_grad() for efficiency
-    - Uses the global params['delayed_output'] to determine which timesteps to consider
     """
 
     generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
@@ -963,19 +975,19 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list) -> flo
         with torch.no_grad():
             spk_rec_readout, _ = run_snn(inputs=x_local, layers=layers)
 
-        # with output spikes
-        # sum over time
-        m = torch.sum(spk_rec_readout[:, -params["delayed_output"]:, :], dim=1)
+        # Sum over time - use delayed_output only for e-prop
+        if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
+            m = torch.sum(
+                spk_rec_readout[:, -params["delayed_output"]:, :], dim=1)
+        else:
+            m = torch.sum(spk_rec_readout, dim=1)
+
         max_val, am = torch.max(m, 1)     # argmax over output units
 
-        # with output spikes
+        # Handle ties in spike counts
         mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
-        # If multiple neurons emit the highest number of spikes, select one of them randomly
         if mask.any():
-            # print("Multiple maxima detected. It happened: ", mask.sum().item(), " times.")
-            # compare to labels
             true_indices = torch.nonzero(mask, as_tuple=True)
-            # am[true_indices] = torch.randint(0, len(letters), (len(true_indices),), device=device)
             for i in true_indices:
                 candidates = torch.nonzero(
                     m[i] == max_val[i].unsqueeze(-1), as_tuple=True)[0]
@@ -984,7 +996,7 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list) -> flo
         # compare to labels
         tmp = np.mean((y_local == am).detach().cpu().numpy())
         accs.append(tmp)
-    
+
     mean_acc = np.mean(accs)
     # Optionally print for debugging (can comment out after verification)
     # print(f"Test mean accuracy: {mean_acc:.4f}")
@@ -1633,6 +1645,7 @@ class recurrent_layer:
         batch_size : int
             Maximum batch size for memory pre-allocation
         nb_inputs : int
+
             Number of input features/channels
         nb_neurons : int
             Number of recurrent neurons in this layer
@@ -1823,15 +1836,16 @@ class recurrent_layer:
 if __name__ == '__main__':
     # Print learning algorithm being used
     print(f"\n{'='*60}")
-    print(f"Training with: {'e-prop' if params['use_eprop'] else 'BPTT (Backpropagation Through Time)'}")
+    print(
+        f"Training with: {'e-prop' if params['use_eprop'] else 'BPTT (Backpropagation Through Time)'}")
     print(f"{'='*60}\n")
-    
+
     # Get the fixed number of hidden neurons from params
     nb_hidden = params['nb_hidden']
-    
+
     # Define results file path
     results_file = f"./results/braille_reading_rsnn_{nb_hidden}_neurons_all_letters.npz"
-    
+
     # always use the same data split
     ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
         params, file_name, letter_written=letters, create_validation=create_validation)
@@ -1858,7 +1872,8 @@ if __name__ == '__main__':
     else:
         print(f"Use exponential decay.")
     if params["ref_per_timesteps"]:
-        print(f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
+        print(
+            f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
     print("Input duration %fs" % (data_steps*params["time_step"]))
     print("---------------------------\n")
 
@@ -1868,11 +1883,13 @@ if __name__ == '__main__':
 
     # Get validation results
     if create_validation:
-        val_acc = compute_classification_accuracy(dataset=ds_validation, layers=best_layers)
+        val_acc = compute_classification_accuracy(
+            dataset=ds_validation, layers=best_layers)
         print(f"Validation accuracy: {val_acc*100:.2f}%")
 
     # Save the best model
-    torch.save(best_layers, f'./model/best_model_{nb_hidden}_neurons_all_letters.pt')
+    torch.save(
+        best_layers, f'./model/best_model_{nb_hidden}_neurons_all_letters.pt')
 
     # Save training results
     np.savez(results_file,
@@ -1888,7 +1905,7 @@ if __name__ == '__main__':
         acc_train=np.array([acc_hist[0]]),
         acc_test=np.array([acc_hist[1]]),
         loss_train=np.array([loss_hist]))
-    
+
     # Plot confusion matrix
     plot_confusion_matrix(
         path=f"./figures/best_model_{nb_hidden}_neurons_all_letters_confusion_matrix",
@@ -1912,22 +1929,25 @@ if __name__ == '__main__':
     if NB_BATCHES_TO_PLOT > total_nb_batches:
         batch_selection = range(total_nb_batches)
     else:
-        batch_selection = np.random.choice(total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
+        batch_selection = np.random.choice(
+            total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
 
     for batch_idx in batch_selection:
         spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
         spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
-        
+
         total_nb_trials = len(spk_rec_readout_batch)
-        
+
         # Select trials to plot
         if NB_TRIALS_TO_PLOT > total_nb_trials:
             trial_selection = range(total_nb_trials)
         else:
-            trial_selection = np.random.choice(total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
+            trial_selection = np.random.choice(
+                total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
 
         for trial_idx in trial_selection:
-            spr_recs = [spk_rec_hidden_batch[trial_idx], spk_rec_readout_batch[trial_idx]]
+            spr_recs = [spk_rec_hidden_batch[trial_idx],
+                        spk_rec_readout_batch[trial_idx]]
             plot_network_activity(
                 spr_recs, layer_names,
                 figname=f"./figures/best_model_{nb_hidden}_neurons_all_letters_network_activity_batch{batch_idx}_trial{trial_idx}")

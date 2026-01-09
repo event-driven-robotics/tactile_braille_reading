@@ -44,7 +44,6 @@ epochs = 20  # TODO bring back to 50
 class experimantal_params:
     def __init__(self):
         # self.epochs = 50  # TODO remove the  one above for consistency and use this instead
-        self.nb_hidden = 450  # number of recurrent neurons
         self.threshold = 2  # possible values are: 1, 2, 5, 10
         self.time_bin_size = 1  # ms
         self.nb_input_copies = 1
@@ -290,6 +289,7 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
         ds_test = TensorDataset(x_test, y_test)
         ds_validation = TensorDataset(x_validation, y_validation)
 
+        return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
 
     else:
         # create 80/20 train/test split
@@ -298,10 +298,8 @@ def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=l
 
         ds_train = TensorDataset(x_train, y_train)
         ds_test = TensorDataset(x_test, y_test)
-        ds_validation = None
 
-        
-    return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
+        return ds_train, ds_test, labels, selected_chans, data_steps
 
 
 def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: float, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, beta_trace: float, beta_trace_out: float) -> None:
@@ -1826,114 +1824,180 @@ if __name__ == '__main__':
     print(f"Training with: {'e-prop' if params['use_eprop'] else 'BPTT (Backpropagation Through Time)'}")
     print(f"{'='*60}\n")
     
-    # Get the fixed number of hidden neurons from params
-    nb_hidden = params['nb_hidden']
+    # here we can set how often we wat to run the training to get some statistics
+    min_nb_neurons = 50
+    max_nb_neurons = 100
+    nb_neurons_step = 10
+    best_acc = 0.0
     
     # Define results file path
-    results_file = f"./results/braille_reading_rsnn_{nb_hidden}_neurons_all_letters.npz"
+    results_file = f"./results/braille_reading_rsnn_eprop_reduce_label_{min_nb_neurons}_to_{max_nb_neurons}_neurons_{letters[0]}_vs_{letters[1]}_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per.npz"
     
-    # always use the same data split
-    ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
-        params, file_name, letter_written=letters, create_validation=create_validation)
-
-    # Clear GPU cache
-    torch.cuda.empty_cache()
-
-    # Print dataset information
-    print("Number of training data %i." % len(ds_train))
-    print("Number of testing data %i." % len(ds_test))
-    if create_validation:
-        print("Number of validation data %i." % len(ds_validation))
-    print("Number of outputs %i." % len(np.unique(labels)))
-    print("Number of input channels %i." % nb_channels)
-    print("Number of hidden neurons %i." % nb_hidden)
-    print("Number of timesteps %i." % data_steps)
-    print("Delayed output ", params["delayed_output"])
-    if params["no_synapse"]:
-        print(f"No synapse dynamics.")
-    if params["lower_bound"]:
-        print(f"Clamp membrane voltage to: {params['lower_bound']}.")
-    if params["use_linear_decay"]:
-        print(f"Use linear decay.")
-    else:
-        print(f"Use exponential decay.")
-    if params["ref_per_timesteps"]:
-        print(f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
-    print("Input duration %fs" % (data_steps*params["time_step"]))
-    print("---------------------------\n")
-
-    # Initialize and train network
-    loss_hist, acc_hist, best_layers, vars_eprop = build_and_train(
-        params, ds_train, ds_test, nb_hidden=nb_hidden, epochs=epochs)
-
-    # Get validation results
-    if create_validation:
-        val_acc = compute_classification_accuracy(dataset=ds_validation, layers=best_layers)
-        print(f"Validation accuracy: {val_acc*100:.2f}%")
-
-    # Save the best model
-    torch.save(best_layers, f'./model/best_model_{nb_hidden}_neurons_all_letters.pt')
-
-    # Save training results
-    np.savez(results_file,
-             acc_train=acc_hist[0],
-             acc_test=acc_hist[1],
-             loss_train=loss_hist,
-             nb_hidden=nb_hidden)
-    print(f"Results saved to {results_file}")
-
-    # Plot training performance
-    plot_training_perfromance(
-        path=f"./figures/best_model_{nb_hidden}_neurons_all_letters_training_performance",
-        acc_train=np.array([acc_hist[0]]),
-        acc_test=np.array([acc_hist[1]]),
-        loss_train=np.array([loss_hist]))
-    
-    # Plot confusion matrix
-    plot_confusion_matrix(
-        path=f"./figures/best_model_{nb_hidden}_neurons_all_letters_confusion_matrix",
-        dataset=ds_test,
-        layers=best_layers,
-        labels=letters,
-        vars_eprop=vars_eprop)
-
-    #####################################
-    ### Create raster plots ###
-    #####################################
-
-    # Get network activity
-    accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
-        ds_test, layers=best_layers, vars_eprop=vars_eprop)
-
-    layer_names = ["Hidden layer", "Readout layer"]
-    total_nb_batches = len(accs)
-
-    # Select batches to plot
-    if NB_BATCHES_TO_PLOT > total_nb_batches:
-        batch_selection = range(total_nb_batches)
-    else:
-        batch_selection = np.random.choice(total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
-
-    for batch_idx in batch_selection:
-        spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
-        spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
-        
-        total_nb_trials = len(spk_rec_readout_batch)
-        
-        # Select trials to plot
-        if NB_TRIALS_TO_PLOT > total_nb_trials:
-            trial_selection = range(total_nb_trials)
+    # Load existing results if available
+    if os.path.exists(results_file):
+        print(f"Loading existing results from {results_file}")
+        loaded = np.load(results_file, allow_pickle=True)
+        acc_train_dict = loaded['acc_train'].item() if loaded['acc_train'].ndim == 0 else {}
+        acc_test_dict = loaded['acc_test'].item() if loaded['acc_test'].ndim == 0 else {}
+        loss_train_dict = loaded['loss_train'].item() if loaded['loss_train'].ndim == 0 else {}
+        nb_hidden_list = loaded.get('nb_hidden_list', [])
+        if nb_hidden_list.ndim == 0:
+            nb_hidden_list = list(nb_hidden_list.item())
         else:
-            trial_selection = np.random.choice(total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
+            nb_hidden_list = list(nb_hidden_list)
+        print(f"Found existing data for {len(nb_hidden_list)} neuron counts: {nb_hidden_list}")
+    else:
+        print("No existing results found, starting fresh")
+        acc_train_dict = {}
+        acc_test_dict = {}
+        loss_train_dict = {}
+        nb_hidden_list = []
 
-        for trial_idx in trial_selection:
-            spr_recs = [spk_rec_hidden_batch[trial_idx], spk_rec_readout_batch[trial_idx]]
-            plot_network_activity(
-                spr_recs, layer_names,
-                figname=f"./figures/best_model_{nb_hidden}_neurons_all_letters_network_activity_batch{batch_idx}_trial{trial_idx}")
+    # always use the same data split
+    if create_validation:
+        ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
+            params, file_name, letter_written=letters, create_validation=create_validation)
+    else:
+        ds_train, ds_test, labels, nb_channels, data_steps = load_and_extract(
+            params, file_name, letter_written=letters, create_validation=create_validation)
 
-    # Clean up memory
-    del loss_hist, acc_hist, best_layers, accs, spk_rec_readout_array, spk_rec_hidden_array
-    torch.cuda.empty_cache()
+    pbar_nb_neurons = tqdm(range(min_nb_neurons, max_nb_neurons+1, nb_neurons_step),
+                           position=0, total=max_nb_neurons, leave=True)
+    for nb_hidden in pbar_nb_neurons:
+        # Clear GPU cache at the start of each iteration
+        torch.cuda.empty_cache()
 
-    print(f"\nTraining complete! Results saved to {results_file}")
+        pbar_nb_neurons.set_description(
+            f"{nb_hidden}/{max_nb_neurons}")
+        # load data for each repetition indepoently to get different splits
+        if nb_hidden == min_nb_neurons:
+            print("Number of training data %i." % len(ds_train))
+            print("Number of testing data %i." % len(ds_test))
+            if create_validation:
+                print("Number of validation data %i." % len(ds_validation))
+            print("Number of outputs %i." % len(np.unique(labels)))
+            print("Number of timesteps %i." % data_steps)
+            print("Delayed output ", params["delayed_output"])
+            if params["no_synapse"]:
+                print(f"No synapse dynamics.")
+            if params["lower_bound"]:
+                print(
+                    f"Clamp membrane voltage to: {params['lower_bound']}.")
+            if params["use_linear_decay"]:
+                print(f"Use linear decay.")
+            else:
+                print(f"Use exponential decay.")
+            if params["ref_per_timesteps"]:
+                print(
+                    f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
+            print("Input duration %fs" % (data_steps*params["time_step"]))
+            print("---------------------------\n")
+
+        # initialize and train network
+        loss_hist, acc_hist, best_layers, vars_eprop = build_and_train(
+            params, ds_train, ds_test, nb_hidden=nb_hidden, epochs=epochs)
+
+        # get validation results
+        if create_validation:
+            val_acc = compute_classification_accuracy(
+                dataset=ds_validation, layers=best_layers)
+
+        # save the best layer
+        torch.save(
+            best_layers, f'./model/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params["threshold"]}_{params["ref_per_timesteps"]}_ref_per.pt')
+
+        # Store the training histories in dictionaries
+        acc_train_dict[nb_hidden] = acc_hist[0]
+        acc_test_dict[nb_hidden] = acc_hist[1]
+        loss_train_dict[nb_hidden] = loss_hist
+        
+        # Update nb_hidden list if this is a new entry
+        if nb_hidden not in nb_hidden_list:
+            nb_hidden_list.append(nb_hidden)
+            nb_hidden_list.sort()  # Keep sorted for consistency
+        
+        # Save results after each iteration to prevent data loss
+        np.savez(results_file,
+                 acc_train=acc_train_dict,
+                 acc_test=acc_test_dict,
+                 loss_train=loss_train_dict,
+                 nb_hidden_list=np.array(nb_hidden_list))
+        print(f"Results saved to {results_file}")
+
+        # ### Lets plot the training curve and the confusion matrix for this specific number of neurons
+        # Plot only the current run's data (last element in the list)
+        plot_training_perfromance(
+            path=f"./figures/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per_training_performance", acc_train=np.array([acc_hist[0]]), acc_test=np.array([acc_hist[1]]), loss_train=np.array([loss_hist]))
+        # plotting the confusion matrix
+        plot_confusion_matrix(
+            path=f"./figures/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per_confusion_matrix", dataset=ds_test, layers=best_layers, labels=letters, vars_eprop=vars_eprop)
+
+        #####################################
+        ### Lets create some raster plots ###
+        #####################################
+
+        # plotting the network activity
+        accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
+            ds_test, layers=best_layers, vars_eprop=vars_eprop)
+
+        layer_names = ["Hidden layer", "Readout layer"]
+        nb_layers = len(layer_names)
+
+        total_nb_batches = len(accs)
+
+        # select the batches to plot
+        if NB_BATCHES_TO_PLOT > total_nb_batches:
+            # print(
+            #     f"WARNING: Not enough batches to plot. Will plot all {total_nb_batches} batches instead of the asked {NB_BATCHES_TO_PLOT}. Lower the number to avoid this warning.")
+            batch_selection = range(NB_BATCHES_TO_PLOT)
+        elif NB_BATCHES_TO_PLOT == total_nb_batches:
+            # print(f"Plotting all {total_nb_trials} trials.")
+            batch_selection = range(NB_BATCHES_TO_PLOT)
+        else:
+            # print(
+            #     f"Plotting {NB_BATCHES_TO_PLOT} random batches (out of {total_nb_batches}).")
+            found_unique = False
+            while not found_unique:
+                batch_selection = np.random.choice(
+                    total_nb_batches, NB_BATCHES_TO_PLOT)
+                if len(np.unique(batch_selection)) == NB_BATCHES_TO_PLOT:
+                    found_unique = True
+
+        for batch_idx in batch_selection:
+            batch_acc = accs[batch_idx]
+            # [trials, timesteps, neurons]
+            spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
+            # [trials, timesteps, neurons]
+            spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
+            # select random trials to plot
+            total_nb_trials = len(spk_rec_readout_batch)
+            if NB_TRIALS_TO_PLOT > total_nb_trials:
+                # print(
+                #     f"WARNING: Not enough trials to plot. Will plot all {total_nb_trials} trials instead of the asked {NB_TRIALS_TO_PLOT}. Lower the number to avoid this warning.")
+                trial_selection = range(NB_BATCHES_TO_PLOT)
+            elif NB_TRIALS_TO_PLOT == total_nb_trials:
+                # print(f"Plotting all {total_nb_trials} trials.")
+                trial_selection = range(NB_TRIALS_TO_PLOT)
+            else:
+                # print(
+                #     f"Plotting {NB_TRIALS_TO_PLOT} random trials (out of {total_nb_trials}).")
+                found_unique = False
+                while not found_unique:
+                    trial_selection = np.random.choice(
+                        total_nb_trials, NB_TRIALS_TO_PLOT)
+                    if len(np.unique(trial_selection)) == NB_TRIALS_TO_PLOT:
+                        found_unique = True
+
+            for trial_idx in trial_selection:
+                spr_recs = [spk_rec_hidden_batch[trial_idx],
+                            spk_rec_readout_batch[trial_idx]]
+                # TODO include more specifics into the figure name
+                plot_network_activity(
+                    spr_recs, layer_names, figname=f"./figures/best_model_{letters[0]}_vs_{letters[1]}_{nb_hidden}_neurons_th_{params['threshold']}_{params['ref_per_timesteps']}_ref_per_network_activity")
+
+        # Clean up large variables to free memory
+        del loss_hist, acc_hist, best_layers, accs, spk_rec_readout_array, spk_rec_hidden_array
+        torch.cuda.empty_cache()
+
+    print(f"\nTraining complete! Final results saved to {results_file}")
+    print(f"Completed training for {len(nb_hidden_list)} neuron counts: {nb_hidden_list}")

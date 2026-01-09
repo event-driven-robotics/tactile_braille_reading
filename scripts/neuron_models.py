@@ -743,7 +743,7 @@ class FA_I_mechanoreceptor():
                 # Calculate times
                 times = last_time + np.arange(1, n_events + 1) * dt
                 event_times[idx:idx+len(times)] = times
-                y_arr[idx:idx+len(times)] = channel + 1
+                y_arr[idx:idx+len(times)] = channel  # Channel indices start from 0
                 # Update last_taxel_value for this channel
                 # NOTE: now we have 'trailing' of event because value at last time is saved and not the possibly lower sample value
                 # self.last_taxel_value[channel] += direction[channel] * \
@@ -849,8 +849,7 @@ class SA_II_mechanoreceptor():
                     last_event_time + dt, current_time, dt)
 
             if event_times.size > 0:
-                # logger.debug(f"Generated SA-II events for channel {channel}: {event_times}")
-                y_arr = np.full(event_times.shape, channel + 1)
+                y_arr = np.full(event_times.shape, channel)  # Channel indices start from 0
                 # Stack as (N, 2) array
                 new_events = np.vstack((new_events, np.column_stack((event_times, y_arr))))
 
@@ -962,8 +961,7 @@ class SA_II_alt_mechanoreceptor():
                     last_event_time + dt, current_time, dt)
 
             if event_times.size > 0:
-                # logger.debug(f"Generated SA-II events for channel {channel}: {event_times}")
-                y_arr = np.full(event_times.shape, channel + 1)
+                y_arr = np.full(event_times.shape, channel + 1)  # Channel indices start from 1
                 # Stack as (N, 2) array
                 new_events = np.vstack((new_events, np.column_stack((event_times, y_arr))))
 

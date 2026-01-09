@@ -25,6 +25,7 @@ if __name__ == "__main__":
                     "fa_spikes": [],
                     "sa_spikes": []}
         
+        longest_trial = -np.inf
         shortest_trial = np.inf
 
         for trial, (letter, taxels, timestamps) in enumerate(tqdm(zip(letter_list, taxels_list, timestamps_list),
@@ -32,6 +33,8 @@ if __name__ == "__main__":
                                                                     letter_list),
                                                                 desc=f"Encoding letters",
                                                                 leave=False)):
+            if timestamps[-1] > longest_trial:
+                longest_trial = timestamps[-1]            
             if timestamps[-1] < shortest_trial:
                 shortest_trial = timestamps[-1]
             fa_spikes = []
@@ -64,8 +67,9 @@ if __name__ == "__main__":
             out_dict["sa_spikes"].append(np.array(sa_spikes, dtype=float))
         pass
 
+    print(f"Longest trial duration: {longest_trial} seconds")
     print(f"Shortest trial duration: {shortest_trial} seconds")
-    
+
     # let us sort the dict by letters to have a consistent order
     sorted_indices = np.argsort(out_dict["letter"])
     out_dict["letter"] = [out_dict["letter"][i] for i in sorted_indices]

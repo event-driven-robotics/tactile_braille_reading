@@ -5,11 +5,66 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Current File",
-            "type": "python",
+            "name": "Python: Train Default",
+            "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
             "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Train with e-prop",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--use_eprop",
+                "--epochs", "100",
+                "--nb_hidden", "100"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Train BPTT (debug mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--debug",
+                "--epochs", "10",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--use_seed"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Quick Test (5 epochs)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--epochs", "5",
+                "--nb_hidden", "10"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Hyperparameter Search",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--epochs", "50",
+                "--nb_hidden", "200",
+                "--learning_rate", "0.001",
+                "--reg_spikes", "0.002",
+                "--use_random_tie_breaking"
+            ],
             "justMyCode": false
         }
     ]

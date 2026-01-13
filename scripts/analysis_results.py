@@ -1,3 +1,15 @@
+"""analysis_results.py
+
+Visualization and analysis of training results for braille reading neural networks.
+
+Generates comprehensive figures showing input data, network traces, weight evolution,
+and performance metrics across training epochs. Combines data from multiple training
+runs to create publication-ready figures.
+
+Author: Simon F. Muller-Cleve
+Date: January 12, 2026
+"""
+
 import os
 import pickle
 
@@ -8,6 +20,20 @@ from tqdm import tqdm
 
 
 def main():
+    """
+    Generate comprehensive analysis figures from training results.
+
+    Loads training traces, weights, and performance metrics from saved files
+    and creates a multi-panel figure showing:
+    - Input data and eligibility traces (first and last epoch)
+    - Weight evolution across training
+    - Final training performance curves
+
+    Returns
+    -------
+    None
+        Saves figure to ./figures/final_figure.pdf
+    """
     # let's create the final figure
     fig_final = plt.figure(figsize=(16, 10))
     gs_final = GridSpec(2, 2, figure=fig_final)

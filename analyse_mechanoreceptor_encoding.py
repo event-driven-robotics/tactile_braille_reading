@@ -1,3 +1,14 @@
+"""analyse_mechanoreceptor_encoding.py
+
+Analysis script for visualizing mechanoreceptor-encoded braille letter data.
+
+Loads pre-encoded mechanoreceptor spike data and generates visualizations for
+multiple samples of each braille letter, showing FA-I and SA-II spike patterns.
+
+Author: Simon F. Muller-Cleve
+Date: January 12, 2026
+"""
+
 import pickle as pkl
 
 import matplotlib.pyplot as plt

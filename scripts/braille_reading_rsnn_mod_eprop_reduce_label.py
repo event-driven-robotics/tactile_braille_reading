@@ -1,51 +1,74 @@
-"""
-Here we train a minimal model which can discriminate between three braille letters using a recurrent network.
-The code will find the minimum size of the recurrent layer we need to reach good performance.
+"""braille_reading_rsnn_mod_eprop_reduce_label.py
+
+Comprehensive training script for spiking recurrent neural networks (SRNNs) on tactile 
+braille letter classification tasks with full command-line configurability.
+
+This script provides a complete training pipeline for spiking neural networks with:
+- Configurable network architecture (neurons, layers, connections)
+- Multiple learning algorithms (BPTT, e-prop)
+- Flexible neuron dynamics (exponential/linear decay, synaptic filtering, refractory periods)
+- Data preprocessing options (mechanoreceptor encoding, channel selection, letter filtering)
+- Regularization and weight quantization support
+- Comprehensive evaluation with confusion matrices and network activity visualization
+- Reproducible experiments with seed control
+- GPU acceleration support
+
+The script uses argparse for all hyperparameters, making it suitable for systematic
+hyperparameter searches, ablation studies, and production training runs.
+
+Usage Examples
+--------------
+Train with default settings (all letters, e-prop disabled, 50 neurons):
+    python braille_reading_rsnn_mod_eprop_reduce_label.py
+
+Train with e-prop on specific letters:
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --use_eprop --letters A B C
+
+Custom architecture with validation set:
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --nb_hidden 100 --use_validation
+
+Select specific tactile sensors:
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --selected_channels 0 1 2 5 8
+
+Author: Simon F. Muller-Cleve
+Date: January 13, 2026
 """
 
 import argparse
 import os
-import pickle as pkl
+import sys
 
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import seaborn as sn
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from matplotlib.gridspec import GridSpec  # can be used for nice subplot layout
-from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
 
+# Add parent directory to path to import from utils
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from utils.data_loader import load_and_extract
+from utils.train_snn import build_and_train
+from utils.validate_snn import (compute_classification_accuracy,
+                                get_network_activity, plot_confusion_matrix,
+                                plot_network_activity,
+                                plot_training_perfromance)
+
+# Configure PyTorch memory allocator for better GPU memory management
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
-# or make permanent by adding to bashrc "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
-
-
+# Clear any cached GPU memory from previous runs
 torch.cuda.empty_cache()
-torch.set_default_dtype(torch.float64)
-
-dtype = torch.float
-
-# letters = ['A', 'B']  # difficult: a vs. b, c, e, i; easy: a vs. p, q, y
-letters = ['J', 'U']  # difficult: a vs. b, c, e, i; easy: a vs. p, q, y
-# letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-#            'N', 'O', 'P', 'Q', 'R', 'S', 'Space', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
-create_validation = False
-
-# set variables
-use_seed = True
-# set the number of epochs you want to train the network (default = 300)
-# epochs = 20  # TODO bring back to 50
-
-# TODO double check those params
 
 
 def parse_arguments():
-    """Parse command line arguments for experiment configuration."""
+    """
+    Parse command line arguments for experiment configuration.
+
+    Returns
+    -------
+    dict
+        Dictionary containing all experiment parameters with computed derived values.
+        Includes network architecture, training hyperparameters, neuron dynamics,
+        regularization settings, data configuration, and model options.
+    """
     parser = argparse.ArgumentParser(
         description='Train RSNN for Braille letter classification',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -54,16 +77,22 @@ def parse_arguments():
     # Training parameters
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable debug mode with verbose output')
+    parser.add_argument('--use_cuda', action='store_true', default=True,
+                        help='Use CUDA for GPU acceleration')
     parser.add_argument('--use_seed', action='store_true', default=False,
                         help='Use seed for reproducibility')
+    parser.add_argument('--use_validation', action='store_true', default=False,
+                        help='Create validation set from training data')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Training batch size')
-    parser.add_argument('--learning_rate', type=float, default=0.004,
+    parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate for optimizer')
 
     # Network architecture
+    parser.add_argument('--selected_channels', type=int, nargs='+', default=list(range(12)),
+                        help='List of selected input channels (taxels)')
     parser.add_argument('--nb_hidden', type=int, default=50,
                         help='Number of recurrent hidden neurons')
     parser.add_argument('--nb_input_copies', type=int, default=1,
@@ -104,6 +133,10 @@ def parse_arguments():
                         help='Surrogate gradient scale factor')
 
     # Data parameters
+    parser.add_argument('--letters', type=str, nargs='+',
+                        default=['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+                                 'N', 'O', 'P', 'Q', 'R', 'S', 'Space', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'],
+                        help='List of letters to use for classification')
     parser.add_argument('--threshold', type=int, default=2, choices=[1, 2, 5, 10],
                         help='Threshold for data encoding')
     parser.add_argument('--time_bin_size', type=int, default=1,
@@ -120,6 +153,9 @@ def parse_arguments():
                         help='Enable weight quantization')
     parser.add_argument('--use_random_tie_breaking', action='store_true', default=False,
                         help='Use random tie breaking for predictions')
+    parser.add_argument('--dtype', type=str, default='float64',
+                        choices=['float16', 'float32', 'float64'],
+                        help='Torch data type for computations')
 
     args = parser.parse_args()
 
@@ -133,2553 +169,153 @@ def parse_arguments():
     return vars(args)
 
 
-# Replace the experimantal_params class instantiation
+##############################################################################
+# CONFIGURATION SETUP
+##############################################################################
+
+# Parse all command-line arguments into params dictionary
 params = parse_arguments()
 
-# global batch_size
-# batch_size = 128
-# global lr
-# lr = 0.004  # 0.0008
-# print("Learning rate: ", lr)
-# global gamma
-# gamma = 0.3
+# Configure letter set for classification
+letters = params['letters']
+all_letters = (len(letters) == 27)  # True if using complete alphabet + space
+print(f"Using letters: {', '.join(letters)}")
 
-# global lower_bound
-# lower_bound = -1.0  # set to None to disable
-# global no_synapse
-# no_synapse = True
-# global use_linear_decay
-# use_linear_decay = False
-# global ref_per_timesteps
-# # refractory period is set in simulation time steps for now; set to None to disable
-# ref_per_timesteps = 3
+# Configure PyTorch data type for all tensors
+dtype_map = {
+    'float16': torch.float16,
+    'float32': torch.float32,
+    'float64': torch.float64
+}
+params['dtype_torch'] = dtype_map[params['dtype']]
+torch.set_default_dtype(params['dtype_torch'])
+print(f"Using torch dtype: {params['dtype']}")
 
-# some options for plotting
-NB_BATCHES_TO_PLOT = 1
-NB_TRIALS_TO_PLOT = 1
+##############################################################################
+# VISUALIZATION AND OUTPUT CONFIGURATION
+##############################################################################
 
-# create folder to safe figures later
+# Control how many network activity plots to generate
+NB_BATCHES_TO_PLOT = 1  # Number of batches to visualize
+NB_TRIALS_TO_PLOT = 1   # Number of trials per batch to visualize
+
+# Create output directory for figures
 path = './figures'
-isExist = os.path.exists(path)
-
-if not isExist:
+if not os.path.exists(path):
     os.makedirs(path)
 
-device = torch.device("cuda:0")
+##############################################################################
+# DEVICE CONFIGURATION
+##############################################################################
 
-neg_capacitance = torch.arange(255, -1, -1)
+# Select computation device (GPU if available and requested, otherwise CPU)
+if params["use_cuda"] and torch.cuda.is_available():
+    params['device'] = torch.device("cuda:0")
+    print("Using CUDA for computation.")
+else:
+    params['device'] = torch.device("cpu")
+    print("Using CPU for computation.")
 
-pos_capacitance = torch.arange(1, 257)
-diff_cap = pos_capacitance - neg_capacitance
-diff_cap = diff_cap.to(device)
-q = 1/256
+##############################################################################
+# WEIGHT QUANTIZATION SETUP (Optional)
+##############################################################################
 
-possible_weight = diff_cap * q
+# Configure weight quantization for neuromorphic hardware deployment
+if params['use_weight_quantization']:
+    print("Using weight quantization.")
+    # Generate discrete weight levels based on capacitor bank values (256 levels)
+    neg_capacitance = torch.arange(255, -1, -1)
+    pos_capacitance = torch.arange(1, 257)
+    diff_cap = pos_capacitance - neg_capacitance
+    diff_cap = diff_cap.to(params['device'])
+    q = 1/256
+
+    possible_weights = diff_cap * q
+
+    # Round to 3 decimal places for hardware precision
+    factor = 10 ** 3
+    params['possible_weights'] = torch.floor(
+        possible_weights * factor) / factor
 
 
-factor = 10 ** 3
-possible_weight = torch.floor(possible_weight * factor) / factor
-# print(possible_weight)
+##############################################################################
+# RANDOM SEED CONFIGURATION (For Reproducibility)
+##############################################################################
 
-
-# use fixed seed for reproducable results
-if use_seed:
-    seed = 42  # "Answer to the Ultimate Question of Life, the Universe, and Everything"
+# Set random seeds for reproducible experiments
+if params["use_seed"]:
+    seed = 42  # Answer to the Ultimate Question of Life, the Universe, and Everything
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     print("Seed set to {}".format(seed))
 else:
     print("Shuffle data randomly")
 
-
-def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=letters, create_validation=False) -> tuple:
-    """
-    Load and preprocess braille letter tactile sensor data from a pickle file.
-
-    This function loads event-based tactile sensor data, bins it into time windows,
-    optionally filters by specific taxels (tactile sensors) and letters, and creates
-    train/test (and optionally validation) datasets.
-
-    Parameters
-    ----------
-    params : dict
-        Dictionary containing experimental parameters:
-        - 'max_time' : int
-            Maximum time duration in milliseconds
-        - 'time_bin_size' : int
-            Size of time bins in milliseconds
-        - 'use_mechanoreceptor_encoding' : bool
-            If True, uses mechanoreceptor encoding; if False, uses sigma-delta encoding
-    file_name : str
-        Path to the pickle file containing braille letter data
-    taxels : list or None, optional
-        List of specific taxel indices to use. If None, all taxels are used (default: None)
-    letter_written : list, optional
-        List of letter labels to include in the dataset (default: global letters variable)
-    create_validation : bool, optional
-        If True, creates a 70/20/10 train/test/validation split.
-        If False, creates an 80/20 train/test split (default: False)
-
-    Returns
-    -------
-    tuple
-        If create_validation is True:
-            (ds_train, ds_test, ds_validation, labels, selected_chans, data_steps)
-        If create_validation is False:
-            (ds_train, ds_test, ds_validation, labels, selected_chans, data_steps)
-            where ds_validation is None
-
-        Where:
-        - ds_train : TensorDataset
-            Training dataset containing (data, labels) pairs
-        - ds_test : TensorDataset
-            Test dataset containing (data, labels) pairs
-        - ds_validation : TensorDataset or None
-            Validation dataset (None if create_validation=False)
-        - labels : torch.Tensor
-            All unique label values in the dataset
-        - selected_chans : int
-            Number of selected channels (2 * number of taxels)
-        - data_steps : int
-            Number of time steps in the data
-
-    Notes
-    -----
-    - Events are binned into time windows of size time_bin_size
-    - For mechanoreceptor encoding: each taxel has FA and SA channels
-    - For sigma-delta encoding: each taxel has ON and OFF channels
-    - Data is converted to torch tensors with appropriate dtypes
-    - Splits are stratified to maintain class balance
-    - Sets params["delayed_output"] = None by default
-    """
-
-    max_time = params["max_time"]  # ms
-    # int(params['time_bin_size'])  # so far from laoded file, but can be set manually here
-    time_bin_size = params["time_bin_size"]
-    time = range(0, max_time, time_bin_size)
-
-    params["time_step"] = time_bin_size*0.001  # ms
-    data_steps = len(time)
-    # params["delayed_output"] = data_steps
-    params["delayed_output"] = None  # 0  # data_steps
-
-    # Extract data
-    data = []
-    labels = []
-    if params['use_mechanoreceptor_encoding']:
-        with open(file_name, "rb") as f:
-            data_dict = pkl.load(f)
-        nchan = len(data_dict['taxel_data'][0][0])
-
-        # Determine which channels to use
-        if taxels is not None:
-            # User specified specific taxels - use only those
-            selected_taxels = taxels
-            selected_chans = 2 * len(taxels)  # Each taxel has FA and SA
-        else:
-            # Use all taxels
-            selected_taxels = list(range(nchan))
-            selected_chans = 2 * nchan
-
-        # Total channels: FA channels for selected taxels + SA channels for selected taxels
-        for letter, fa_spikes, sa_spikes in zip(data_dict['letter'], data_dict['fa_spikes'], data_dict['sa_spikes']):
-            events_array = np.zeros(
-                [selected_chans, round((max_time/time_bin_size)+0.5)])
-
-            fa_spike_times, fa_spike_idc = (
-                fa_spikes[:, 0]*1000).astype(int), fa_spikes[:, 1].astype(int)-1
-            sa_spike_times, sa_spike_idc = (
-                sa_spikes[:, 0]*1000).astype(int), (sa_spikes[:, 1].astype(int)-1)
-
-            # Process only selected taxels
-            for local_idx, taxel in enumerate(selected_taxels):
-                # FA channel (first half of channels)
-                spike_times = fa_spike_times[fa_spike_idc == taxel]
-                if spike_times.size > 0:
-                    idc = np.array(
-                        (spike_times/time_bin_size).round(), dtype=int)
-                    idc = idc[idc < max_time//time_bin_size]
-                    events_array[local_idx, idc] = 1
-
-                # SA channel (second half of channels)
-                spike_times = sa_spike_times[sa_spike_idc == taxel]
-                if spike_times.size > 0:
-                    idc = np.array(
-                        (spike_times/time_bin_size).round(), dtype=int)
-                    idc = idc[idc < max_time//time_bin_size]
-                    events_array[local_idx + len(selected_taxels), idc] = 1
-
-            if letter in letter_written:
-                # Transpose to match expected shape [time, channels]
-                data.append(events_array.T)
-                labels.append(letter_written.index(letter))
-    else:
-        data_dict = pd.read_pickle(file_name)
-        # data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
-        data_dict = pd.DataFrame(data_dict)
-        bins = 1000  # ms conversion
-        nchan = len(data_dict['events'][1])  # number of channels per sensor
-        # loop over all trials
-        for i, sample in enumerate(data_dict['events']):
-            events_array = np.zeros(
-                [nchan, round((max_time/time_bin_size)+0.5), 2])
-            # loop over sensors (taxel)
-            for taxel in range(len(sample)):
-                # loop over On and Off channels
-                for event_type in range(len(sample[taxel])):
-                    if sample[taxel][event_type]:
-                        indx = bins*(np.array(sample[taxel][event_type]))
-                        indx = np.array(
-                            (indx/time_bin_size).round(), dtype=int)
-                        events_array[taxel, indx, event_type] = 1
-            if taxels != None:
-                events_array = np.reshape(np.transpose(events_array, (1, 0, 2))[
-                    :, taxels, :], (events_array.shape[1], -1))
-                selected_chans = 2*len(taxels)
-            else:
-                events_array = np.reshape(np.transpose(
-                    events_array, (1, 0, 2)), (events_array.shape[1], -1))
-                selected_chans = 2*nchan
-            if data_dict['letter'][i] in letter_written:
-                data.append(events_array)
-                labels.append(letter_written.index(data_dict['letter'][i]))
-
-    # return data,labels
-    data = np.array(data)
-    labels = np.array(labels)
-    # print(labels)
-    data = torch.tensor(data, dtype=dtype)
-    labels = torch.tensor(labels, dtype=torch.long)
-
-    if params['debug']:
-        print(f"\n=== Label Distribution before Split ===")
-        unique_labels, counts = np.unique(
-            labels.cpu().numpy(), return_counts=True)
-        total_samples = len(labels)
-        for label_idx, count in zip(unique_labels, counts):
-            label_name = letter_written[label_idx]
-            percentage = (count / total_samples) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-        print(f"  Total: {total_samples} samples")
-
-    if create_validation:
-        # create 70/20/10 train/test/validation split
-        # first create 70/30 train/(test + validation)
-        x_train, x_test, y_train, y_test = train_test_split(
-            data, labels, test_size=0.30, shuffle=True, stratify=labels)
-        # split test and validation 2/1
-        x_test, x_validation, y_test, y_validation = train_test_split(
-            x_test, y_test, test_size=0.33, shuffle=True, stratify=y_test)
-
-        ds_train = TensorDataset(x_train, y_train)
-        ds_test = TensorDataset(x_test, y_test)
-        ds_validation = TensorDataset(x_validation, y_validation)
-
-    else:
-        # create 80/20 train/test split
-        x_train, x_test, y_train, y_test = train_test_split(
-            data, labels, test_size=0.20, shuffle=True, stratify=labels)
-
-        ds_train = TensorDataset(x_train, y_train)
-        ds_test = TensorDataset(x_test, y_test)
-        ds_validation = None
-
-    if params['debug']:
-        print(f"\n=== Label Distribution after Split ===")
-        print(f"\nTraining set:")
-        unique_train, counts_train = np.unique(
-            y_train.cpu().numpy(), return_counts=True)
-        for label_idx, count in zip(unique_train, counts_train):
-            label_name = letter_written[label_idx]
-            percentage = (count / len(y_train)) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
-        print(f"\nTest set:")
-        unique_test, counts_test = np.unique(
-            y_test.cpu().numpy(), return_counts=True)
-        for label_idx, count in zip(unique_test, counts_test):
-            label_name = letter_written[label_idx]
-            percentage = (count / len(y_test)) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
-        if create_validation:
-            print(f"\nValidation set:")
-            unique_val, counts_val = np.unique(
-                y_validation.cpu().numpy(), return_counts=True)
-            for label_idx, count in zip(unique_val, counts_val):
-                label_name = letter_written[label_idx]
-                percentage = (count / len(y_validation)) * 100
-                print(
-                    f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
-        print()  # blank line for readability
-
-    return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
-
-
-def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: float, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, beta_trace: float, beta_trace_out: float) -> None:
-    """
-    Compute weight gradients using e-prop (eligibility propagation) for spiking neural networks.
-
-    This function implements the e-prop learning algorithm for recurrent spiking neural networks.
-    It computes eligibility traces for input, recurrent, and output connections, then uses these
-    traces along with the error signal to calculate weight gradients. Gradients are accumulated
-    directly into the .grad attributes of the weight tensors.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input spike trains with shape [time, batch, input_features]
-    yo : torch.Tensor
-        Network output (predicted labels) with shape [time, batch, output_units]
-    yt : torch.Tensor
-        Target labels (one-hot encoded) with shape [batch, output_units]
-    gamma : float
-        Surrogate gradient scaling factor for the spike function derivative approximation
-    thr : int
-        Firing threshold for neurons (typically 1)
-    v : torch.Tensor
-        Membrane potential traces of hidden neurons with shape [time, batch, hidden_neurons]
-    z : torch.Tensor
-        Spike trains of hidden neurons with shape [time, batch, hidden_neurons]
-    w_in : torch.Tensor
-        Input-to-hidden weight matrix with shape [hidden_neurons, input_features]
-        Gradients are accumulated in w_in.grad
-    w_rec : torch.Tensor
-        Recurrent (hidden-to-hidden) weight matrix with shape [hidden_neurons, hidden_neurons]
-        Gradients are accumulated in w_rec.grad
-    w_out : torch.Tensor
-        Hidden-to-output weight matrix with shape [output_units, hidden_neurons]
-        Gradients are accumulated in w_out.grad
-    beta_trace : float
-        Decay factor for eligibility traces of hidden layer (exp(-dt/tau_trace))
-    beta_trace_out : float
-        Decay factor for output eligibility traces (exp(-dt/tau_trace_out))
-
-    Returns
-    -------
-    None
-        This function modifies weight gradients in-place (w_in.grad, w_rec.grad, w_out.grad)
-
-    Notes
-    -----
-    - Implements the e-prop algorithm for online learning in spiking neural networks
-    - Uses surrogate gradients to approximate the non-differentiable spike function
-    - Eligibility traces track the causal relationship between weight changes and neuron spikes
-    - Convolutions are used to efficiently compute eligibility traces over time
-    - The delayed_output parameter from params dict controls which time steps contribute to gradients
-    - All computations are performed on the device specified by the global 'device' variable
-
-    References
-    ----------
-    Bellec et al. (2020). "A solution to the learning dilemma for recurrent networks 
-    of spiking neurons." Nature Communications.
-    """
-    nb_inputs = x.shape[-1]
-
-    if w_in.grad is None:
-        w_in.grad = torch.zeros_like(w_in)
-    if w_rec.grad is None:
-        w_rec.grad = torch.zeros_like(w_rec)
-    if w_out.grad is None:
-        w_out.grad = torch.zeros_like(w_out)
-    # Surrogate derivatives
-    h = gamma * torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
-
-    # Crea una variabile di errore vuota con le stesse dimensioni di yo
-    err = torch.zeros_like(yo)
-
-    # Eligibility traces convolution
-    beta_conv = torch.tensor([beta_trace_out ** (data_steps - i - 1)
-                             for i in range(data_steps)]).float().view(1, 1, -1).to(device)
-    beta_rec_conv = torch.tensor([beta_trace ** (data_steps - i - 1)
-                                 for i in range(data_steps)]).float().view(1, 1, -1).to(device)
-
-    # Convoluzione Input eligibility traces
-    trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(
-        nb_inputs, -1, -1), padding=data_steps, groups=nb_inputs)[:, :, 1:data_steps+1]
-    trace_in = trace_in.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
-    trace_in = torch.einsum('tbr,brit->brit', h, trace_in)
-
-    # Convoluzione Recurrent eligibility traces
-    trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(
-        nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, :data_steps]
-    trace_rec = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
-    trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
-
-    # Free h as it's no longer needed
-    # del h
-
-    # Output eligibility vector
-    trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(
-        nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, 1:data_steps+1]
-
-    # Ottimizzazione convoluzioni batch-wise
-    trace_in = F.conv1d(trace_in.reshape(x.shape[1], nb_inputs * nb_hidden, data_steps),
-                        beta_conv.expand(nb_inputs * nb_hidden, -1, -1),
-                        padding=data_steps, groups=nb_inputs * nb_hidden)[:, :, 1:data_steps+1]
-    trace_in = trace_in.reshape(
-        x.shape[1], nb_hidden, nb_inputs, data_steps)
-
-    trace_rec = F.conv1d(trace_rec.reshape(x.shape[1], nb_hidden * nb_hidden, data_steps),
-                         beta_conv.expand(nb_hidden * nb_hidden, -1, -1),
-                         padding=data_steps, groups=nb_hidden * nb_hidden)[:, :, 1:data_steps+1]
-    trace_rec = trace_rec.reshape(
-        x.shape[1], nb_hidden, nb_hidden, data_steps)
-
-    for i in range(yo.shape[0]):
-        err[i, :, :] = yo[i, :, :] - yt
-    err = err.to(dtype)
-
-    L = torch.einsum('tbo,or->brt', err, w_out)
-
-    if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-        L = L[:, :, -params["delayed_output"]:]
-        err = err[-params["delayed_output"]:, :, :]
-        trace_in = trace_in[:, :, :, -params["delayed_output"]:]
-        trace_rec = trace_rec[:, :, :, -params["delayed_output"]:]
-        trace_out = trace_out[:, :, -params["delayed_output"]:]
-
-    # Weight gradient updates
-    w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                           nb_inputs, -1) * trace_in, dim=(0, 3))
-
-    # Free trace_in immediately after use
-    # del trace_in
-
-    w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                            nb_hidden, -1) * trace_rec, dim=(0, 3))
-
-    # Free trace_rec immediately after use
-    # del trace_rec
-    w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
-
-    # Free remaining large tensors
-    # del trace_out, L, err
-
-
-def run_snn(inputs: torch.Tensor, layers: list) -> tuple:
-    """
-    Execute forward pass through a spiking neural network.
-
-    This function runs input data through a two-layer spiking neural network (recurrent hidden layer
-    and feedforward readout layer) and computes network activity. Gradient computation is handled
-    in the training loop based on params["use_eprop"] setting.
-
-    Parameters
-    ----------
-    inputs : torch.Tensor
-        Input spike trains with shape [batch, time, input_features]
-    layers : list
-        List containing [recurrent_layer, feedforward_layer] layer objects
-
-    Returns
-    -------
-    tuple
-        (spk_rec_readout, other_recs) where:
-        - spk_rec_readout : torch.Tensor
-            Output layer spike recordings [batch, time, output_neurons]
-        - other_recs : list
-            [mem_rec_hidden, spk_rec_hidden, mem_rec_readout] recordings from layers
-
-    Notes
-    -----
-    - This function only performs the forward pass
-    - Gradient computation (e-prop or BPTT) is handled in the train() function
-    - For e-prop mode: uses hard threshold spike generation (no gradient through spikes)
-    - For BPTT mode: uses surrogate gradient function for differentiable spike generation
-    - Supports input replication via params["nb_input_copies"] for increased input representation
-    - n_spike can be computed externally via torch.cumsum(spk_rec_readout, dim=1) when needed
-    """
-    rec_layer, ff_layer = layers
-
-    if params["nb_input_copies"] > 1:
-        h1 = torch.einsum(
-            "abc,cd->abd", (inputs.tile((params["nb_input_copies"],)), rec_layer.ff_weights.t()))
-    else:
-        h1 = torch.einsum(
-            "abc,cd->abd", inputs, rec_layer.ff_weights.t())
-
-    spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
-        h1, data_steps, params["lower_bound"])
-
-    # Readout layer
-    h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, ff_layer.ff_weights.t()))
-
-    spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
-        h2, data_steps, params["lower_bound"])
-
-    other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
-
-    return spk_rec_readout, other_recs
-
-
-def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset, nb_hidden=20, epochs=200) -> tuple:
-    """
-    Build and train a recurrent spiking neural network for braille letter classification.
-
-    This function constructs a two-layer spiking neural network (recurrent hidden layer and
-    feedforward readout layer), trains it using e-prop, and reports the best performance metrics.
-
-    Parameters
-    ----------
-    params : dict
-        Dictionary containing experimental parameters including:
-        - 'nb_input_copies' : int
-            Number of copies for each input channel
-        - 'tau_mem', 'tau_mem_rec', 'tau_trace', 'tau_trace_out' : float
-            Time constants for membrane potentials and eligibility traces
-        - 'batch_size', 'learning_rate' : int, float
-            Training hyperparameters
-        - 'no_synapse', 'use_linear_decay', 'ref_per_timesteps' : bool/int
-            Neuron model configuration
-        - 'fwd_weight_scale', 'weight_scale_factor' : float
-            Weight initialization scales
-    ds_train : TensorDataset
-        Training dataset containing (input_data, labels) pairs
-    ds_test : TensorDataset
-        Test dataset containing (input_data, labels) pairs
-    nb_hidden : int, optional
-        Number of neurons in the recurrent hidden layer (default: 20)
-    epochs : int, optional
-        Number of training epochs (default: 200)
-
-    Returns
-    -------
-    tuple
-        (loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop) where:
-        - loss_hist_epochs : list
-            Training loss values per epoch
-        - accs_hist_epochs : list of lists
-            [[train_accuracies], [test_accuracies]] per epoch
-        - best_layers : list
-            Weight matrices of the best performing model
-        - vars_eprop : list
-            [beta_trace, beta_trace_out] eligibility trace decay factors
-
-    Notes
-    -----
-    - Computes and prints best training/test accuracies and their corresponding epochs
-    - Uses exponential or linear decay for membrane potential dynamics
-    - Supports optional synaptic dynamics and refractory periods
-    - Saves the model with best training accuracy during training
-    """
-
-    # Num of spiking neurons used to encode each channel
-    nb_input_copies = params['nb_input_copies']
-    # print("Number of input copies ", nb_input_copies)
-    # Network parameters
-    nb_inputs = nb_channels*nb_input_copies
-    nb_outputs = len(np.unique(labels))
-    nb_hidden = nb_hidden
-    # print("Number of hidden neurons ", nb_hidden)
-
-    # tau_mem = 0.06  # params['tau_mem']  # ms
-    # # global tau_mem_rec
-    # tau_mem_rec = 0.06  # params['tau_mem'] #ms
-    # # global tau_trace
-    # tau_trace = 0.14
-    # tau_trace_out = 0.14
-    tau_syn = params['tau_mem']/params['tau_ratio']
-    # print("tau_mem: ", params['tau_mem'], "tau_mem recurrent: ", params['tau_mem_rec'],
-    #       "tau trace out: ", params['tau_trace_out'], "tau trace: ", params['tau_trace'])
-    if params["no_synapse"]:
-        alpha = 0.0  # here we disable synapse dynamics
-    else:
-        alpha = float(np.exp(-params["time_step"]/tau_syn))
-
-    if params["use_linear_decay"]:
-        beta = 0.005  # 0.05 < 0.01 says how much to lose
-    else:
-        # says how much to keep
-        beta = float(np.exp(-params["time_step"]/params['tau_mem']))
-        beta_rec = float(np.exp(-params["time_step"]/params['tau_mem_rec'])
-                         )  # says how much to keep
-
-    if params["use_eprop"]:
-        beta_trace = float(np.exp(-params["time_step"]/params['tau_trace']))
-        beta_trace_out = float(
-            np.exp(-params["time_step"]/params['tau_trace_out']))
-        vars_eprop = [beta_trace, beta_trace_out]
-    else:
-        vars_eprop = [None, None]
-
-    fwd_weight_scale = params['fwd_weight_scale']
-    rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']
-
-    # Spiking network
-    # recurrent layer
-    rec_layer = recurrent_layer(
-        batch_size=params["batch_size"], nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_scale=fwd_weight_scale, rec_scale=rec_weight_scale, alpha=alpha, beta=beta_rec, ref_per=params["ref_per_timesteps"])
-
-    # readout layer
-    ff_layer = feedforward_layer(
-        batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta, ref_per=params["ref_per_timesteps"])
-
-    layers = [rec_layer, ff_layer]
-
-    # # Debug: Check initial weight statistics
-    # print(f"\nInitial weight statistics for {nb_hidden} hidden neurons:")
-    # print(f"  Recurrent layer input weights: mean={rec_layer.ff_weights.data.mean():.4f}, std={rec_layer.ff_weights.data.std():.4f}")
-    # print(f"  Recurrent layer recurrent weights: mean={rec_layer.rec_weights.data.mean():.4f}, std={rec_layer.rec_weights.data.std():.4f}")
-    # print(f"  Output layer weights shape: {ff_layer.ff_weights.shape}")
-    # print(f"  Output layer weights per neuron:")
-    # for neuron_idx in range(ff_layer.ff_weights.shape[0]):
-    #     w = ff_layer.ff_weights[neuron_idx]
-    #     print(f"    Neuron {neuron_idx}: mean={w.data.mean():.4f}, std={w.data.std():.4f}, min={w.data.min():.4f}, max={w.data.max():.4f}")
-    # print()
-
-    # a fixed learning rate is already defined within the train function, that's why here it is omitted
-    loss_hist_epochs, accs_hist_epochs, best_layers = train(
-        params=params, dataset=ds_train, layers=layers, vars_eprop=vars_eprop, lr=params["learning_rate"], nb_epochs=epochs, dataset_test=ds_test)
-
-    # best training and test at best training
-    acc_best_train = np.max(accs_hist_epochs[0])  # returns max value
-    acc_best_train = acc_best_train*100
-
-    # returns index of max value
-    idx_best_train = np.argmax(accs_hist_epochs[0])
-    acc_test_at_best_train = accs_hist_epochs[1][idx_best_train]*100
-
-    # best test and training at best test
-    acc_best_test = np.max(accs_hist_epochs[1])
-    acc_best_test = acc_best_test*100
-    idx_best_test = np.argmax(accs_hist_epochs[1])
-    acc_train_at_best_test = accs_hist_epochs[0][idx_best_test]*100
-
-    # TODO track time constants!!!
-    # print("Final results: ")
-    # print("Best training accuracy: {:.2f}% and according test accuracy: {:.2f}% at epoch: {}".format(
-    #     acc_best_train, acc_test_at_best_train, idx_best_train+1))
-    # print("Best test accuracy: {:.2f}% and according train accuracy: {:.2f}% at epoch: {}".format(
-    #     acc_best_test, acc_train_at_best_test, idx_best_test+1))
-    # print("------------------------------------------------------------------------------------\n")
-
-    return loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop
-
-
-def copy_layers(layers: list) -> list:
-    """
-    Create deep copies of layer objects by recreating them with copied weights.
-
-    This function manually copies layer objects to avoid deepcopy issues with
-    PyTorch tensors that have gradients attached.
-
-    Parameters
-    ----------
-    layers : list
-        List of [recurrent_layer, feedforward_layer] objects to copy
-
-    Returns
-    -------
-    list
-        New list of copied layer objects with detached and cloned weights
-    """
-    rec_layer, ff_layer = layers
-
-    # Create new recurrent layer instance
-    new_rec_layer = recurrent_layer(
-        batch_size=rec_layer.batch_size,
-        nb_inputs=rec_layer.nb_inputs,
-        nb_neurons=rec_layer.nb_neurons,
-        fwd_scale=rec_layer.fwd_scale,
-        rec_scale=rec_layer.rec_scale,
-        alpha=rec_layer.alpha,
-        beta=rec_layer.beta,
-        ref_per=rec_layer.ref_per
-    )
-    # Copy weights (detached and cloned to break gradient connection)
-    new_rec_layer.ff_weights.data = rec_layer.ff_weights.data.detach().clone()
-    new_rec_layer.rec_weights.data = rec_layer.rec_weights.data.detach().clone()
-
-    # Create new feedforward layer instance
-    new_ff_layer = feedforward_layer(
-        batch_size=ff_layer.batch_size,
-        nb_inputs=ff_layer.nb_inputs,
-        nb_neurons=ff_layer.nb_neurons,
-        fwd_weight_scale=ff_layer.scale,
-        alpha=ff_layer.alpha,
-        beta=ff_layer.beta,
-        ref_per=ff_layer.ref_per
-    )
-    # Copy weights (detached and cloned)
-    new_ff_layer.ff_weights.data = ff_layer.ff_weights.data.detach().clone()
-
-    return [new_rec_layer, new_ff_layer]
-
-
-def load_and_extract(params: dict, file_name: str, taxels=None, letter_written=letters, create_validation=False) -> tuple:
-    """
-    Load and preprocess braille letter tactile sensor data from a pickle file.
-
-    This function loads event-based tactile sensor data, bins it into time windows,
-    optionally filters by specific taxels (tactile sensors) and letters, and creates
-    train/test (and optionally validation) datasets.
-
-    Parameters
-    ----------
-    params : dict
-        Dictionary containing experimental parameters:
-        - 'max_time' : int
-            Maximum time duration in milliseconds
-        - 'time_bin_size' : int
-            Size of time bins in milliseconds
-        - 'use_mechanoreceptor_encoding' : bool
-            If True, uses mechanoreceptor encoding; if False, uses sigma-delta encoding
-    file_name : str
-        Path to the pickle file containing braille letter data
-    taxels : list or None, optional
-        List of specific taxel indices to use. If None, all taxels are used (default: None)
-    letter_written : list, optional
-        List of letter labels to include in the dataset (default: global letters variable)
-    create_validation : bool, optional
-        If True, creates a 70/20/10 train/test/validation split.
-        If False, creates an 80/20 train/test split (default: False)
-
-    Returns
-    -------
-    tuple
-        If create_validation is True:
-            (ds_train, ds_test, ds_validation, labels, selected_chans, data_steps)
-        If create_validation is False:
-            (ds_train, ds_test, ds_validation, labels, selected_chans, data_steps)
-            where ds_validation is None
-
-        Where:
-        - ds_train : TensorDataset
-            Training dataset containing (data, labels) pairs
-        - ds_test : TensorDataset
-            Test dataset containing (data, labels) pairs
-        - ds_validation : TensorDataset or None
-            Validation dataset (None if create_validation=False)
-        - labels : torch.Tensor
-            All unique label values in the dataset
-        - selected_chans : int
-            Number of selected channels (2 * number of taxels)
-        - data_steps : int
-            Number of time steps in the data
-
-    Notes
-    -----
-    - Events are binned into time windows of size time_bin_size
-    - For mechanoreceptor encoding: each taxel has FA and SA channels
-    - For sigma-delta encoding: each taxel has ON and OFF channels
-    - Data is converted to torch tensors with appropriate dtypes
-    - Splits are stratified to maintain class balance
-    - Sets params["delayed_output"] = None by default
-    """
-
-    max_time = params["max_time"]  # ms
-    # int(params['time_bin_size'])  # so far from laoded file, but can be set manually here
-    time_bin_size = params["time_bin_size"]
-    time = range(0, max_time, time_bin_size)
-
-    params["time_step"] = time_bin_size*0.001  # ms
-    data_steps = len(time)
-    # params["delayed_output"] = data_steps
-    params["delayed_output"] = None  # 0  # data_steps
-
-    # Extract data
-    data = []
-    labels = []
-    if params['use_mechanoreceptor_encoding']:
-        with open(file_name, "rb") as f:
-            data_dict = pkl.load(f)
-        nchan = len(data_dict['taxel_data'][0][0])
-
-        # Determine which channels to use
-        if taxels is not None:
-            # User specified specific taxels - use only those
-            selected_taxels = taxels
-            selected_chans = 2 * len(taxels)  # Each taxel has FA and SA
-        else:
-            # Use all taxels
-            selected_taxels = list(range(nchan))
-            selected_chans = 2 * nchan
-
-        # Total channels: FA channels for selected taxels + SA channels for selected taxels
-        for letter, fa_spikes, sa_spikes in zip(data_dict['letter'], data_dict['fa_spikes'], data_dict['sa_spikes']):
-            events_array = np.zeros(
-                [selected_chans, round((max_time/time_bin_size)+0.5)])
-
-            fa_spike_times, fa_spike_idc = (
-                fa_spikes[:, 0]*1000).astype(int), fa_spikes[:, 1].astype(int)-1
-            sa_spike_times, sa_spike_idc = (
-                sa_spikes[:, 0]*1000).astype(int), (sa_spikes[:, 1].astype(int)-1)
-
-            # Process only selected taxels
-            for local_idx, taxel in enumerate(selected_taxels):
-                # FA channel (first half of channels)
-                spike_times = fa_spike_times[fa_spike_idc == taxel]
-                if spike_times.size > 0:
-                    idc = np.array(
-                        (spike_times/time_bin_size).round(), dtype=int)
-                    idc = idc[idc < max_time//time_bin_size]
-                    events_array[local_idx, idc] = 1
-
-                # SA channel (second half of channels)
-                spike_times = sa_spike_times[sa_spike_idc == taxel]
-                if spike_times.size > 0:
-                    idc = np.array(
-                        (spike_times/time_bin_size).round(), dtype=int)
-                    idc = idc[idc < max_time//time_bin_size]
-                    events_array[local_idx + len(selected_taxels), idc] = 1
-
-            if letter in letter_written:
-                # Transpose to match expected shape [time, channels]
-                data.append(events_array.T)
-                labels.append(letter_written.index(letter))
-    else:
-        data_dict = pd.read_pickle(file_name)
-        # data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
-        data_dict = pd.DataFrame(data_dict)
-        bins = 1000  # ms conversion
-        nchan = len(data_dict['events'][1])  # number of channels per sensor
-        # loop over all trials
-        for i, sample in enumerate(data_dict['events']):
-            events_array = np.zeros(
-                [nchan, round((max_time/time_bin_size)+0.5), 2])
-            # loop over sensors (taxel)
-            for taxel in range(len(sample)):
-                # loop over On and Off channels
-                for event_type in range(len(sample[taxel])):
-                    if sample[taxel][event_type]:
-                        indx = bins*(np.array(sample[taxel][event_type]))
-                        indx = np.array(
-                            (indx/time_bin_size).round(), dtype=int)
-                        events_array[taxel, indx, event_type] = 1
-            if taxels != None:
-                events_array = np.reshape(np.transpose(events_array, (1, 0, 2))[
-                    :, taxels, :], (events_array.shape[1], -1))
-                selected_chans = 2*len(taxels)
-            else:
-                events_array = np.reshape(np.transpose(
-                    events_array, (1, 0, 2)), (events_array.shape[1], -1))
-                selected_chans = 2*nchan
-            if data_dict['letter'][i] in letter_written:
-                data.append(events_array)
-                labels.append(letter_written.index(data_dict['letter'][i]))
-
-    # return data,labels
-    data = np.array(data)
-    labels = np.array(labels)
-    # print(labels)
-    data = torch.tensor(data, dtype=dtype)
-    labels = torch.tensor(labels, dtype=torch.long)
-
-    if params['debug']:
-        print(f"\n=== Label Distribution BEFORE Split ===")
-        unique_labels, counts = np.unique(
-            labels.cpu().numpy(), return_counts=True)
-        total_samples = len(labels)
-        for label_idx, count in zip(unique_labels, counts):
-            label_name = letter_written[label_idx]
-            percentage = (count / total_samples) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-        print(f"  Total: {total_samples} samples")
-
-    if create_validation:
-        # create 70/20/10 train/test/validation split
-        # first create 70/30 train/(test + validation)
-        x_train, x_test, y_train, y_test = train_test_split(
-            data, labels, test_size=0.30, shuffle=True, stratify=labels)
-        # split test and validation 2/1
-        x_test, x_validation, y_test, y_validation = train_test_split(
-            x_test, y_test, test_size=0.33, shuffle=True, stratify=y_test)
-
-        ds_train = TensorDataset(x_train, y_train)
-        ds_test = TensorDataset(x_test, y_test)
-        ds_validation = TensorDataset(x_validation, y_validation)
-
-    else:
-        # create 80/20 train/test split
-        x_train, x_test, y_train, y_test = train_test_split(
-            data, labels, test_size=0.20, shuffle=True, stratify=labels)
-
-        ds_train = TensorDataset(x_train, y_train)
-        ds_test = TensorDataset(x_test, y_test)
-        ds_validation = None
-
-    if params['debug']:
-        print(f"\n=== Label Distribution AFTER Split ===")
-        print(f"\nTraining set:")
-        unique_train, counts_train = np.unique(
-            y_train.cpu().numpy(), return_counts=True)
-        for label_idx, count in zip(unique_train, counts_train):
-            label_name = letter_written[label_idx]
-            percentage = (count / len(y_train)) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
-        print(f"\nTest set:")
-        unique_test, counts_test = np.unique(
-            y_test.cpu().numpy(), return_counts=True)
-        for label_idx, count in zip(unique_test, counts_test):
-            label_name = letter_written[label_idx]
-            percentage = (count / len(y_test)) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
-        if create_validation:
-            print(f"\nValidation set:")
-            unique_val, counts_val = np.unique(
-                y_validation.cpu().numpy(), return_counts=True)
-            for label_idx, count in zip(unique_val, counts_val):
-                label_name = letter_written[label_idx]
-                percentage = (count / len(y_validation)) * 100
-                print(
-                    f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
-        print()  # blank line for readability
-
-    return ds_train, ds_test, ds_validation, labels, selected_chans, data_steps
-
-
-def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: float, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, beta_trace: float, beta_trace_out: float) -> None:
-    """
-    Compute weight gradients using e-prop (eligibility propagation) for spiking neural networks.
-
-    This function implements the e-prop learning algorithm for recurrent spiking neural networks.
-    It computes eligibility traces for input, recurrent, and output connections, then uses these
-    traces along with the error signal to calculate weight gradients. Gradients are accumulated
-    directly into the .grad attributes of the weight tensors.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input spike trains with shape [time, batch, input_features]
-    yo : torch.Tensor
-        Network output (predicted labels) with shape [time, batch, output_units]
-    yt : torch.Tensor
-        Target labels (one-hot encoded) with shape [batch, output_units]
-    gamma : float
-        Surrogate gradient scaling factor for the spike function derivative approximation
-    thr : int
-        Firing threshold for neurons (typically 1)
-    v : torch.Tensor
-        Membrane potential traces of hidden neurons with shape [time, batch, hidden_neurons]
-    z : torch.Tensor
-        Spike trains of hidden neurons with shape [time, batch, hidden_neurons]
-    w_in : torch.Tensor
-        Input-to-hidden weight matrix with shape [hidden_neurons, input_features]
-        Gradients are accumulated in w_in.grad
-    w_rec : torch.Tensor
-        Recurrent (hidden-to-hidden) weight matrix with shape [hidden_neurons, hidden_neurons]
-        Gradients are accumulated in w_rec.grad
-    w_out : torch.Tensor
-        Hidden-to-output weight matrix with shape [output_units, hidden_neurons]
-        Gradients are accumulated in w_out.grad
-    beta_trace : float
-        Decay factor for eligibility traces of hidden layer (exp(-dt/tau_trace))
-    beta_trace_out : float
-        Decay factor for output eligibility traces (exp(-dt/tau_trace_out))
-
-    Returns
-    -------
-    None
-        This function modifies weight gradients in-place (w_in.grad, w_rec.grad, w_out.grad)
-
-    Notes
-    -----
-    - Implements the e-prop algorithm for online learning in spiking neural networks
-    - Uses surrogate gradients to approximate the non-differentiable spike function
-    - Eligibility traces track the causal relationship between weight changes and neuron spikes
-    - Convolutions are used to efficiently compute eligibility traces over time
-    - The delayed_output parameter from params dict controls which time steps contribute to gradients
-    - All computations are performed on the device specified by the global 'device' variable
-
-    References
-    ----------
-    Bellec et al. (2020). "A solution to the learning dilemma for recurrent networks 
-    of spiking neurons." Nature Communications.
-    """
-    nb_inputs = x.shape[-1]
-
-    if w_in.grad is None:
-        w_in.grad = torch.zeros_like(w_in)
-    if w_rec.grad is None:
-        w_rec.grad = torch.zeros_like(w_rec)
-    if w_out.grad is None:
-        w_out.grad = torch.zeros_like(w_out)
-    # Surrogate derivatives
-    h = gamma * torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
-
-    # Crea una variabile di errore vuota con le stesse dimensioni di yo
-    err = torch.zeros_like(yo)
-
-    # Eligibility traces convolution
-    beta_conv = torch.tensor([beta_trace_out ** (data_steps - i - 1)
-                             for i in range(data_steps)]).float().view(1, 1, -1).to(device)
-    beta_rec_conv = torch.tensor([beta_trace ** (data_steps - i - 1)
-                                 for i in range(data_steps)]).float().view(1, 1, -1).to(device)
-
-    # Convoluzione Input eligibility traces
-    trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(
-        nb_inputs, -1, -1), padding=data_steps, groups=nb_inputs)[:, :, 1:data_steps+1]
-    trace_in = trace_in.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
-    trace_in = torch.einsum('tbr,brit->brit', h, trace_in)
-
-    # Convoluzione Recurrent eligibility traces
-    trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(
-        nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, :data_steps]
-    trace_rec = trace_rec.unsqueeze(1).expand(-1, nb_hidden, -1, -1)
-    trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
-
-    # Free h as it's no longer needed
-    # del h
-
-    # Output eligibility vector
-    trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(
-        nb_hidden, -1, -1), padding=data_steps, groups=nb_hidden)[:, :, 1:data_steps+1]
-
-    # Ottimizzazione convoluzioni batch-wise
-    trace_in = F.conv1d(trace_in.reshape(x.shape[1], nb_inputs * nb_hidden, data_steps),
-                        beta_conv.expand(nb_inputs * nb_hidden, -1, -1),
-                        padding=data_steps, groups=nb_inputs * nb_hidden)[:, :, 1:data_steps+1]
-    trace_in = trace_in.reshape(
-        x.shape[1], nb_hidden, nb_inputs, data_steps)
-
-    trace_rec = F.conv1d(trace_rec.reshape(x.shape[1], nb_hidden * nb_hidden, data_steps),
-                         beta_conv.expand(nb_hidden * nb_hidden, -1, -1),
-                         padding=data_steps, groups=nb_hidden * nb_hidden)[:, :, 1:data_steps+1]
-    trace_rec = trace_rec.reshape(
-        x.shape[1], nb_hidden, nb_hidden, data_steps)
-
-    for i in range(yo.shape[0]):
-        err[i, :, :] = yo[i, :, :] - yt
-    err = err.to(dtype)
-
-    L = torch.einsum('tbo,or->brt', err, w_out)
-
-    if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-        L = L[:, :, -params["delayed_output"]:]
-        err = err[-params["delayed_output"]:, :, :]
-        trace_in = trace_in[:, :, :, -params["delayed_output"]:]
-        trace_rec = trace_rec[:, :, :, -params["delayed_output"]:]
-        trace_out = trace_out[:, :, -params["delayed_output"]:]
-
-    # Weight gradient updates
-    w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                           nb_inputs, -1) * trace_in, dim=(0, 3))
-
-    # Free trace_in immediately after use
-    # del trace_in
-
-    w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                            nb_hidden, -1) * trace_rec, dim=(0, 3))
-
-    # Free trace_rec immediately after use
-    # del trace_rec
-    w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
-
-    # Free remaining large tensors
-    # del trace_out, L, err
-
-
-def run_snn(inputs: torch.Tensor, layers: list) -> tuple:
-    """
-    Execute forward pass through a spiking neural network.
-
-    This function runs input data through a two-layer spiking neural network (recurrent hidden layer
-    and feedforward readout layer) and computes network activity. Gradient computation is handled
-    in the training loop based on params["use_eprop"] setting.
-
-    Parameters
-    ----------
-    inputs : torch.Tensor
-        Input spike trains with shape [batch, time, input_features]
-    layers : list
-        List containing [recurrent_layer, feedforward_layer] layer objects
-
-    Returns
-    -------
-    tuple
-        (spk_rec_readout, other_recs) where:
-        - spk_rec_readout : torch.Tensor
-            Output layer spike recordings [batch, time, output_neurons]
-        - other_recs : list
-            [mem_rec_hidden, spk_rec_hidden, mem_rec_readout] recordings from layers
-
-    Notes
-    -----
-    - This function only performs the forward pass
-    - Gradient computation (e-prop or BPTT) is handled in the train() function
-    - For e-prop mode: uses hard threshold spike generation (no gradient through spikes)
-    - For BPTT mode: uses surrogate gradient function for differentiable spike generation
-    - Supports input replication via params["nb_input_copies"] for increased input representation
-    - n_spike can be computed externally via torch.cumsum(spk_rec_readout, dim=1) when needed
-    """
-    rec_layer, ff_layer = layers
-
-    if params["nb_input_copies"] > 1:
-        h1 = torch.einsum(
-            "abc,cd->abd", (inputs.tile((params["nb_input_copies"],)), rec_layer.ff_weights.t()))
-    else:
-        h1 = torch.einsum(
-            "abc,cd->abd", inputs, rec_layer.ff_weights.t())
-
-    spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
-        h1, data_steps, params["lower_bound"])
-
-    # Readout layer
-    h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, ff_layer.ff_weights.t()))
-
-    spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
-        h2, data_steps, params["lower_bound"])
-
-    other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
-
-    return spk_rec_readout, other_recs
-
-
-def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset, nb_hidden=20, epochs=200) -> tuple:
-    """
-    Build and train a recurrent spiking neural network for braille letter classification.
-
-    This function constructs a two-layer spiking neural network (recurrent hidden layer and
-    feedforward readout layer), trains it using e-prop, and reports the best performance metrics.
-
-    Parameters
-    ----------
-    params : dict
-        Dictionary containing experimental parameters including:
-        - 'nb_input_copies' : int
-            Number of copies for each input channel
-        - 'tau_mem', 'tau_mem_rec', 'tau_trace', 'tau_trace_out' : float
-            Time constants for membrane potentials and eligibility traces
-        - 'batch_size', 'learning_rate' : int, float
-            Training hyperparameters
-        - 'no_synapse', 'use_linear_decay', 'ref_per_timesteps' : bool/int
-            Neuron model configuration
-        - 'fwd_weight_scale', 'weight_scale_factor' : float
-            Weight initialization scales
-    ds_train : TensorDataset
-        Training dataset containing (input_data, labels) pairs
-    ds_test : TensorDataset
-        Test dataset containing (input_data, labels) pairs
-    nb_hidden : int, optional
-        Number of neurons in the recurrent hidden layer (default: 20)
-    epochs : int, optional
-        Number of training epochs (default: 200)
-
-    Returns
-    -------
-    tuple
-        (loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop) where:
-        - loss_hist_epochs : list
-            Training loss values per epoch
-        - accs_hist_epochs : list of lists
-            [[train_accuracies], [test_accuracies]] per epoch
-        - best_layers : list
-            Weight matrices of the best performing model
-        - vars_eprop : list
-            [beta_trace, beta_trace_out] eligibility trace decay factors
-
-    Notes
-    -----
-    - Computes and prints best training/test accuracies and their corresponding epochs
-    - Uses exponential or linear decay for membrane potential dynamics
-    - Supports optional synaptic dynamics and refractory periods
-    - Saves the model with best training accuracy during training
-    """
-
-    # Num of spiking neurons used to encode each channel
-    nb_input_copies = params['nb_input_copies']
-    # print("Number of input copies ", nb_input_copies)
-    # Network parameters
-    nb_inputs = nb_channels*nb_input_copies
-    nb_outputs = len(np.unique(labels))
-    nb_hidden = nb_hidden
-    # print("Number of hidden neurons ", nb_hidden)
-
-    # tau_mem = 0.06  # params['tau_mem']  # ms
-    # # global tau_mem_rec
-    # tau_mem_rec = 0.06  # params['tau_mem'] #ms
-    # # global tau_trace
-    # tau_trace = 0.14
-    # tau_trace_out = 0.14
-    tau_syn = params['tau_mem']/params['tau_ratio']
-    # print("tau_mem: ", params['tau_mem'], "tau_mem recurrent: ", params['tau_mem_rec'],
-    #       "tau trace out: ", params['tau_trace_out'], "tau trace: ", params['tau_trace'])
-    if params["no_synapse"]:
-        alpha = 0.0  # here we disable synapse dynamics
-    else:
-        alpha = float(np.exp(-params["time_step"]/tau_syn))
-
-    if params["use_linear_decay"]:
-        beta = 0.005  # 0.05 < 0.01 says how much to lose
-    else:
-        # says how much to keep
-        beta = float(np.exp(-params["time_step"]/params['tau_mem']))
-        beta_rec = float(np.exp(-params["time_step"]/params['tau_mem_rec'])
-                         )  # says how much to keep
-
-    if params["use_eprop"]:
-        beta_trace = float(np.exp(-params["time_step"]/params['tau_trace']))
-        beta_trace_out = float(
-            np.exp(-params["time_step"]/params['tau_trace_out']))
-        vars_eprop = [beta_trace, beta_trace_out]
-    else:
-        vars_eprop = [None, None]
-
-    fwd_weight_scale = params['fwd_weight_scale']
-    rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']
-
-    # Spiking network
-    # recurrent layer
-    rec_layer = recurrent_layer(
-        batch_size=params["batch_size"], nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_scale=fwd_weight_scale, rec_scale=rec_weight_scale, alpha=alpha, beta=beta_rec, ref_per=params["ref_per_timesteps"])
-
-    # readout layer
-    ff_layer = feedforward_layer(
-        batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta, ref_per=params["ref_per_timesteps"])
-
-    layers = [rec_layer, ff_layer]
-
-    # # Debug: Check initial weight statistics
-    # print(f"\nInitial weight statistics for {nb_hidden} hidden neurons:")
-    # print(f"  Recurrent layer input weights: mean={rec_layer.ff_weights.data.mean():.4f}, std={rec_layer.ff_weights.data.std():.4f}")
-    # print(f"  Recurrent layer recurrent weights: mean={rec_layer.rec_weights.data.mean():.4f}, std={rec_layer.rec_weights.data.std():.4f}")
-    # print(f"  Output layer weights shape: {ff_layer.ff_weights.shape}")
-    # print(f"  Output layer weights per neuron:")
-    # for neuron_idx in range(ff_layer.ff_weights.shape[0]):
-    #     w = ff_layer.ff_weights[neuron_idx]
-    #     print(f"    Neuron {neuron_idx}: mean={w.data.mean():.4f}, std={w.data.std():.4f}, min={w.data.min():.4f}, max={w.data.max():.4f}")
-    # print()
-
-    # a fixed learning rate is already defined within the train function, that's why here it is omitted
-    loss_hist_epochs, accs_hist_epochs, best_layers = train(
-        params=params, dataset=ds_train, layers=layers, vars_eprop=vars_eprop, lr=params["learning_rate"], nb_epochs=epochs, dataset_test=ds_test)
-
-    # best training and test at best training
-    acc_best_train = np.max(accs_hist_epochs[0])  # returns max value
-    acc_best_train = acc_best_train*100
-
-    # returns index of max value
-    idx_best_train = np.argmax(accs_hist_epochs[0])
-    acc_test_at_best_train = accs_hist_epochs[1][idx_best_train]*100
-
-    # best test and training at best test
-    acc_best_test = np.max(accs_hist_epochs[1])
-    acc_best_test = acc_best_test*100
-    idx_best_test = np.argmax(accs_hist_epochs[1])
-    acc_train_at_best_test = accs_hist_epochs[0][idx_best_test]*100
-
-    # TODO track time constants!!!
-    # print("Final results: ")
-    # print("Best training accuracy: {:.2f}% and according test accuracy: {:.2f}% at epoch: {}".format(
-    #     acc_best_train, acc_test_at_best_train, idx_best_train+1))
-    # print("Best test accuracy: {:.2f}% and according train accuracy: {:.2f}% at epoch: {}".format(
-    #     acc_best_test, acc_train_at_best_test, idx_best_test+1))
-    # print("------------------------------------------------------------------------------------\n")
-
-    return loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop
-
-
-def copy_layers(layers: list) -> list:
-    """
-    Create deep copies of layer objects by recreating them with copied weights.
-
-    This function manually copies layer objects to avoid deepcopy issues with
-    PyTorch tensors that have gradients attached.
-
-    Parameters
-    ----------
-    layers : list
-        List of [recurrent_layer, feedforward_layer] objects to copy
-
-    Returns
-    -------
-    list
-        New list of copied layer objects with detached and cloned weights
-    """
-    rec_layer, ff_layer = layers
-
-    # Create new recurrent layer instance
-    new_rec_layer = recurrent_layer(
-        batch_size=rec_layer.batch_size,
-        nb_inputs=rec_layer.nb_inputs,
-        nb_neurons=rec_layer.nb_neurons,
-        fwd_scale=rec_layer.fwd_scale,
-        rec_scale=rec_layer.rec_scale,
-        alpha=rec_layer.alpha,
-        beta=rec_layer.beta,
-        ref_per=rec_layer.ref_per
-    )
-    # Copy weights (detached and cloned to break gradient connection)
-    new_rec_layer.ff_weights.data = rec_layer.ff_weights.data.detach().clone()
-    new_rec_layer.rec_weights.data = rec_layer.rec_weights.data.detach().clone()
-
-    # Create new feedforward layer instance
-    new_ff_layer = feedforward_layer(
-        batch_size=ff_layer.batch_size,
-        nb_inputs=ff_layer.nb_inputs,
-        nb_neurons=ff_layer.nb_neurons,
-        fwd_weight_scale=ff_layer.scale,
-        alpha=ff_layer.alpha,
-        beta=ff_layer.beta,
-        ref_per=ff_layer.ref_per
-    )
-    # Copy weights (detached and cloned)
-    new_ff_layer.ff_weights.data = ff_layer.ff_weights.data.detach().clone()
-
-    return [new_rec_layer, new_ff_layer]
-
-
-def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, lr=0.0015, nb_epochs=300, dataset_test=None) -> tuple:
-    """
-    Train a spiking neural network and evaluate on test data.
-
-    Implements the training loop for a spiking neural network using either e-prop or BPTT.
-    Processes data in batches, computes gradients, updates weights via Adamax optimizer,
-    and tracks training/test performance over epochs.
-
-    Parameters
-    ----------
-    params : dict
-        Dictionary containing experimental parameters including:
-        - 'batch_size' : int
-            Number of samples per batch
-        - 'use_eprop' : bool
-            If True, uses e-prop; if False, uses BPTT
-        - 'delayed_output' : int or None
-            Number of timesteps to use for e-prop output (None for BPTT)
-        - 'reg_spikes' : float
-            L1 regularization coefficient for spike activity
-        - 'reg_neurons' : float
-            L2 regularization coefficient for spike activity per neuron
-        - 'gamma' : float
-            Surrogate gradient scale factor
-    dataset : TensorDataset
-        Training dataset containing (input_data, labels) pairs
-    layers : list
-        List containing [recurrent_layer, feedforward_layer] layer objects
-    vars_eprop : list
-        List containing [beta_trace, beta_trace_out] decay factors for e-prop eligibility traces
-    lr : float, optional
-        Learning rate for Adamax optimizer (default: 0.0015)
-    nb_epochs : int, optional
-        Number of training epochs (default: 300)
-    dataset_test : TensorDataset, optional
-        Test dataset for evaluation after each epoch (default: None)
-
-    Returns
-    -------
-    tuple
-        (loss_hist_epochs, accs_hist_epochs, best_acc_layers) where:
-        - loss_hist_epochs : list of float
-            Training loss values per epoch
-        - accs_hist_epochs : list of lists
-            [[train_accuracies], [test_accuracies]] per epoch (each float 0.0-1.0)
-        - best_acc_layers : list
-            Copied layer objects of the best performing model (highest test accuracy)
-
-    Notes
-    -----
-    - Uses Adamax optimizer with betas=(0.9, 0.995)
-    - Applies weight quantization via Straight-Through Estimator (STE) after each forward pass
-    - For BPTT: uses NLL loss with optional L1/L2 spike regularization
-    - For e-prop: uses manual gradient computation via grads_batch()
-    - Predictions computed via compute_winning_neuron() for consistent winner-take-all logic
-    - Saves best model based on test accuracy (not training accuracy)
-    - Displays progress via nested tqdm progress bars
-    - Tracks average spike counts for monitoring network activity
-    - Memory cleanup after each batch to prevent GPU memory overflow
-
-    See Also
-    --------
-    grads_batch : E-prop gradient computation function
-    compute_winning_neuron : Prediction function used in training
-    copy_layers : Function to save best model weights
-    """
-    weights = [layers[0].ff_weights,
-               layers[0].rec_weights, layers[1].ff_weights]
-    # The log softmax function across output units
-    log_softmax_fn = nn.LogSoftmax(dim=1)
-    loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
-
-    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
-                           shuffle=True, num_workers=4)
-
-    # The optimization loop
-    loss_hist_epochs = []
-    accs_hist_epochs = [[], []]
-    best_test_acc_per_epoch = 0.0
-    best_acc_layers = []
-
-    pbar_training = tqdm(range(nb_epochs), position=1,
-                         total=nb_epochs, leave=False)
-    count_epoch = 0
-    for _ in pbar_training:
-        # learning rate decreases over epochs
-        optimizer = torch.optim.Adamax(weights, lr=lr, betas=(0.9, 0.995))
-        # if e > nb_epochs/2:
-        #     lr = lr * 0.9
-        loss_hist_batches = []
-        # accs: mean training accuracies for each batch
-        accs_hist_batches = []
-        pbar_batches = tqdm(generator, position=2,
-                            total=len(generator), leave=False)
-        for x_local, y_local in pbar_batches:
-            x_local, y_local = x_local.to(device), y_local.to(device)
-
-            optimizer.zero_grad()
-
-            spk_rec_readout, recs = run_snn(inputs=x_local, layers=layers)
-            # weight quantization - apply directly to layer weights
-            if params["use_weight_quantization"]:
-                layers[0].ff_weights.data = ste_fn(
-                    layers[0].ff_weights, possible_weight).to(dtype)
-                layers[0].rec_weights.data = ste_fn(
-                    layers[0].rec_weights, possible_weight).to(dtype)
-                layers[1].ff_weights.data = ste_fn(
-                    layers[1].ff_weights, possible_weight).to(dtype)
-
-            # average_spike_output[count_epoch] = torch.mean(
-            #     torch.sum(spk_rec_readout, 1))
-            # average_spike_recurrent[count_epoch] = torch.mean(
-            #     torch.sum(recs[1], 1))
-
-            _, spk_rec_hidden, _ = recs
-
-            # Use all timesteps for BPTT, optionally use delayed_output window for e-prop
-            if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-                m, am = compute_winning_neuron(
-                    spk_rec_readout[:, -params["delayed_output"]:, :])
-            else:
-                m, am = compute_winning_neuron(spk_rec_readout)
-
-            # Compute gradients based on selected learning algorithm
-            if params["use_eprop"]:
-                one_hot_encoded = torch.nn.functional.one_hot(
-                    y_local, num_classes=len(np.unique(labels)))
-                # E-prop: manual gradient computation via eligibility traces
-                # Create one-hot encoded predictions from selected winners
-                yo = torch.nn.functional.one_hot(
-                    am, num_classes=len(np.unique(labels)))
-                # Expand to match temporal dimension for e-prop
-                yo = yo.unsqueeze(1).expand(-1, spk_rec_readout.shape[1], -1)
-
-                # Compute e-prop gradients
-                mem_rec_hidden, spk_rec_hidden, _ = recs
-                grads_batch(x_local.permute(1, 0, 2), yo.permute(1, 0, 2), one_hot_encoded,
-                            params["gamma"], 1, mem_rec_hidden.permute(
-                                1, 0, 2),
-                            spk_rec_hidden.permute(
-                                1, 0, 2), layers[0].ff_weights,
-                            layers[0].rec_weights, layers[1].ff_weights,
-                            vars_eprop[0], vars_eprop[1])
-            else:
-                log_p_y = log_softmax_fn(m)
-
-                # Here we can set up our regularizer loss
-                # reg_loss = params['reg_spikes']*torch.mean(torch.sum(spks1,1)) # L1 loss on spikes per neuron (original)
-                # L1 loss on total number of spikes (hidden layer 1)
-                reg_loss = params['reg_spikes'] * \
-                    torch.mean(torch.sum(spk_rec_hidden, 1))
-                # L1 loss on total number of spikes (output layer)
-                # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
-                # print("L1: ", reg_loss)
-                # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
-                # L2 loss on spikes per neuron (hidden layer 1)
-                reg_loss += params['reg_neurons'] * \
-                    torch.mean(
-                        torch.sum(torch.sum(spk_rec_hidden, dim=0), dim=0)**2)
-                # L2 loss on spikes per neuron (output layer)
-                # reg_loss += params['reg_neurons'] * \
-                #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
-                # print("L1 + L2: ", reg_loss)
-
-                # Here we combine supervised loss and the regularizer
-                loss_val = loss_fn(log_p_y, y_local) + reg_loss
-                # BPTT: standard backpropagation
-                loss_val.backward()
-
-            optimizer.step()
-
-            loss_hist_batches.append(loss_val.item())
-
-            # Debug: Print first batch of first epoch to check predictions
-            if params['debug'] and count_epoch == 0:
-                tmp = np.mean((y_local == am).detach().cpu().numpy())
-                print(f"\nDebug - First batch:")
-                print(
-                    f"  True labels (y_local): {y_local[:min(10, len(y_local))].cpu().numpy()}")
-                print(
-                    f"  Predictions (am): {am[:min(10, len(y_local))].cpu().numpy()}")
-                print(
-                    f"  Spike counts (m): {m[:min(10, len(y_local))].detach().cpu().numpy()}")
-                print(
-                    f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
-                print(
-                    f"  Prediction distribution: 0={torch.sum(am==0).item()}, 1={torch.sum(am==1).item()}")
-                print(f"  Batch accuracy: {tmp:.4f}")
-
-                # Check input data
-                print(f"\n  Input data statistics:")
-                print(f"    Shape: {x_local.shape}")
-                print(
-                    f"    Total input spikes (first 10 samples): {torch.sum(x_local[:min(10, len(y_local))], dim=(0,1)).cpu().numpy()}")
-                print(
-                    f"    Input spike rate (mean): {x_local.mean().item():.6f}")
-
-                # Check hidden layer
-                print(f"\n  Hidden layer statistics:")
-                # sum over time: [batch, neurons]
-                hidden_spike_counts = torch.sum(spk_rec_hidden, dim=0)
-                print(
-                    f"    Spike count distribution (mean across batch): {hidden_spike_counts.mean(dim=0).cpu().detach().numpy()}")
-                print(
-                    f"    Spike count (min, max): ({hidden_spike_counts.min().item()}, {hidden_spike_counts.max().item()})")
-                print(
-                    f"    First 10 samples total spikes: {torch.sum(spk_rec_hidden[:min(10, len(y_local))], dim=(0,1)).cpu().detach().numpy()}")
-
-                # Check output layer
-                print(f"\n  Output layer statistics:")
-                print(f"    Weights shape: {layers[1].ff_weights.shape}")
-                print(
-                    f"    Weights mean per neuron: {torch.mean(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
-                print(
-                    f"    Weights std per neuron: {torch.std(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
-                h2_sample = torch.einsum(
-                    "abc,cd->abd", (spk_rec_hidden[:min(10, len(y_local))], layers[1].ff_weights.t()))
-                print(
-                    f"    Input current (h2) mean per output neuron: {h2_sample.mean(dim=(0,1)).detach().cpu().numpy()}")
-                print(
-                    f"    Number of positive weights: neuron0={torch.sum(layers[1].ff_weights[0] > 0).item()}, neuron1={torch.sum(layers[1].ff_weights[1] > 0).item()}")
-                print()
-
-            # Calculate train accuracy in each batch
-            train_acc_per_batch = compute_classification_accuracy(
-                dataset=dataset, layers=layers)
-            accs_hist_batches.append(train_acc_per_batch)
-
-            if params['debug'] and count_epoch == 0:
-                print(f"Train acc after weight update: {train_acc_per_batch*100:.2f}%")
-
-            # Update batch progress bar with current and running average accuracy
-            current_acc = train_acc_per_batch * 100
-            running_avg_acc = np.mean(accs_hist_batches) * 100
-            pbar_batches.set_description(
-                f"Batch acc: {current_acc:.1f}%, Running avg: {running_avg_acc:.1f}%")
-
-            # Free up memory by deleting large intermediate tensors
-            # del spk_rec_readout, recs, spk_rec_hidden, m, am
-            # if not params["use_eprop"]:
-            # del log_p_y, reg_loss
-        mean_loss_per_epoch = np.mean(loss_hist_batches)
-        loss_hist_epochs.append(mean_loss_per_epoch)
-
-        # mean_accs: mean training accuracy of current epoch (average over all batches)
-        mean_accs_per_epoch = np.mean(accs_hist_batches)
-        accs_hist_epochs[0].append(mean_accs_per_epoch)
-        
-        count_epoch = count_epoch + 1
-
-        # Calculate test accuracy in each epoch
-        test_acc_per_epoch = compute_classification_accuracy(
-            dataset=dataset_test, layers=layers)
-        accs_hist_epochs[1].append(test_acc_per_epoch)
-        if np.max(test_acc_per_epoch) >= best_test_acc_per_epoch:
-            best_test_acc_per_epoch = np.max(test_acc_per_epoch)
-            # Save copies of the layer objects using our custom copy function
-            best_acc_layers = copy_layers(layers)
-
-        pbar_training.set_description("Train {:.2f}%, Test {:.2f}%".format(
-            accs_hist_epochs[0][-1]*100, accs_hist_epochs[1][-1]*100))
-        # print("Train acc: ", accs_hist_epochs[0][-1]*100, "Test acc",
-        #       accs_hist_epochs[1][-1]*100, 'Loss: ', loss_hist_epochs[-1])
-
-    return loss_hist_epochs, accs_hist_epochs, best_acc_layers
-
-
-def compute_winning_neuron(spk_rec_readout: torch.Tensor) -> tuple:
-    """
-    Compute predictions from output spike counts with random tie-breaking.
-
-    Sums spikes over time, selects the output neuron with the highest spike count
-    as the prediction, and randomly breaks ties when multiple neurons have the 
-    same maximum spike count. This ensures consistent prediction logic across all
-    evaluation contexts (training, testing, confusion matrix, etc.).
-
-    Parameters
-    ----------
-    spk_rec_readout : torch.Tensor
-        Output layer spike recordings with shape [batch, timesteps, output_neurons]
-
-    Returns
-    -------
-    tuple
-        (spike_counts, predictions) where:
-        - spike_counts : torch.Tensor
-            Total spike counts per output neuron with shape [batch, output_neurons]
-        - predictions : torch.Tensor
-            Predicted class indices with shape [batch]
-
-    Notes
-    -----
-    - Spike counts are summed over the time dimension (dim=1)
-    - Winner-take-all: neuron with most spikes wins
-
-    - Ties are broken randomly to avoid systematic bias toward lower-indexed neurons
-    - This function is the single source of truth for prediction logic
-    - Used consistently in: training, testing, validation, confusion matrix, network activity
-
-    Examples
-    --------
-    >>> spikes = torch.tensor([[[0, 1], [1, 0], [0, 1]]])  # shape: [1, 3, 2]
-    >>> m, am = compute_winning_neuron(spikes)
-    >>> print(m)  # spike counts: tensor([[1, 2]])
-    >>> print(am)  # prediction: tensor([1])  # neuron 1 has more spikes
-    """
-    m = torch.sum(spk_rec_readout,
-                  dim=1)  # sum over time: [batch, output_neurons]
-
-    # Select winner based on spike counts
-    max_val, am = torch.max(m, dim=1)  # argmax over output units
-
-    if params['use_random_tie_breaking']:
-        # Handle ties: if multiple neurons have the same max spike count, select randomly
-        mask = torch.sum(m == max_val.unsqueeze(-1), dim=-1) > 1
-        if mask.any():
-            true_indices = torch.nonzero(mask, as_tuple=True)[0]
-            for i in true_indices:
-                candidates = torch.nonzero(
-                    m[i] == max_val[i], as_tuple=True)[0]
-                am[i] = candidates[torch.randint(0, len(candidates), (1,))]
-
-    return m, am
-
-
-def compute_classification_accuracy(dataset: TensorDataset, layers: list) -> float:
-    """
-    Compute classification accuracy on a dataset using a trained spiking neural network.
-
-    Evaluates network performance by running inference on all samples in the dataset
-    (processed in batches) and comparing predicted labels to ground truth labels. Uses
-    compute_winning_neuron() for consistent prediction logic.
-
-    Parameters
-    ----------
-    dataset : TensorDataset
-        Dataset containing (input_data, labels) pairs for evaluation
-    layers : list
-        List containing [recurrent_layer, feedforward_layer] trained layer objects
-
-    Returns
-    -------
-    float
-        Mean classification accuracy across all samples (range: 0.0 to 1.0)
-
-    Notes
-    -----
-    - For e-prop mode: uses delayed_output window if params["delayed_output"] > 0
-    - For BPTT mode: always uses all timesteps (params["delayed_output"] is None/0)
-    - Uses compute_winning_neuron() for consistent winner-take-all prediction with tie-breaking
-    - All computations performed with torch.no_grad() for memory efficiency
-    - Processes data in batches according to params["batch_size"]
-
-    See Also
-    --------
-    compute_winning_neuron : Core prediction function used by this method
-    """
-    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
-                           shuffle=False, num_workers=4)
-    accs = []
-
-    for x_local, y_local in generator:
-        x_local, y_local = x_local.to(device), y_local.to(device)
-        with torch.no_grad():
-            spk_rec_readout, _ = run_snn(inputs=x_local, layers=layers)
-
-        # Use compute_winning_neuron with delayed_output handling for e-prop
-        if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-            _, am = compute_winning_neuron(
-                spk_rec_readout[:, -params["delayed_output"]:, :])
-        else:
-            _, am = compute_winning_neuron(spk_rec_readout)
-
-        # Compare to labels
-        tmp = np.mean((y_local == am).detach().cpu().numpy())
-        accs.append(tmp)
-
-    mean_acc = np.mean(accs)
-    return mean_acc
-
-
-def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
-    """
-    Visualize training performance with accuracy and loss plots across one or multiple runs.
-
-    Creates a two-panel figure showing training/test accuracies and training loss over epochs.
-    For single runs, displays only that run. For multiple runs, displays mean ± standard deviation
-    and highlights the best trial.
-
-    Parameters
-    ----------
-    path : str
-        File path (without extension) where the PDF figure will be saved
-    acc_train : np.ndarray
-        Training accuracies with shape [n_runs, n_epochs] or [1, n_epochs] for single run
-    acc_test : np.ndarray
-        Test accuracies with shape [n_runs, n_epochs] or [1, n_epochs] for single run
-    loss_train : np.ndarray
-        Training loss values with shape [n_runs, n_epochs] or [1, n_epochs] for single run
-
-    Returns
-    -------
-    None
-        Saves figure to {path}.pdf and closes the figure
-
-    Notes
-    -----
-    - Top panel: Training and test accuracy (%) with shaded standard deviation regions
-    - Bottom panel: Training loss with shaded standard deviation region
-    - Best trial is highlighted with solid lines (trial with maximum test accuracy)
-    - Mean across trials shown with dashed lines
-    - Figure size: 8x12 inches, saved as PDF
-    """
-    # calc mean and std
-    acc_mean_train, acc_std_train = np.mean(
-        acc_train, axis=0), np.std(acc_train, axis=0)
-    acc_mean_test, acc_std_test = np.mean(
-        acc_test, axis=0), np.std(acc_test, axis=0)
-    best_trial, best_val_idx = np.where(np.max(acc_test) == acc_test)
-    best_trial, best_val_idx = best_trial[0], best_val_idx[0]
-    loss_train_mean, loss_train_std = np.mean(
-        loss_train, axis=0), np.std(loss_train, axis=0)
-
-    fig = plt.figure(figsize=(8, 12))
-    ax = fig.add_subplot(2, 1, 1)
-    ax.fill_between(range(1, len(acc_mean_train)+1), 100*(acc_mean_train+acc_std_train), 100*(
-        acc_mean_train-acc_std_train), color='cornflowerblue')
-    ax.fill_between(range(1, len(acc_mean_test)+1), 100*(
-        acc_mean_test+acc_std_test), 100*(acc_mean_test-acc_std_test), color='sandybrown')
-    # plot mean and std
-    ax.plot(range(1, len(acc_mean_train)+1),
-            100*np.array(acc_mean_train), color='blue', linestyle='dashed')
-    ax.plot(range(1, len(acc_mean_test)+1), 100 *
-            np.array(acc_mean_test), color='orangered', linestyle='dashed')
-    # highlight best trial
-    ax.plot(range(1, len(acc_train[best_trial])+1), 100*np.array(
-        acc_train[best_trial]), color='blue')
-    ax.plot(range(1, len(acc_test[best_trial])+1), 100*np.array(
-        acc_test[best_trial]), color='orangered')
-    # ax.set_xlabel("Epoch")
-    ax.set_ylabel("Accuracy (%)")
-    ax.set_ylim((0, 105))
-    ax.set_title("Accuracy")
-    ax.legend(["Training std", "Test std", r"$\overline{\mathrm{Training}}$",
-              r"$\overline{\mathrm{Test}}$", "Training @ best test", "Best test"], loc='lower right')
-
-    ax = fig.add_subplot(2, 1, 2)
-    ax.fill_between(range(1, len(loss_train_mean)+1), loss_train_mean +
-                    loss_train_std, loss_train_mean-loss_train_std, color='cornflowerblue')
-    ax.plot(range(1, len(loss_train_mean)+1),
-            loss_train_mean, color='blue', linestyle='dashed')
-    ax.plot(range(1, len(loss_train[best_trial])+1),
-            loss_train[best_trial], color='blue')
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_ylim((0, None))
-    ax.legend(
-        ["Training std", r"$\overline{\mathrm{Training}}$", "Training loss @ best test"])
-    ax.set_title("Training loss")
-    fig.align_ylabels()
-    fig.tight_layout()
-    fig.savefig(f"{path}.pdf")
-    plt.close(fig)
-
-
-def plot_confusion_matrix(path: str, dataset: TensorDataset, layers: list, labels: list) -> None:
-    """
-    Generate and save a normalized confusion matrix for network predictions.
-
-    Runs the trained network on all samples in the dataset, collects predictions and ground truth
-    labels, then creates a heatmap visualization of the confusion matrix. Always uses all timesteps
-    for evaluation (ignores delayed_output setting).
-
-    Parameters
-    ----------
-    path : str
-        File path (without extension) where the PDF figure will be saved
-    dataset : TensorDataset
-        Dataset containing (input_data, labels) pairs for evaluation
-    layers : list
-        List containing [recurrent_layer, feedforward_layer] trained layer objects
-    labels : list
-        List of label names (e.g., ['A', 'B', 'C']) for axis tick labels
-
-    Returns
-    -------
-    None
-        Saves confusion matrix heatmap to {path}.pdf
-
-    Notes
-    -----
-    - Always uses all timesteps (ignores delayed_output) for fair comparison
-    - Confusion matrix is normalized by true labels (rows sum to 1.0)
-    - Uses seaborn heatmap with YlGnBu colormap
-    - Figure size: 12x9 inches, saved as PDF
-    - Predictions computed via compute_winning_neuron() for consistency
-    - Annotations show normalized values with format '.1g'
-    """
-    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
-                           shuffle=False, num_workers=4)
-    accs = []
-    trues = []
-    preds = []
-    for x_local, y_local in generator:
-        x_local, y_local = x_local.to(device), y_local.to(device)
-        with torch.no_grad():
-            spk_rec_readout, _ = run_snn(inputs=x_local, layers=layers)
-
-        # Use compute_winning_neuron - always use all timesteps for confusion matrix
-        _, am = compute_winning_neuron(spk_rec_readout)
-
-        accs.append(np.mean((y_local == am).detach().cpu().numpy()))
-        trues.extend(y_local.detach().cpu().numpy())
-        preds.extend(am.detach().cpu().numpy())
-    cm = confusion_matrix(trues, preds, normalize='true')
-    cm_df = pd.DataFrame(cm, index=[ii for ii in labels], columns=[
-                         jj for jj in labels])
-    plt.figure(figsize=(12, 9))
-    sn.heatmap(cm_df,
-               annot=True,
-               fmt='.1g',
-               cbar=False,
-               square=False,
-               cmap="YlGnBu")
-    plt.xlabel('\nPredicted')
-    plt.ylabel('True\n')
-    plt.xticks(rotation=0)
-    plt.savefig(
-        f"{path}.pdf")
-
-
-def get_network_activity(dataset: TensorDataset, layers: list) -> tuple:
-    """
-    Record network activity (spike trains) for all samples in a dataset.
-
-    Runs the trained network in inference mode on all samples and collects spike recordings
-    from both hidden and output layers for subsequent analysis or visualization. Always uses
-    all timesteps (ignores delayed_output setting).
-
-    Parameters
-    ----------
-    dataset : TensorDataset
-        Dataset containing (input_data, labels) pairs for evaluation
-    layers : list
-        List containing [recurrent_layer, feedforward_layer] trained layer objects
-
-    Returns
-    -------
-    tuple
-        (accs, spk_rec_readout_list, spk_rec_hidden_list) where:
-        - accs : list
-            Classification accuracy for each batch (float values 0.0-1.0)
-        - spk_rec_readout_list : list of numpy.ndarray
-            Output layer spike trains, each with shape [samples, timesteps, output_neurons]
-        - spk_rec_hidden_list : list of numpy.ndarray
-            Hidden layer spike trains, each with shape [samples, timesteps, hidden_neurons]
-
-    Notes
-    -----
-    - Always uses all timesteps for spike recording (ignores delayed_output)
-    - All computations performed with torch.no_grad() for memory efficiency
-    - Returns data as numpy arrays (moved from GPU to CPU)
-    - Predictions computed via compute_winning_neuron() for consistency
-    - Useful for creating raster plots and analyzing network dynamics
-    - Each list element corresponds to one batch from the dataset
-
-    See Also
-    --------
-    plot_network_activity : Visualization function that uses this data
-    """
-    generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
-                           shuffle=False, num_workers=4)
-    accs = []
-    spk_rec_readout_list = []
-    spk_rec_hidden_list = []
-    for x_local, y_local in generator:
-        x_local, y_local = x_local.to(device), y_local.to(device)
-        with torch.no_grad():
-            spk_rec_readout, recs = run_snn(inputs=x_local, layers=layers)
-
-        _, spk_rec_hidden, _ = recs
-
-        # Use compute_winning_neuron - always use all timesteps for network activity analysis
-        _, am = compute_winning_neuron(spk_rec_readout)
-
-        tmp = np.mean((y_local == am).detach().cpu().numpy())
-        accs.append(tmp)
-        spk_rec_readout_list.append(spk_rec_readout.detach().cpu().numpy())
-        spk_rec_hidden_list.append(spk_rec_hidden.detach().cpu().numpy())
-
-    return accs, spk_rec_readout_list, spk_rec_hidden_list
-
-
-def plot_network_activity(spr_recs: list, layer_names: list, figname: str = './figures') -> None:
-    """
-    Create and save raster plots visualizing spike activity across network layers.
-
-    Generates a multi-panel figure showing spike raster plots for each layer, where each
-    spike is plotted as a vertical line at its occurrence time for the corresponding neuron.
-
-    Parameters
-    ----------
-    spr_recs : list of numpy.ndarray
-        List of spike recordings for each layer, where each element is a numpy array
-        with shape [timesteps, neurons]. Each array contains binary spike data (0 or 1)
-    layer_names : list of str
-        List of layer names (e.g., ['Hidden layer', 'Readout layer']) for subplot titles
-    figname : str, optional
-        File path (without extension) where the PDF figure will be saved (default: './figures')
-
-    Returns
-    -------
-    None
-        Saves figure to {figname}.pdf and closes the figure
-
-    Notes
-    -----
-    - Creates one subplot per layer in a vertical arrangement
-    - Spike times are converted from timesteps to seconds using params['time_bin_size']
-    - X-axis: Time in seconds (0 to params["max_time"] * 0.001)
-    - Y-axis: Neuron ID (one row per neuron, 0 to num_neurons-1)
-    - Uses matplotlib.eventplot for efficient raster visualization
-    - Line width: 0.3 for visibility
-    - Figure is automatically sized and saved as PDF
-    - Color: black lines for all spikes
-
-    Examples
-    --------
-    >>> hidden_spikes = np.random.rand(100, 50) > 0.95  # 100 timesteps, 50 neurons
-    >>> output_spikes = np.random.rand(100, 10) > 0.90  # 100 timesteps, 10 neurons
-    >>> plot_network_activity([hidden_spikes, output_spikes], 
-    ...                        ['Hidden', 'Output'], 
-    ...                        './figures/activity')
-    """
-    nb_layers = len(layer_names)
-    fig = plt.figure()
-    for counter, name in enumerate(layer_names):
-        # TODO plot hidden layer activity
-        spk_per_layer = spr_recs[counter]
-        num_neurons = spk_per_layer.shape[1]
-        ax = fig.add_subplot(nb_layers, 1, counter+1)
-
-        spikes_per_neuron = []
-        for neuron_idx in range(spk_per_layer.shape[-1]):
-            spk_times_per_neuron = np.where(spk_per_layer[:, neuron_idx])[0]
-            spk_times_per_neuron = spk_times_per_neuron * \
-                0.001*int(params['time_bin_size'])
-            spikes_per_neuron.append(spk_times_per_neuron)
-
-        # # TODO possible optimization
-        # # Find the indices of spikes (value 1)
-        # spike_times, neuron_ids = np.where(spk_per_layer == 1)
-        # # Sort by neuron id and then by spike time
-        # # sorted_indices = np.lexsort((spike_times, neuron_ids))
-        # # # Get the sorted spike times and neuron ids
-        # # sorted_spike_times = spike_times[sorted_indices]  # contains the neuron IDs
-        # # sorted_neuron_ids = neuron_ids[sorted_indices]  # contains the according spike times
-        # # # Group indices by neuron
-        # # spikes_per_neuron = {neuron: sorted_spike_times[sorted_neuron_ids == neuron] for neuron in np.unique(sorted_neuron_ids)}
-
-        # # Sort by neuron id and then by spike time
-        # sorted_indices = np.lexsort((spike_times, neuron_ids))
-
-        # # Get the sorted spike times and neuron ids
-        # sorted_spike_times = spike_times[sorted_indices]
-        # sorted_neuron_ids = neuron_ids[sorted_indices]
-
-        # # Get the total number of neurons
-        # num_neurons = spk_per_layer.shape[1]
-
-        # # Include empty lists for neurons with no spikes
-        # spikes_per_neuron = {neuron: sorted_spike_times[sorted_neuron_ids == neuron].tolist() for neuron in range(num_neurons)}
-
-        # TODO possible colorcode by nb spikes
-        # print(len(spikes_per_neuron))
-        # print(len(range(num_neurons)))
-        ax.eventplot(spikes_per_neuron, orientation="horizontal",
-                     lineoffsets=range(num_neurons), linewidth=0.3, colors="k")
-        ax.set_xlim(0, params["max_time"] * 0.001)
-        ax.set_ylabel("Neuron ID")
-        ax.set_title(f"{name} activity")
-    ax.set_xlabel("Time [sec]")
-    fig.align_ylabels()
-    fig.tight_layout()
-    fig.savefig(f"{figname}.pdf")
-    plt.close(fig)
-
-
-# Load data and parameters
+##############################################################################
+# DATA FILE CONFIGURATION
+##############################################################################
+
+# Determine which data file to load based on encoding method
 file_dir_data = './data/100Hz/'
 if params["use_mechanoreceptor_encoding"]:
     file_name = file_dir_data + 'mechanoreceptor_encoded.pkl'
 else:
+    # Use sigma-delta encoding with specified threshold
     file_type = 'data_braille_letters_100Hz_th'
     file_thr = str(params["threshold"])
     file_name = file_dir_data + file_type + file_thr + '.pkl'
 
 
-class STEFunction(torch.autograd.Function):
-    """
-    Here we define the Straight-Through Estimator (STE) function.
-    This function allows us to ignore the non-differentiable part
-    in our network, i.e. the discretization of the weights.
-    The function applys the discretization and the clamping.
-    """
-    @staticmethod
-    def forward(ctx, input, possible_weight_values):
-        diffs = torch.abs(input.unsqueeze(-1) - possible_weight_values)
-        min_indices = torch.argmin(diffs, dim=-1)
-        return possible_weight_values[min_indices]
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # Straight-through estimator: gradient passes through unchanged
-        return grad_output.clone(), None
-
-
-ste_fn = STEFunction.apply
-
-
-class SurrGradSpike(torch.autograd.Function):
-    """
-    Here we implement our spiking nonlinearity which also implements
-    the surrogate gradient. By subclassing torch.autograd.Function,
-    we will be able to use all of PyTorch's autograd functionality.
-    Here we use the normalized negative part of a fast sigmoid
-    as this was done in Zenke & Ganguli (2018).
-    """
-
-    scale = 15.0
-    threshold = 0
-
-    @staticmethod
-    def forward(ctx, input):
-        """
-        In the forward pass we compute a step function of the input Tensor
-        and return it. ctx is a context object that we use to stash information which
-        we need to later backpropagate our error signals. To achieve this we use the
-        ctx.save_for_backward method.
-        """
-        ctx.save_for_backward(input)
-        out = torch.zeros_like(input)
-        out[input > SurrGradSpike.threshold] = 1.0
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        """
-        In the backward pass we receive a Tensor we need to compute the
-        surrogate gradient of the loss with respect to the input.
-        Here we use the normalized negative part of a fast sigmoid
-        as this was done in Zenke & Ganguli (2018).
-        """
-        input, = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        grad = grad_input/(SurrGradSpike.scale*torch.abs(input)+1.0)**2
-        return grad
-
-
-spike_fn = SurrGradSpike.apply
-
-
-class feedforward_layer:
-    """
-    Spiking feedforward layer with Leaky Integrate-and-Fire (LIF) neurons.
-
-    This class implements a fully-connected feedforward layer of spiking neurons with
-    optional synaptic dynamics, exponential or linear membrane potential decay, and
-    optional refractory period. Supports both e-prop and BPTT learning via surrogate gradients.
-
-    Attributes
-    ----------
-    batch_size : int
-        Maximum batch size for pre-allocation
-    nb_inputs : int
-        Number of input features/channels
-    nb_neurons : int
-        Number of neurons in this layer
-    scale : float
-        Weight initialization scale factor
-    alpha : float
-        Synaptic current decay factor (0 for no synapse, or exp(-dt/tau_syn))
-    beta : float
-        Membrane potential decay factor (exp(-dt/tau_mem) or linear decay rate)
-    ref_per : int or None
-        Refractory period duration in timesteps (None to disable)
-    ff_weights : torch.Tensor
-        Feedforward weight matrix [nb_neurons, nb_inputs]
-    ref_per_tensor : torch.Tensor
-        Tracks remaining refractory period timesteps per neuron [batch_size, nb_neurons]
-
-    Notes
-    -----
-    - Weights initialized with Gaussian distribution and positive constraint applied
-    - Spike generation uses hard threshold for e-prop, surrogate gradient for BPTT
-    - Refractory period prevents neurons from spiking during cooldown
-    """
-
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_weight_scale, alpha, beta, ref_per=None):
-        """
-        Initialize feedforward spiking layer.
-
-        Parameters
-        ----------
-        batch_size : int
-            Maximum batch size for memory pre-allocation
-        nb_inputs : int
-            Number of input features/channels
-        nb_neurons : int
-            Number of neurons in this layer
-        fwd_weight_scale : float
-            Weight initialization scale (weights drawn from N(0, scale/sqrt(nb_inputs)))
-        alpha : float
-            Synaptic current decay factor (0.0 to disable synaptic dynamics)
-        beta : float
-            Membrane potential decay factor (exp(-dt/tau_mem) for exponential decay)
-        ref_per : int or None, optional
-            Refractory period duration in timesteps (default: None, disabled)
-        """
-        self.batch_size = batch_size
-        self.nb_inputs = nb_inputs
-        self.nb_neurons = nb_neurons
-        self.scale = fwd_weight_scale
-        self.alpha = alpha
-        self.beta = beta
-        self.ref_per = ref_per
-        if ref_per is not None or ref_per > 0:
-            self.ref_per_tensor = torch.zeros(
-                (batch_size, nb_neurons), device=device)
-        self.create_layer()
-
-    def reset_refractory_perdiod_counter(self):
-        """
-        Reset all refractory period counters to zero.
-
-        Called at the start of each forward pass to clear refractory states
-        from previous batches.
-        """
-        self.ref_per_tensor = torch.zeros_like(self.ref_per_tensor)
-
-    def update_refractory_perdiod_counter(self, spk):
-        """
-        Update refractory period counters based on spike activity.
-
-        Decrements active counters by 1 and sets counters to ref_per for
-        neurons that just spiked.
-
-        Parameters
-        ----------
-        spk : torch.Tensor
-            Binary spike tensor [batch, neurons] where 1 indicates a spike
-
-        Notes
-        -----
-        Only operates on the current batch slice to handle variable batch sizes.
-        """
-        current_batch_size = spk.shape[0]
-        current_neurons = spk.shape[1]
-        # Only operate on the current batch slice
-        batch_slice = self.ref_per_tensor[:current_batch_size,
-                                          :current_neurons]
-        batch_slice[batch_slice > 0.0] -= 1
-        batch_slice[spk > 0.0] = self.ref_per
-        self.ref_per_tensor[:current_batch_size,
-                            :current_neurons] = batch_slice
-
-    def create_layer(self):
-        """
-        Initialize feedforward weight matrix.
-
-        Creates and initializes the weight matrix with Gaussian distribution
-        and ensures all weights are positive.
-
-        Notes
-        -----
-        - Feedforward weights: [nb_neurons, nb_inputs]
-          Initialization: N(0, scale/sqrt(nb_inputs))
-        - Positive constraint applied to ensure excitatory connections only
-        - Requires gradient for learning
-        """
-        self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
-                                      device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(self.ff_weights, mean=0.0,
-                              std=self.scale/np.sqrt(self.nb_inputs))
-
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None):
-        """
-        Compute spiking activity of feedforward layer over time.
-
-        Simulates LIF neuron dynamics with optional synaptic filtering,
-        refractory period, and membrane potential clamping. Supports both e-prop
-        (hard threshold) and BPTT (surrogate gradient) spike generation.
-
-        Parameters
-        ----------
-        input_activity : torch.Tensor
-            Input currents with shape [batch, timesteps, nb_inputs]
-        nb_steps : int
-            Number of simulation timesteps
-        lower_bound : float or None, optional
-            Minimum membrane potential (clamping threshold, default: None)
-
-        Returns
-        -------
-        tuple
-            (spk_rec, mem_rec) where:
-            - spk_rec : torch.Tensor
-                Spike recordings [batch, timesteps, nb_neurons]
-            - mem_rec : torch.Tensor
-                Membrane potential recordings [batch, timesteps, nb_neurons]
-
-        Notes
-        -----
-        - Spike threshold: 1.0
-        - Reset mechanism: multiplicative (voltage * (1 - spike))
-        - For e-prop: uses hard threshold (no gradient through spikes)
-        - For BPTT: uses surrogate gradient function for differentiability
-        - Synaptic dynamics: syn = alpha * syn + input (if alpha > 0)
-        - Membrane dynamics: mem = beta * mem + syn (exponential decay)
-          or mem = mem - sign(mem)*beta + syn (linear decay)
-        - Refractory period blocks synaptic input when active
-        """
-        syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=device, dtype=dtype)
-        new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                              device=device, dtype=dtype)
-        mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=device, dtype=dtype)
-        out = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=device, dtype=dtype)
-
-        # always reset the refractory period counter at the beginning of a new forward pass
-        if self.ref_per is not None:
-            self.reset_refractory_perdiod_counter()
-
-        mem_rec = []
-        spk_rec = []
-        # Compute feedforward layer activity
-        for t in range(nb_steps):
-            mthr = mem-1.0
-            # Use surrogate gradient for BPTT compatibility
-            if params["use_eprop"]:
-                # For e-prop, use hard threshold (no gradient needed through spikes)
-                out = torch.zeros_like(mthr)
-                out[mthr > 0] = 1
-            else:
-                # For BPTT, use surrogate gradient
-                out = spike_fn(mthr)
-            rst = out.detach()
-
-            # update the correct counter
-            if self.ref_per is not None:
-                self.update_refractory_perdiod_counter(rst)
-                # take care of last batch
-                mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
-                new_syn = self.alpha * syn
-                new_syn[mask] = (self.alpha*syn[mask] +
-                                 input_activity[:, t][mask])
-            else:
-                new_syn = self.alpha*syn + input_activity[:, t]
-
-            if params["use_linear_decay"]:
-                # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
-                new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
-            else:
-                new_mem = (self.beta*mem + syn)*(1.0-rst)
-            if lower_bound:
-                new_mem[new_mem < lower_bound] = lower_bound
-
-            mem_rec.append(mem)
-            spk_rec.append(out)
-
-            mem = new_mem
-            syn = new_syn
-
-        # Now we merge the recorded membrane potentials into a single tensor
-        mem_rec = torch.stack(mem_rec, dim=1)
-        spk_rec = torch.stack(spk_rec, dim=1)
-        return spk_rec, mem_rec
-
-
-class recurrent_layer:
-    """
-    Spiking recurrent layer with Leaky Integrate-and-Fire (LIF) neurons.
-
-    This class implements a fully-connected recurrent layer of spiking neurons with
-    recurrent connections, optional synaptic dynamics, exponential or linear membrane
-    potential decay, and optional refractory period. Supports both e-prop and BPTT
-    learning via surrogate gradients.
-
-    Attributes
-    ----------
-    batch_size : int
-        Maximum batch size for pre-allocated tensors
-    nb_inputs : int
-        Number of input features/channels
-    nb_neurons : int
-        Number of recurrent neurons in this layer
-    fwd_scale : float
-        Feedforward weight initialization scale factor
-    rec_scale : float
-        Recurrent weight initialization scale factor
-    alpha : float
-        Synaptic current decay factor (0 for no synapse, or exp(-dt/tau_syn))
-    beta : float
-        Membrane potential decay factor (exp(-dt/tau_mem) or linear decay rate)
-    ref_per : int or None
-        Refractory period duration in timesteps (None to disable)
-    ff_weights : torch.Tensor
-        Feedforward weight matrix [nb_neurons, nb_inputs]
-    rec_weights : torch.Tensor
-        Recurrent weight matrix [nb_neurons, nb_neurons]
-    ref_per_tensor : torch.Tensor
-        Tracks remaining refractory period timesteps per neuron [batch_size, nb_neurons]
-
-    Notes
-    -----
-    - Feedforward and recurrent weights initialized with Gaussian distribution
-    - Spike generation uses hard threshold for e-prop, surrogate gradient for BPTT
-    - Recurrent connections provide temporal memory and dynamics
-    - Refractory period prevents neurons from spiking during cooldown
-    """
-
-    def __init__(self, batch_size, nb_inputs, nb_neurons, fwd_scale, rec_scale, alpha, beta, ref_per=None):
-        """
-        Initialize recurrent spiking layer.
-
-        Parameters
-
-        ----------
-        batch_size : int
-            Maximum batch size for memory pre-allocation
-        nb_inputs : int
-            Number of input features/channels
-        nb_neurons : int
-            Number of recurrent neurons in this layer
-        fwd_scale : float
-            Feedforward weight initialization scale (N(0, fwd_scale/sqrt(nb_inputs)))
-        rec_scale : float
-            Recurrent weight initialization scale (N(0, rec_scale/sqrt(nb_neurons)))
-        alpha : float
-            Synaptic current decay factor (0.0 to disable synaptic dynamics)
-        beta : float
-            Membrane potential decay factor (exp(-dt/tau_mem) for exponential decay)
-        ref_per : int or None, optional
-            Refractory period duration in timesteps (default: None, disabled)
-        """
-        self.batch_size = batch_size
-        self.nb_inputs = nb_inputs
-        self.nb_neurons = nb_neurons
-        self.fwd_scale = fwd_scale
-        self.rec_scale = rec_scale
-        self.alpha = alpha
-        self.beta = beta
-        self.ref_per = ref_per
-        if ref_per is not None or ref_per > 0:
-            self.ref_per_tensor = torch.zeros(
-                (batch_size, nb_neurons), device=device)
-        self.create_layer()
-
-    def reset_refractory_perdiod_counter(self):
-        """
-        Reset all refractory period counters to zero.
-
-        Called at the start of each forward pass to clear refractory states
-        from previous batches.
-        """
-        self.ref_per_tensor = torch.zeros_like(self.ref_per_tensor)
-
-    def update_refractory_perdiod_counter(self, spk):
-        """
-        Update refractory period counters based on spike activity.
-
-        Decrements active counters by 1 and sets counters to ref_per for
-        neurons that just spiked.
-
-        Parameters
-        ----------
-        spk : torch.Tensor
-            Binary spike tensor [batch, neurons] where 1 indicates a spike
-
-        Notes
-        -----
-        Only operates on the current batch slice to handle variable batch sizes.
-        """
-        current_batch_size = spk.shape[0]
-        current_neurons = spk.shape[1]
-        # Only operate on the current batch slice
-        batch_slice = self.ref_per_tensor[:current_batch_size,
-                                          :current_neurons]
-        batch_slice[batch_slice > 0.0] -= 1
-        batch_slice[spk > 0.0] = self.ref_per
-        self.ref_per_tensor[:current_batch_size,
-                            :current_neurons] = batch_slice
-
-    def create_layer(self):
-        """
-        Initialize feedforward and recurrent weight matrices.
-
-        Creates and initializes both weight matrices with Gaussian distributions.
-
-        Notes
-        -----
-        - Feedforward weights: [nb_neurons, nb_inputs]
-          Initialization: N(0, fwd_scale/sqrt(nb_inputs))
-        - Recurrent weights: [nb_neurons, nb_neurons]
-          Initialization: N(0, rec_scale/sqrt(nb_neurons))
-        - Both require gradients for learning
-        """
-        self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
-                                      device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(self.ff_weights, mean=0.0,
-                              std=self.fwd_scale/np.sqrt(self.nb_inputs))
-        self.rec_weights = torch.empty((self.nb_neurons, self.nb_neurons),
-                                       device=device, dtype=dtype, requires_grad=True)
-        torch.nn.init.normal_(self.rec_weights, mean=0.0,
-                              std=self.rec_scale/np.sqrt(self.nb_neurons))
-
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None):
-        """
-        Compute spiking activity of recurrent layer over time.
-
-        Simulates recurrent LIF neuron dynamics with optional synaptic filtering,
-        refractory period, and membrane potential clamping. Includes recurrent
-        connections for temporal processing. Supports both e-prop (hard threshold)
- and BPTT (surrogate gradient) spike generation.
-
-        Parameters
-        ----------
-        input_activity : torch.Tensor
-            Input currents with shape [batch, timesteps, nb_inputs]
-        nb_steps : int
-            Number of simulation timesteps
-        lower_bound : float or None, optional
-            Minimum membrane potential (clamping threshold, default: None)
-
-        Returns
-        -------
-        tuple
-            (spk_rec, mem_rec) where:
-            - spk_rec : torch.Tensor
-                Spike recordings [batch, timesteps, nb_neurons]
-            - mem_rec : torch.Tensor
-                Membrane potential recordings [batch, timesteps, nb_neurons]
-
-        Notes
-        -----
-        - Spike threshold: 1.0
-        - Reset mechanism: multiplicative (voltage * (1 - spike))
-        - For e-prop: uses hard threshold (no gradient through spikes)
-        - For BPTT: uses surrogate gradient function for differentiability
-        - Total input: feedforward input + recurrent input (previous spikes)
-        - Synaptic dynamics: syn = alpha * syn + total_input (if alpha > 0)
-        - Membrane dynamics: mem = beta * mem + syn (exponential decay)
-          or mem = mem - sign(mem)*beta + syn (linear decay)
-        - Refractory period blocks synaptic input when active
-        """
-        syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=device, dtype=dtype)
-        new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                              device=device, dtype=dtype)
-        mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=device, dtype=dtype)
-        out = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=device, dtype=dtype)
-
-        # always reset the refractory period counter at the beginning of a new forward pass
-        if self.ref_per is not None:
-            self.reset_refractory_perdiod_counter()
-
-        mem_rec = []
-        spk_rec = []
-
-        # Compute recurrent layer activity
-        for t in range(nb_steps):
-            # input activity plus last step output activity
-            h1 = input_activity[:, t] + \
-                torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
-            mthr = mem-1.0
-            # Use surrogate gradient for BPTT compatibility
-            if params["use_eprop"]:
-                # For e-prop, use hard threshold (no gradient needed through spikes)
-                out = torch.zeros_like(mthr)
-                out[mthr > 0] = 1
-            else:
-                # For BPTT, use surrogate gradient
-                out = spike_fn(mthr)
-            rst = out.detach()  # We do not want to backprop through the reset
-
-            if self.ref_per is not None:
-                self.update_refractory_perdiod_counter(rst)
-                # only update the membrane potential if not in refractory period
-                # take care of last batch
-                mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
-                new_syn = self.alpha * syn
-                new_syn[mask] = (self.alpha*syn[mask] + h1[mask])
-            else:
-                new_syn = self.alpha*syn + h1
-
-            if params["use_linear_decay"]:
-                new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
-            else:
-                new_mem = (self.beta*mem + syn)*(1.0-rst)
-
-            if lower_bound:
-                # clamp membrane potential
-                new_mem[new_mem < lower_bound] = lower_bound
-
-            mem_rec.append(mem)
-            spk_rec.append(out)
-
-            mem = new_mem
-            syn = new_syn
-
-        # Now we merge the recorded membrane potentials into a single tensor
-        mem_rec = torch.stack(mem_rec, dim=1)
-        spk_rec = torch.stack(spk_rec, dim=1)
-        return spk_rec, mem_rec
-
-
 if __name__ == '__main__':
-    # Print learning algorithm being used
+    ##########################################################################
+    # MAIN TRAINING PIPELINE
+    ##########################################################################
+
+    # Display learning algorithm configuration
     print(f"\n{'='*60}")
     print(
         f"Training with: {'e-prop' if params['use_eprop'] else 'BPTT (Backpropagation Through Time)'}")
     print(f"{'='*60}\n")
 
-    # Get the fixed number of hidden neurons from params
+    # Generate descriptive string for output files based on letter set
+    if all_letters:
+        str_letters = 'all_letters'
+    else:
+        str_letters = '_'.join(letters)
+
     nb_hidden = params['nb_hidden']
 
-    # Define results file path
-    results_file = f"./results/braille_reading_rsnn_{nb_hidden}_neurons_all_letters.npz"
+    # Define paths for saving results and models
+    results_file = f"./results/braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}.npz"
 
-    # always use the same data split
-    ds_train, ds_test, ds_validation, labels, nb_channels, data_steps = load_and_extract(
-        params, file_name, letter_written=letters, create_validation=create_validation)
+    ##########################################################################
+    # DATA LOADING AND PREPROCESSING
+    ##########################################################################
 
-    # Clear GPU cache
+    # Load and preprocess tactile sensor data
+    ds_train, ds_test, ds_validation, labels = load_and_extract(
+        params=params, file_name=file_name, letter_written=letters)
+
+    # Clear GPU cache before training
     torch.cuda.empty_cache()
 
-    # Print dataset information
+    ##########################################################################
+    # DATASET INFORMATION
+    ##########################################################################
+
+    # Print comprehensive dataset statistics
     print("Number of training data %i." % len(ds_train))
     print("Number of testing data %i." % len(ds_test))
-    if create_validation:
+    if params["use_validation"]:
         print("Number of validation data %i." % len(ds_validation))
     print("Number of outputs %i." % len(np.unique(labels)))
-    print("Number of input channels %i." % nb_channels)
+    print("Number of input channels %i." % len(params["selected_channels"]))
     print("Number of hidden neurons %i." % nb_hidden)
-    print("Number of timesteps %i." % data_steps)
+    print("Number of timesteps %i." % params["data_steps"])
     print("Delayed output ", params["delayed_output"])
     if params["no_synapse"]:
         print(f"No synapse dynamics.")
@@ -2692,24 +328,38 @@ if __name__ == '__main__':
     if params["ref_per_timesteps"]:
         print(
             f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
-    print("Input duration %fs" % (data_steps*params["time_step"]))
+    print("Input duration %fs" % (params["data_steps"]*params["time_step"]))
     print("---------------------------\n")
 
-    # Initialize and train network
+    ##########################################################################
+    # NETWORK TRAINING
+    ##########################################################################
+
+    # Build network architecture and train with specified algorithm
     loss_hist_epochs, acc_hist, best_layers, vars_eprop = build_and_train(
-        params, ds_train, ds_test, nb_hidden=nb_hidden, epochs=params['epochs'])
+        params=params, ds_train=ds_train, ds_test=ds_test)
 
-    # Get validation results
-    if create_validation:
-        val_acc = compute_classification_accuracy(
-            dataset=ds_validation, layers=best_layers)
-        print(f"Validation accuracy: {val_acc*100:.2f}%")
+    ##########################################################################
+    # MODEL EVALUATION
+    ##########################################################################
 
-    # Save the best model
+    # Compute final accuracy and predictions on validation or test set
+    if params["use_validation"]:
+        val_acc, trues, preds = compute_classification_accuracy(
+            dataset=ds_validation, layers=best_layers, params=params)
+    else:
+        val_acc, trues, preds = compute_classification_accuracy(
+            dataset=ds_test, layers=best_layers, params=params)
+
+    ##########################################################################
+    # SAVE RESULTS
+    ##########################################################################
+
+    # Save trained model weights
     torch.save(
-        best_layers, f'./model/best_model_{nb_hidden}_neurons_all_letters.pt')
+        best_layers, f'./model/best_model_{nb_hidden}_neurons_{str_letters}.pt')
 
-    # Save training results
+    # Save training metrics and hyperparameters
     np.savez(results_file,
              acc_train=acc_hist[0],
              acc_test=acc_hist[1],
@@ -2717,59 +367,71 @@ if __name__ == '__main__':
              nb_hidden=nb_hidden)
     print(f"Results saved to {results_file}")
 
-    # Plot training performance
+    ##########################################################################
+    # GENERATE VISUALIZATIONS
+    ##########################################################################
+
+    # Plot training curves (loss and accuracy over epochs)
     plot_training_perfromance(
-        path=f"./figures/best_model_{nb_hidden}_neurons_all_letters_training_performance",
+        path=f"./figures/best_model_{nb_hidden}_neurons_{str_letters}_training_performance",
         acc_train=np.array([acc_hist[0]]),
         acc_test=np.array([acc_hist[1]]),
         loss_train=np.array([loss_hist_epochs]))
 
-    # Plot confusion matrix
+    # Generate confusion matrix showing classification performance per letter
     plot_confusion_matrix(
-        path=f"./figures/best_model_{nb_hidden}_neurons_all_letters_confusion_matrix",
-        dataset=ds_test,
-        layers=best_layers,
+        path=f"./figures/best_model_{nb_hidden}_neurons_{str_letters}_confusion_matrix",
+        trues=trues,
+        preds=preds,
         labels=letters)
 
-    #####################################
-    ### Create raster plots ###
-    #####################################
+    ##########################################################################
+    # NETWORK ACTIVITY VISUALIZATION (Raster Plots)
+    ##########################################################################
 
-    # Get network activity
-    accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(ds_test, layers=best_layers)
+    # Extract spike activity from hidden and readout layers
+    accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
+        dataset=ds_test, layers=best_layers, params=params)
 
+    # Generate raster plots showing spike timing patterns
     layer_names = ["Hidden layer", "Readout layer"]
     total_nb_batches = len(accs)
 
-    # Select batches to plot
+    # Randomly select batches to visualize (or use all if fewer than requested)
     if NB_BATCHES_TO_PLOT > total_nb_batches:
         batch_selection = range(total_nb_batches)
     else:
         batch_selection = np.random.choice(
             total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
 
+    # Generate raster plots for selected batches and trials
     for batch_idx in batch_selection:
         spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
         spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
 
         total_nb_trials = len(spk_rec_readout_batch)
 
-        # Select trials to plot
+        # Randomly select trials to visualize within each batch
         if NB_TRIALS_TO_PLOT > total_nb_trials:
             trial_selection = range(total_nb_trials)
         else:
             trial_selection = np.random.choice(
                 total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
 
+        # Create raster plot for each selected trial
         for trial_idx in trial_selection:
             spr_recs = [spk_rec_hidden_batch[trial_idx],
                         spk_rec_readout_batch[trial_idx]]
-            plot_network_activity(
-                spr_recs, layer_names,
-                figname=f"./figures/best_model_{nb_hidden}_neurons_all_letters_network_activity_batch{batch_idx}_trial{trial_idx}")
+            plot_network_activity(spr_recs=spr_recs, layer_names=layer_names, params=params,
+                                  figname=f"./figures/best_model_{nb_hidden}_neurons_{str_letters}_network_activity_batch_{batch_idx}_trial_{trial_idx}")
 
-    # Clean up memory
-    # del loss_hist_epochs, acc_hist, best_layers, accs, spk_rec_readout_array, spk_rec_hidden_array
+    ##########################################################################
+    # CLEANUP AND COMPLETION
+    ##########################################################################
+
+    # Free GPU memory
     torch.cuda.empty_cache()
 
-    print(f"\nTraining complete! Results saved to {results_file}")
+    print(f"\n{'='*60}")
+    print(f"Training complete! Results saved to {results_file}")
+    print(f"{'='*60}")

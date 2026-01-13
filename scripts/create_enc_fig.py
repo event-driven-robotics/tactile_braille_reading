@@ -1,3 +1,15 @@
+"""create_enc_fig.py
+
+Generate visualization figures for encoded braille letter data.
+
+Creates plots showing event-based spike representations of braille letters
+from tactile sensor data, comparing different encoding thresholds and
+visualization styles.
+
+Author: Simon F. Muller-Cleve
+Date: January 12, 2026
+"""
+
 import pickle
 
 import matplotlib.pyplot as plt

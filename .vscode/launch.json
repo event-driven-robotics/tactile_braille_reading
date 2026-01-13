@@ -47,8 +47,11 @@
             "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
             "console": "integratedTerminal",
             "args": [
-                "--epochs", "5",
-                "--nb_hidden", "10"
+                "--epochs", "10",
+                "--nb_hidden", "20",
+                "--batch_size", "128",
+                "--learning_rate", "0.0001",
+                "--letters", "A", "B"
             ],
             "justMyCode": false
         },

@@ -1,9 +1,21 @@
+"""mechanoreceptor_encoding.py
+
+Encoder script that processes raw tactile data through mechanoreceptor models.
+
+Reads braille letter tactile data and generates FA-I and SA-II mechanoreceptor
+spike responses using event-based neuron models. Outputs encoded spike data
+for downstream neural network training.
+
+Author: Simon F. Muller-Cleve
+Date: January 12, 2026
+"""
+
 import pickle as pkl
 
 import numpy as np
 from tqdm import tqdm
 
-from scripts.neuron_models import FA_I_mechanoreceptor, SA_II_mechanoreceptor
+from utils.neuron_models import FA_I_mechanoreceptor, SA_II_mechanoreceptor
 
 print("Loading mechanoreceptor models...")
 

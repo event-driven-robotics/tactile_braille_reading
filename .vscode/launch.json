@@ -41,17 +41,39 @@
             "justMyCode": false
         },
         {
-            "name": "Python: Quick Test (5 epochs)",
+            "name": "Python: Quick Test (10 epochs)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
             "console": "integratedTerminal",
             "args": [
                 "--epochs", "10",
-                "--nb_hidden", "20",
+                "--nb_hidden", "50",
                 "--batch_size", "128",
                 "--learning_rate", "0.0001",
-                "--letters", "A", "B"
+                "--letters", "A", "B",
+                "--repetitions", "3",
+                "--use_random_tie_breaking",
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: DEBUG BPTT (10 epochs)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--epochs", "10",
+                "--nb_hidden", "150",
+                "--batch_size", "128",
+                "--learning_rate", "0.0001",
+                "--letters", "A", "B",
+                "--repetitions", "3",
+                "--debug",
+                "--reg_spikes", "0.0",
+                "--reg_neurons", "0.0",
+                "--use_seed", 
             ],
             "justMyCode": false
         },

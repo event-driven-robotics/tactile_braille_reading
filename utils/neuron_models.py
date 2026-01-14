@@ -57,24 +57,60 @@ ste_fn = STEFunction.apply
 
 class SurrGradSpike(torch.autograd.Function):
     """
-    Here we implement our spiking nonlinearity which also implements
-    the surrogate gradient. By subclassing torch.autograd.Function,
-    we will be able to use all of PyTorch's autograd functionality.
-    Here we use the normalized negative part of a fast sigmoid
-    as this was done in Zenke & Ganguli (2018).
+    Spiking nonlinearity with surrogate gradient for differentiable spike generation.
+    
+    Implements a step function in the forward pass (binary spike output) with a
+    surrogate gradient in the backward pass for gradient-based learning. Uses the
+    normalized negative part of a fast sigmoid as surrogate gradient, following
+    Zenke & Ganguli (2018).
+    
+    The scale parameter controls the steepness of the surrogate gradient:
+    - Higher scale: steeper gradient (sharper spike threshold)
+    - Lower scale: smoother gradient (more gradual changes)
+    
+    Class Attributes
+    ----------------
+    scale : float
+        Surrogate gradient scale factor (default: 15.0). Controls the steepness
+        of the surrogate gradient in the backward pass.
+    threshold : float
+        Spike threshold (default: 0). Membrane potential above this value triggers
+        a spike (output = 1.0).
     """
 
     scale = 15.0
     threshold = 0
 
     @staticmethod
-    def forward(ctx, input):
+    def forward(ctx, input, scale=None):
         """
-        In the forward pass we compute a step function of the input Tensor
-        and return it. ctx is a context object that we use to stash information which
-        we need to later backpropagate our error signals. To achieve this we use the
-        ctx.save_for_backward method.
+        Forward pass: compute step function of input.
+        
+        In the forward pass, computes a step function where spikes occur when the
+        input exceeds the threshold. The context saves the input and scale for
+        use in the backward pass.
+
+        Parameters
+        ----------
+        input : torch.Tensor
+            Membrane potential tensor (any shape).
+        scale : float, optional
+            Surrogate gradient scale factor. If provided, overrides the class
+            attribute for this forward-backward pair. If None, uses the class
+            attribute value.
+
+        Returns
+        -------
+        torch.Tensor
+            Binary spike output (1.0 where input > threshold, 0.0 elsewhere),
+            same shape as input.
         """
+        # Store scale for backward pass if provided
+        if scale is not None:
+            ctx.scale = scale
+        else:
+            ctx.scale = SurrGradSpike.scale
+            
         ctx.save_for_backward(input)
         out = torch.zeros_like(input)
         out[input > SurrGradSpike.threshold] = 1.0
@@ -83,18 +119,58 @@ class SurrGradSpike(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """
-        In the backward pass we receive a Tensor we need to compute the
-        surrogate gradient of the loss with respect to the input.
-        Here we use the normalized negative part of a fast sigmoid
-        as this was done in Zenke & Ganguli (2018).
+        Backward pass: compute surrogate gradient.
+        
+        Uses the normalized negative part of a fast sigmoid as surrogate gradient:
+            grad = grad_output / (scale * |input| + 1)^2
+        
+        This allows gradient flow through the non-differentiable spike function,
+        enabling backpropagation-based learning.
+
+        Parameters
+        ----------
+        grad_output : torch.Tensor
+            Gradient from the next layer (same shape as forward output).
+
+        Returns
+        -------
+        tuple
+            (grad_input, grad_scale) where:
+            - grad_input : gradient w.r.t. input (same shape as input)
+            - grad_scale : None (scale parameter is not differentiable)
         """
         input, = ctx.saved_tensors
         grad_input = grad_output.clone()
-        grad = grad_input/(SurrGradSpike.scale*torch.abs(input)+1.0)**2
-        return grad
+        grad = grad_input / (ctx.scale * torch.abs(input) + 1.0) ** 2
+        return grad, None  # Return None for scale gradient
 
 
-spike_fn = SurrGradSpike.apply
+def spike_fn(input, scale=None):
+    """
+    Apply SurrGradSpike function with optional scale parameter.
+    
+    Parameters
+    ----------
+    input : torch.Tensor
+        Membrane potential tensor.
+    scale : float, optional
+        Surrogate gradient scale factor. If None, uses default class attribute.
+    
+    Returns
+    -------
+    torch.Tensor
+        Binary spike output.
+        
+    Examples
+    --------
+    >>> mem = torch.randn(32, 100)
+    >>> spikes = spike_fn(mem)  # Use default scale (15.0)
+    >>> spikes = spike_fn(mem, scale=20.0)  # Use custom scale
+    """
+    if scale is not None:
+        return SurrGradSpike.apply(input, scale)
+    else:
+        return SurrGradSpike.apply(input, None)
 
 
 class LI:
@@ -717,7 +793,7 @@ class feedforward_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, use_eprop=False, use_linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, use_eprop=False, use_linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None):
         """
         Initialize feedforward spiking layer.
 
@@ -745,6 +821,8 @@ class feedforward_layer:
             Data type for tensors (default: torch.float64)
         ref_per : int or None, optional
             Refractory period duration in timesteps (default: None, disabled)
+        gamma : float, optional
+            Surrogate gradient scale factor for spike function (default: None, uses class default)
         """
         # Network dimensions
         self.nb_inputs = nb_inputs
@@ -761,6 +839,9 @@ class feedforward_layer:
         # Learning and simulation flags
         self.use_eprop = use_eprop
         self.use_linear_decay = use_linear_decay
+
+        # Surrogate gradient parameter
+        self.gamma = gamma  # Scale factor for surrogate gradient
 
         # Device and dtype
         self.device = device
@@ -887,8 +968,8 @@ class feedforward_layer:
                 out = torch.zeros_like(mthr)
                 out[mthr > 0] = 1
             else:
-                # For BPTT, use surrogate gradient
-                out = spike_fn(mthr)
+                # For BPTT, use surrogate gradient with gamma parameter
+                out = spike_fn(mthr, scale=self.gamma)
             rst = out.detach()
 
             # update the correct counter
@@ -972,7 +1053,7 @@ class recurrent_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, use_eprop=False, use_linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, use_eprop=False, use_linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None):
         """
         Initialize recurrent spiking layer.
 
@@ -1002,6 +1083,8 @@ class recurrent_layer:
             Data type for tensors (default: torch.float64)
         ref_per : int or None, optional
             Refractory period duration in timesteps (default: None, disabled)
+        gamma : float, optional
+            Surrogate gradient scale factor for spike function (default: None, uses class default)
         """
         # Network dimensions
         self.nb_inputs = nb_inputs
@@ -1019,6 +1102,9 @@ class recurrent_layer:
         # Learning and simulation flags
         self.use_eprop = use_eprop
         self.use_linear_decay = use_linear_decay
+
+        # Surrogate gradient parameter
+        self.gamma = gamma  # Scale factor for surrogate gradient
 
         # Device and dtype
         self.device = device
@@ -1157,8 +1243,8 @@ class recurrent_layer:
                 out = torch.zeros_like(mthr)
                 out[mthr > 0] = 1
             else:
-                # For BPTT, use surrogate gradient
-                out = spike_fn(mthr)
+                # For BPTT, use surrogate gradient with gamma parameter
+                out = spike_fn(mthr, scale=self.gamma)
             rst = out.detach()  # We do not want to backprop through the reset
 
             if self.ref_per is not None:

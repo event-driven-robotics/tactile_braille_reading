@@ -13,7 +13,6 @@ import pickle as pkl
 
 import matplotlib.pyplot as plt
 import numpy as np
-from tqdm import tqdm
 
 data_path = "data/100Hz"
 file_name = "mechanoreceptor_encoded.pkl"

@@ -9,7 +9,7 @@ braille letter classification with detailed metrics and diagnostic visualization
 
 Key Components:
 - compute_classification_accuracy: Evaluate network performance on datasets
-- plot_training_perfromance: Visualize training/test accuracy and loss over epochs
+- plot_training_performance: Visualize training/test accuracy and loss over epochs
 - plot_confusion_matrix: Generate confusion matrix heatmaps from predictions
 - get_network_activity: Record spike trains from all network layers
 - plot_network_activity: Create raster plots of neuronal spike activity
@@ -30,7 +30,7 @@ import pandas as pd
 import seaborn as sn
 import torch
 from sklearn.metrics import confusion_matrix
-from utils.snn import compute_winning_neuron, run_snn
+from .snn import compute_winning_neuron, run_snn
 from torch.utils.data import DataLoader, TensorDataset
 
 
@@ -149,7 +149,108 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, params
     return mean_accs, trues, preds
 
 
-def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
+def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
+    """
+    Visualize training performance for a single training run.
+
+    Creates a two-panel figure showing training/test accuracies and training loss over epochs
+    for a single training run.
+
+    Parameters
+    ----------
+    path : str
+        File path (without extension) where the PDF figure will be saved
+        Example: '/path/to/figures/training_performance'
+        Output: '/path/to/figures/training_performance.pdf'
+
+    acc_train : np.ndarray
+        Training accuracies with shape [n_epochs]
+        Values should be in range [0.0, 1.0] (converted to % internally)
+
+    acc_test : np.ndarray
+        Test accuracies with shape [n_epochs]
+        Values should be in range [0.0, 1.0] (converted to % internally)
+
+    loss_train : np.ndarray
+        Training loss values with shape [n_epochs]
+        Typically positive values (NLL loss + regularization)
+
+    Returns
+    -------
+    None
+        Saves figure to {path}.pdf and closes the figure
+
+    Notes
+    -----
+    **Figure Layout:**
+    - Figure size: 8x12 inches (portrait orientation)
+    - Top panel: Accuracy plot (training and test)
+    - Bottom panel: Loss plot (training only)
+
+    **Top Panel (Accuracy):**
+    - Y-axis: Accuracy in percentage (0-105%)
+    - Shaded regions: ± 1 standard deviation around mean
+    - Dashed lines: Mean accuracy across all runs
+    - Solid lines: Best trial (trial with maximum test accuracy)
+    - Colors: Blue for training, Orange/Red for test
+    - Legend: Shows mean, std, and best trial
+
+    **Bottom Panel (Loss):**
+    - Y-axis: Loss value (auto-scaled, starting at 0)
+    - Shaded region: ± 1 standard deviation around mean
+    - Dashed line: Mean loss across all runs
+    - Solid line: Loss from best trial (same trial as accuracy plot)
+    - Color: Blue for training loss
+
+    **Best Trial Selection:**
+    - Best trial is defined as the run with maximum test accuracy
+    - If multiple runs achieve same max, selects first occurrence
+    - Both accuracy and loss plots show data from this same trial
+
+    **Output Format:**
+    - Saved as PDF for publication-ready vector graphics
+    - Figure is closed after saving to free memory
+
+    Examples
+    --------
+    >>> # Single run visualization
+    >>> acc_train = np.array([0.5, 0.6, 0.7, 0.8])  # shape: [4]
+    >>> acc_test = np.array([0.45, 0.55, 0.65, 0.75])
+    >>> loss_train = np.array([2.0, 1.5, 1.0, 0.5])
+    >>> plot_training_performance('./figures/single_run', acc_train, acc_test, loss_train)
+
+    See Also
+    --------
+    plot_training_performance_repetitive_runs : For multiple training runs
+    train : Function that generates the training history data
+    """
+    fig = plt.figure(figsize=(8, 12))
+    ax = fig.add_subplot(2, 1, 1)
+    # Plot training and test accuracy
+    ax.plot(range(1, len(acc_train)+1),
+            100*np.array(acc_train), color='blue')
+    ax.plot(range(1, len(acc_test)+1), 100 *
+            np.array(acc_test), color='orangered')
+    ax.set_ylabel("Accuracy (%)")
+    ax.set_ylim((0, 105))
+    ax.set_title("Accuracy")
+    ax.legend(["Training", "Test"], loc='lower right')
+
+    ax = fig.add_subplot(2, 1, 2)
+    ax.plot(range(1, len(loss_train)+1),
+            loss_train, color='blue')
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_ylim((0, np.max(loss_train)*1.1))
+    ax.legend(["Training loss"])
+    ax.set_title("Training loss")
+    fig.align_ylabels()
+    fig.tight_layout()
+    fig.savefig(f"{path}.pdf")
+    plt.close(fig)
+
+
+def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
     """
     Visualize training performance with accuracy and loss plots across one or multiple runs.
 
@@ -217,29 +318,34 @@ def plot_training_perfromance(path: str, acc_train: np.ndarray, acc_test: np.nda
 
     Examples
     --------
-    >>> # Single run visualization
-    >>> acc_train = np.array([[0.5, 0.6, 0.7, 0.8]])  # shape: [1, 4]
-    >>> acc_test = np.array([[0.45, 0.55, 0.65, 0.75]])
-    >>> loss_train = np.array([[2.0, 1.5, 1.0, 0.5]])
-    >>> plot_training_perfromance('./figures/single_run', acc_train, acc_test, loss_train)
-
     >>> # Multiple runs with statistics
     >>> acc_train = np.random.rand(10, 100)  # 10 runs, 100 epochs
     >>> acc_test = np.random.rand(10, 100)
     >>> loss_train = np.random.rand(10, 100) * 2
-    >>> plot_training_perfromance('./figures/multi_run', acc_train, acc_test, loss_train)
+    >>> plot_training_performance_repetitive_runs('./figures/multi_run', acc_train, acc_test, loss_train)
 
     See Also
     --------
+    plot_training_performance : For single training run
     train : Function that generates the training history data
     """
+    # Ensure inputs are 2D arrays
+    if acc_train.ndim == 1:
+        acc_train = acc_train.reshape(1, -1)
+    if acc_test.ndim == 1:
+        acc_test = acc_test.reshape(1, -1)
+    if loss_train.ndim == 1:
+        loss_train = loss_train.reshape(1, -1)
+    
     # calc mean and std
     acc_mean_train, acc_std_train = np.mean(
         acc_train, axis=0), np.std(acc_train, axis=0)
     acc_mean_test, acc_std_test = np.mean(
         acc_test, axis=0), np.std(acc_test, axis=0)
-    best_trial, best_val_idx = np.where(np.max(acc_test) == acc_test)
-    best_trial, best_val_idx = best_trial[0], best_val_idx[0]
+    
+    # Find best trial (highest final test accuracy)
+    best_trial = np.argmax(np.max(acc_test, axis=1))
+    
     loss_train_mean, loss_train_std = np.mean(
         loss_train, axis=0), np.std(loss_train, axis=0)
 
@@ -489,7 +595,7 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
     """
     generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
                            shuffle=False, num_workers=4)
-    accs = []
+
     spk_rec_readout_list = []
     spk_rec_hidden_list = []
     for x_local, y_local in generator:
@@ -501,15 +607,10 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
 
         _, spk_rec_hidden, _ = recs
 
-        # Use compute_winning_neuron - always use all timesteps for network activity analysis
-        _, neuron_idc = compute_winning_neuron(spk_rec_readout, params=params)
-
-        tmp = np.mean((y_local == neuron_idc).detach().cpu().numpy())
-        accs.append(tmp)
         spk_rec_readout_list.append(spk_rec_readout.detach().cpu().numpy())
         spk_rec_hidden_list.append(spk_rec_hidden.detach().cpu().numpy())
 
-    return accs, spk_rec_readout_list, spk_rec_hidden_list
+    return spk_rec_readout_list, spk_rec_hidden_list
 
 
 def plot_network_activity(spr_recs: list, layer_names: list, params: dict, figname: str = './figures') -> None:
@@ -561,8 +662,8 @@ def plot_network_activity(spr_recs: list, layer_names: list, params: dict, figna
     **Raster Plot Details:**
     - X-axis: Time in seconds (0 to max_time * 0.001)
     - Y-axis: Neuron ID (0 to n_neurons-1, one row per neuron)
-    - Each spike: Vertical black line at spike time
-    - Line width: 0.3 for visibility without overlap
+    - Each spike: Vertical tick mark at spike time
+    - Marker: '|' (vertical line) with size 8 for visibility
     - Color: Black for all spikes
 
     **Time Conversion:**
@@ -575,10 +676,9 @@ def plot_network_activity(spr_recs: list, layer_names: list, params: dict, figna
     - All neurons displayed regardless of activity
     - Useful for identifying silent/dead neurons
 
-    **Performance Considerations:**
-    - Uses matplotlib.eventplot for efficient visualization
-    - Commented optimization code available for very large datasets
-    - Pre-groups spikes by neuron for faster plotting
+    **Performance:**
+    - Uses scatter plot with vertical line markers for efficient visualization
+    - Direct numpy indexing for fast spike detection
 
     **Output Format:**
     - Saved as PDF for publication-ready vector graphics
@@ -596,48 +696,22 @@ def plot_network_activity(spr_recs: list, layer_names: list, params: dict, figna
     nb_layers = len(layer_names)
     fig = plt.figure()
     for counter, name in enumerate(layer_names):
-        # TODO plot hidden layer activity
         spk_per_layer = spr_recs[counter]
         num_neurons = spk_per_layer.shape[1]
         ax = fig.add_subplot(nb_layers, 1, counter+1)
 
-        spikes_per_neuron = []
-        for neuron_idx in range(spk_per_layer.shape[-1]):
-            spk_times_per_neuron = np.where(spk_per_layer[:, neuron_idx])[0]
-            spk_times_per_neuron = spk_times_per_neuron * \
-                0.001*int(params['time_bin_size'])
-            spikes_per_neuron.append(spk_times_per_neuron)
-
-        # # TODO possible optimization
-        # # Find the indices of spikes (value 1)
-        # spike_times, neuron_ids = np.where(spk_per_layer == 1)
-        # # Sort by neuron id and then by spike time
-        # # sorted_indices = np.lexsort((spike_times, neuron_ids))
-        # # # Get the sorted spike times and neuron ids
-        # # sorted_spike_times = spike_times[sorted_indices]  # contains the neuron IDs
-        # # sorted_neuron_ids = neuron_ids[sorted_indices]  # contains the according spike times
-        # # # Group indices by neuron
-        # # spikes_per_neuron = {neuron: sorted_spike_times[sorted_neuron_ids == neuron] for neuron in np.unique(sorted_neuron_ids)}
-
-        # # Sort by neuron id and then by spike time
-        # sorted_indices = np.lexsort((spike_times, neuron_ids))
-
-        # # Get the sorted spike times and neuron ids
-        # sorted_spike_times = spike_times[sorted_indices]
-        # sorted_neuron_ids = neuron_ids[sorted_indices]
-
-        # # Get the total number of neurons
-        # num_neurons = spk_per_layer.shape[1]
-
-        # # Include empty lists for neurons with no spikes
-        # spikes_per_neuron = {neuron: sorted_spike_times[sorted_neuron_ids == neuron].tolist() for neuron in range(num_neurons)}
-
-        # TODO possible colorcode by nb spikes
-        # print(len(spikes_per_neuron))
-        # print(len(range(num_neurons)))
-        ax.eventplot(spikes_per_neuron, orientation="horizontal",
-                     lineoffsets=range(num_neurons), linewidth=0.3, colors="k")
+        # Find all spike times and corresponding neuron IDs
+        spike_times, neuron_ids = np.where(spk_per_layer == 1)
+        neuron_ids += 1  # Shift neuron IDs to start from 1
+        
+        # Convert spike times from timesteps to seconds
+        spike_times_sec = spike_times * 0.001 * int(params['time_bin_size'])
+        
+        # Plot spikes as vertical tick marks using scatter
+        ax.scatter(spike_times_sec, neuron_ids, marker='|', s=8, c='k', linewidths=0.5)
+        
         ax.set_xlim(0, params["max_time"] * 0.001)
+        ax.set_ylim(-0.5, num_neurons + 0.5)
         ax.set_ylabel("Neuron ID")
         ax.set_title(f"{name} activity")
     ax.set_xlabel("Time [sec]")

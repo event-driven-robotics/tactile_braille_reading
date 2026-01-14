@@ -31,11 +31,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.snn import (compute_winning_neuron, feedforward_layer, recurrent_layer,
-                 run_snn, ste_fn)
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-from utils.validate_snn import compute_classification_accuracy
+
+from .neuron_models import feedforward_layer, recurrent_layer, ste_fn
+from .snn import compute_winning_neuron, run_snn
+from .validate_snn import compute_classification_accuracy
 
 
 def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset) -> tuple:
@@ -225,11 +226,11 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     # Spiking network
     # recurrent layer
     rec_layer = recurrent_layer(batch_size=params["batch_size"], nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_weight_scale=fwd_weight_scale, rec_weight_scale=rec_weight_scale, alpha=alpha,
-                                beta=beta_rec, use_eprop=params["use_eprop"], use_linear_decay=params["use_linear_decay"], device=params["device"], dtype=params["dtype_torch"], ref_per=params["ref_per_timesteps"])
+                                beta=beta_rec, use_eprop=params["use_eprop"], use_linear_decay=params["use_linear_decay"], device=params["device"], dtype=params["dtype_torch"], ref_per=params["ref_per_timesteps"], gamma=params["gamma"])
 
     # readout layer
     ff_layer = feedforward_layer(batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta_rec,
-                                 use_eprop=params["use_eprop"], use_linear_decay=params["use_linear_decay"], device=params["device"], dtype=params["dtype_torch"], ref_per=params["ref_per_timesteps"])
+                                 use_eprop=params["use_eprop"], use_linear_decay=params["use_linear_decay"], device=params["device"], dtype=params["dtype_torch"], ref_per=params["ref_per_timesteps"], gamma=params["gamma"])
 
     layers = [rec_layer, ff_layer]
 

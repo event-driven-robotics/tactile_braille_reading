@@ -35,21 +35,24 @@ Date: January 13, 2026
 """
 
 import argparse
+import json
 import os
 import sys
-
-import numpy as np
-import torch
+from datetime import datetime
 
 # Add parent directory to path to import from utils
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+import numpy as np
+import torch
 
 from utils.data_loader import load_and_extract
 from utils.train_snn import build_and_train
 from utils.validate_snn import (compute_classification_accuracy,
                                 get_network_activity, plot_confusion_matrix,
                                 plot_network_activity,
-                                plot_training_perfromance)
+                                plot_training_performance,
+                                plot_training_performance_repetitive_runs)
 
 # Configure PyTorch memory allocator for better GPU memory management
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
@@ -85,9 +88,11 @@ def parse_arguments():
                         help='Create validation set from training data')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
+    parser.add_argument('--repetitions', type=int, default=1,
+                        help='Number of repetitions of training runs')
     parser.add_argument('--batch_size', type=int, default=128,
                         help='Training batch size')
-    parser.add_argument('--learning_rate', type=float, default=0.001,
+    parser.add_argument('--learning_rate', type=float, default=0.0001,
                         help='Learning rate for optimizer')
 
     # Network architecture
@@ -123,7 +128,7 @@ def parse_arguments():
     # Regularization
     parser.add_argument('--reg_spikes', type=float, default=0.0015,
                         help='L1 regularization coefficient for spikes')
-    parser.add_argument('--reg_neurons', type=float, default=0.0,
+    parser.add_argument('--reg_neurons', type=float, default=0.001,
                         help='L2 regularization coefficient for neurons')
 
     # Learning algorithm
@@ -204,6 +209,16 @@ path = './figures'
 if not os.path.exists(path):
     os.makedirs(path)
 
+# Create timestamped subfolders for this experiment run
+run_id = datetime.now().strftime('%Y%m%d_%H%M')
+figures_dir = os.path.join('./figures', run_id)
+models_dir = os.path.join('./model', run_id)
+results_dir = os.path.join('./results', run_id)
+os.makedirs(figures_dir, exist_ok=True)
+os.makedirs(models_dir, exist_ok=True)
+os.makedirs(results_dir, exist_ok=True)
+
+
 ##############################################################################
 # DEVICE CONFIGURATION
 ##############################################################################
@@ -237,7 +252,6 @@ if params['use_weight_quantization']:
     params['possible_weights'] = torch.floor(
         possible_weights * factor) / factor
 
-
 ##############################################################################
 # RANDOM SEED CONFIGURATION (For Reproducibility)
 ##############################################################################
@@ -254,6 +268,21 @@ if params["use_seed"]:
     print("Seed set to {}".format(seed))
 else:
     print("Shuffle data randomly")
+
+# Save experiment parameters to JSON for reproducibility
+params_to_save = params.copy()
+# Convert non-serializable objects to string representations
+params_to_save['device'] = str(params['device'])
+params_to_save['dtype_torch'] = str(params['dtype_torch'])
+if 'possible_weights' in params_to_save:
+    params_to_save['possible_weights'] = 'Quantized weight array (256 levels)'
+params_to_save['run_id'] = run_id
+params_to_save['timestamp'] = datetime.now().isoformat()
+
+params_file = os.path.join(results_dir, 'experiment_parameters.json')
+with open(params_file, 'w') as f:
+    json.dump(params_to_save, f, indent=4, sort_keys=True)
+print(f"Parameters saved to {params_file}")
 
 ##############################################################################
 # DATA FILE CONFIGURATION
@@ -289,149 +318,177 @@ if __name__ == '__main__':
 
     nb_hidden = params['nb_hidden']
 
+    loss_hist_repetition = []
+    accs_hist_repetition = []
+
     # Define paths for saving results and models
-    results_file = f"./results/braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}.npz"
+    results_file = os.path.join(
+        results_dir, f"braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}.npz")
 
-    ##########################################################################
-    # DATA LOADING AND PREPROCESSING
-    ##########################################################################
-
-    # Load and preprocess tactile sensor data
-    ds_train, ds_test, ds_validation, labels = load_and_extract(
-        params=params, file_name=file_name, letter_written=letters)
-
-    # Clear GPU cache before training
-    torch.cuda.empty_cache()
-
-    ##########################################################################
-    # DATASET INFORMATION
-    ##########################################################################
-
-    # Print comprehensive dataset statistics
-    print("Number of training data %i." % len(ds_train))
-    print("Number of testing data %i." % len(ds_test))
-    if params["use_validation"]:
-        print("Number of validation data %i." % len(ds_validation))
-    print("Number of outputs %i." % len(np.unique(labels)))
-    print("Number of input channels %i." % len(params["selected_channels"]))
-    print("Number of hidden neurons %i." % nb_hidden)
-    print("Number of timesteps %i." % params["data_steps"])
-    print("Delayed output ", params["delayed_output"])
-    if params["no_synapse"]:
-        print(f"No synapse dynamics.")
-    if params["lower_bound"]:
-        print(f"Clamp membrane voltage to: {params['lower_bound']}.")
-    if params["use_linear_decay"]:
-        print(f"Use linear decay.")
-    else:
-        print(f"Use exponential decay.")
-    if params["ref_per_timesteps"]:
+    for repetition in range(params['repetitions']):
         print(
-            f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
-    print("Input duration %fs" % (params["data_steps"]*params["time_step"]))
-    print("---------------------------\n")
+            f"\n{'#'*20} Starting repetition {repetition + 1} of {params['repetitions']} {'#'*20}\n")
 
-    ##########################################################################
-    # NETWORK TRAINING
-    ##########################################################################
+        ##########################################################################
+        # DATA LOADING AND PREPROCESSING
+        ##########################################################################
 
-    # Build network architecture and train with specified algorithm
-    loss_hist_epochs, acc_hist, best_layers, vars_eprop = build_and_train(
-        params=params, ds_train=ds_train, ds_test=ds_test)
+        # Load and preprocess tactile sensor data
+        ds_train, ds_test, ds_validation, labels = load_and_extract(
+            params=params, file_name=file_name, letter_written=letters)
 
-    ##########################################################################
-    # MODEL EVALUATION
-    ##########################################################################
+        # Clear GPU cache before training
+        torch.cuda.empty_cache()
 
-    # Compute final accuracy and predictions on validation or test set
-    if params["use_validation"]:
-        val_acc, trues, preds = compute_classification_accuracy(
-            dataset=ds_validation, layers=best_layers, params=params)
-    else:
-        val_acc, trues, preds = compute_classification_accuracy(
+        ##########################################################################
+        # DATASET INFORMATION
+        ##########################################################################
+
+        # Print comprehensive dataset statistics
+        print("Number of training data %i." % len(ds_train))
+        print("Number of testing data %i." % len(ds_test))
+        if params["use_validation"]:
+            print("Number of validation data %i." % len(ds_validation))
+        print("Number of outputs %i." % len(np.unique(labels)))
+        print("Number of input channels %i." %
+              len(params["selected_channels"]))
+        print("Number of hidden neurons %i." % nb_hidden)
+        print("Number of timesteps %i." % params["data_steps"])
+        print("Delayed output ", params["delayed_output"])
+        if params["no_synapse"]:
+            print(f"No synapse dynamics.")
+        if params["lower_bound"]:
+            print(f"Clamp membrane voltage to: {params['lower_bound']}.")
+        if params["use_linear_decay"]:
+            print(f"Use linear decay.")
+        else:
+            print(f"Use exponential decay.")
+        if params["ref_per_timesteps"]:
+            print(
+                f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
+        print("Input duration %fs" %
+              (params["data_steps"]*params["time_step"]))
+        print("---------------------------\n")
+
+        ##########################################################################
+        # NETWORK TRAINING
+        ##########################################################################
+
+        # Build network architecture and train with specified algorithm
+        loss_hist_epochs, accs_hist, best_layers, vars_eprop = build_and_train(
+            params=params, ds_train=ds_train, ds_test=ds_test)
+
+        loss_hist_repetition.append(loss_hist_epochs)
+        accs_hist_repetition.append(accs_hist)
+
+        ##########################################################################
+        # MODEL EVALUATION
+        ##########################################################################
+
+        # Compute final accuracy and predictions on validation or test set
+        if params["use_validation"]:
+            val_acc, trues, preds = compute_classification_accuracy(
+                dataset=ds_validation, layers=best_layers, params=params)
+        else:
+            val_acc, trues, preds = compute_classification_accuracy(
+                dataset=ds_test, layers=best_layers, params=params)
+
+        ##########################################################################
+        # SAVE RESULTS
+        ##########################################################################
+
+        # Save trained model weights
+        torch.save(
+            best_layers, os.path.join(models_dir, f'best_model_{nb_hidden}_neurons_{str_letters}.pt'))
+
+        # Save training metrics and hyperparameters
+        np.savez(results_file,
+                 acc_train=accs_hist[0],
+                 acc_test=accs_hist[1],
+                 loss_train=loss_hist_epochs,
+                 val_acc=val_acc,
+                 repetition=repetition + 1,
+                 nb_hidden=nb_hidden,
+                 nb_epochs=params['epochs'],
+                 learning_rate=params['learning_rate'],
+                 batch_size=params['batch_size'],
+                 letters=str_letters,
+                 use_eprop=params['use_eprop'],
+                 run_id=run_id)
+        print(f"Results saved to {results_file}")
+
+        ##########################################################################
+        # GENERATE VISUALIZATIONS
+        ##########################################################################
+
+        # Plot training curves (loss and accuracy over epochs)
+        plot_training_performance(
+            path=os.path.join(figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_rep_{repetition+1}"),
+            acc_train=np.array(accs_hist[0]),
+            acc_test=np.array(accs_hist[1]),
+            loss_train=np.array(loss_hist_epochs))
+
+        # Generate confusion matrix showing classification performance per letter
+        plot_confusion_matrix(
+            path=os.path.join(figures_dir, f"best_model_{nb_hidden}_neurons_{str_letters}_confusion_matrix_rep_{repetition+1}"),
+            trues=trues,
+            preds=preds,
+            labels=letters)
+
+        ##########################################################################
+        # NETWORK ACTIVITY VISUALIZATION (Raster Plots)
+        ##########################################################################
+
+        # Extract spike activity from hidden and readout layers
+        spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
             dataset=ds_test, layers=best_layers, params=params)
 
-    ##########################################################################
-    # SAVE RESULTS
-    ##########################################################################
+        # Generate raster plots showing spike timing patterns
+        layer_names = ["Hidden layer", "Readout layer"]
+        total_nb_batches = len(spk_rec_readout_array)
 
-    # Save trained model weights
-    torch.save(
-        best_layers, f'./model/best_model_{nb_hidden}_neurons_{str_letters}.pt')
+        # Randomly select batches to visualize (or use all if fewer than requested)
+        if NB_BATCHES_TO_PLOT > total_nb_batches:
+            batch_selection = range(total_nb_batches)
+        else:
+            batch_selection = np.random.choice(
+                total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
 
-    # Save training metrics and hyperparameters
-    np.savez(results_file,
-             acc_train=acc_hist[0],
-             acc_test=acc_hist[1],
-             loss_train=loss_hist_epochs,
-             nb_hidden=nb_hidden)
-    print(f"Results saved to {results_file}")
+        # Generate raster plots for selected batches and trials
+        for batch_idx in batch_selection:
+            spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
+            spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
 
-    ##########################################################################
-    # GENERATE VISUALIZATIONS
-    ##########################################################################
+            total_nb_trials = len(spk_rec_readout_batch)
+
+            # Randomly select trials to visualize within each batch
+            if NB_TRIALS_TO_PLOT > total_nb_trials:
+                trial_selection = range(total_nb_trials)
+            else:
+                trial_selection = np.random.choice(
+                    total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
+
+            # Create raster plot for each selected trial
+            for trial_idx in trial_selection:
+                spr_recs = [spk_rec_hidden_batch[trial_idx],
+                            spk_rec_readout_batch[trial_idx]]
+                plot_network_activity(spr_recs=spr_recs, layer_names=layer_names, params=params,
+                                      figname=os.path.join(figures_dir, f"best_model_{nb_hidden}_neurons_{str_letters}_network_activity_batch_{batch_idx}_trial_{trial_idx}_rep_{repetition+1}"))
+
+        ##########################################################################
+        # CLEANUP AND COMPLETION
+        ##########################################################################
+
+        # Free GPU memory
+        torch.cuda.empty_cache()
+
+        print(f"\n{'='*60}")
+        print(f"Training complete! Results saved to {results_file}")
+        print(f"{'='*60}")
 
     # Plot training curves (loss and accuracy over epochs)
-    plot_training_perfromance(
-        path=f"./figures/best_model_{nb_hidden}_neurons_{str_letters}_training_performance",
-        acc_train=np.array([acc_hist[0]]),
-        acc_test=np.array([acc_hist[1]]),
-        loss_train=np.array([loss_hist_epochs]))
-
-    # Generate confusion matrix showing classification performance per letter
-    plot_confusion_matrix(
-        path=f"./figures/best_model_{nb_hidden}_neurons_{str_letters}_confusion_matrix",
-        trues=trues,
-        preds=preds,
-        labels=letters)
-
-    ##########################################################################
-    # NETWORK ACTIVITY VISUALIZATION (Raster Plots)
-    ##########################################################################
-
-    # Extract spike activity from hidden and readout layers
-    accs, spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
-        dataset=ds_test, layers=best_layers, params=params)
-
-    # Generate raster plots showing spike timing patterns
-    layer_names = ["Hidden layer", "Readout layer"]
-    total_nb_batches = len(accs)
-
-    # Randomly select batches to visualize (or use all if fewer than requested)
-    if NB_BATCHES_TO_PLOT > total_nb_batches:
-        batch_selection = range(total_nb_batches)
-    else:
-        batch_selection = np.random.choice(
-            total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
-
-    # Generate raster plots for selected batches and trials
-    for batch_idx in batch_selection:
-        spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
-        spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
-
-        total_nb_trials = len(spk_rec_readout_batch)
-
-        # Randomly select trials to visualize within each batch
-        if NB_TRIALS_TO_PLOT > total_nb_trials:
-            trial_selection = range(total_nb_trials)
-        else:
-            trial_selection = np.random.choice(
-                total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
-
-        # Create raster plot for each selected trial
-        for trial_idx in trial_selection:
-            spr_recs = [spk_rec_hidden_batch[trial_idx],
-                        spk_rec_readout_batch[trial_idx]]
-            plot_network_activity(spr_recs=spr_recs, layer_names=layer_names, params=params,
-                                  figname=f"./figures/best_model_{nb_hidden}_neurons_{str_letters}_network_activity_batch_{batch_idx}_trial_{trial_idx}")
-
-    ##########################################################################
-    # CLEANUP AND COMPLETION
-    ##########################################################################
-
-    # Free GPU memory
-    torch.cuda.empty_cache()
-
-    print(f"\n{'='*60}")
-    print(f"Training complete! Results saved to {results_file}")
-    print(f"{'='*60}")
+    plot_training_performance_repetitive_runs(
+        path=os.path.join(figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
+        acc_train=np.array(accs_hist_repetition)[:, 0],
+        acc_test=np.array(accs_hist_repetition)[:, 1],
+        loss_train=np.array(loss_hist_repetition))

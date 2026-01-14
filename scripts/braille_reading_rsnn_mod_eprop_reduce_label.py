@@ -120,9 +120,9 @@ def parse_arguments():
                         help='Lower bound for membrane potential')
 
     # Weight parameters
-    parser.add_argument('--fwd_weight_scale', type=float, default=10,
+    parser.add_argument('--fwd_weight_scale', type=float, default=1,
                         help='Forward weight initialization scale')
-    parser.add_argument('--weight_scale_factor', type=float, default=0.2,
+    parser.add_argument('--weight_scale_factor', type=float, default=0.02,
                         help='Recurrent weight scale factor')
 
     # Regularization

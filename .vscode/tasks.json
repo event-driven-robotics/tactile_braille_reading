@@ -56,9 +56,9 @@
             "args": [
                 "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
                 "--epochs", "50",
-                "--nb_hidden", "50",
+                "--nb_hidden", "150",
                 "--batch_size", "128",
-                "--learning_rate", "0.001",
+                "--learning_rate", "0.0005",
                 "--letters", "A", "B",
                 "--repetitions", "3",
             ],
@@ -94,11 +94,16 @@
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
                 "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
-                "--debug",
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
-                "--use_seed"
+                "--learning_rate", "0.0001",
+                "--letters", "A", "B",
+                "--repetitions", "3",
+                "--debug",
+                "--reg_spikes", "0.0",
+                "--reg_neurons", "0.0",
+                "--use_seed", 
             ],
             "problemMatcher": [],
             "presentation": {

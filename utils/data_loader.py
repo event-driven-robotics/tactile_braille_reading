@@ -265,7 +265,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     labels = torch.tensor(labels, dtype=torch.long)
 
     if params['debug']:
-        print(f"\n=== Label Distribution BEFORE Split ===")
+        print(f"\n=== Label Distribution Before Split ===")
         unique_labels, counts = np.unique(
             labels.cpu().numpy(), return_counts=True)
         total_samples = len(labels)
@@ -299,7 +299,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
         ds_validation = None
 
     if params['debug']:
-        print(f"\n=== Label Distribution AFTER Split ===")
+        print(f"\n=== Label Distribution After Split ===")
         print(f"\nTraining set:")
         unique_train, counts_train = np.unique(
             y_train.cpu().numpy(), return_counts=True)

@@ -552,7 +552,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             # Debug: Print first batch of first epoch to check predictions
             if params['debug'] and count_epoch == 0:
-                tmp = np.mean((y_local == neuron_idc).detach().cpu().numpy())
+                acc_before_update = np.mean((y_local == neuron_idc).detach().cpu().numpy())
                 print(f"\nDebug - First batch:")
                 print(
                     f"  True labels (y_local): {y_local[:min(10, len(y_local))].cpu().numpy()}")
@@ -564,7 +564,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                     f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
                 print(
                     f"  Prediction distribution: 0={torch.sum(neuron_idc==0).item()}, 1={torch.sum(neuron_idc==1).item()}")
-                print(f"  Batch accuracy: {tmp:.4f}")
+                print(f"  Batch accuracy: {acc_before_update:.4f}")
 
                 # Check input data
                 print(f"\n  Input data statistics:")

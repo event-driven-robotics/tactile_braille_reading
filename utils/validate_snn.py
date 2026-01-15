@@ -30,8 +30,9 @@ import pandas as pd
 import seaborn as sn
 import torch
 from sklearn.metrics import confusion_matrix
-from .snn import compute_winning_neuron, run_snn
 from torch.utils.data import DataLoader, TensorDataset
+
+from .snn import compute_winning_neuron, run_snn
 
 
 def compute_classification_accuracy(dataset: TensorDataset, layers: list, params: dict) -> tuple:
@@ -59,13 +60,13 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, params
             Number of samples per batch for inference
         - 'device' : str
             Device for computation ("cuda:0", "cpu", etc.)
-        - 'use_eprop' : bool
+        - 'eprop' : bool
             If True, uses e-prop mode for evaluation
         - 'delayed_output' : int or None
             For e-prop: number of final timesteps to use for prediction
             For BPTT: ignored (always uses all timesteps)
             If None or 0, uses all timesteps
-        - 'use_random_tie_breaking' : bool
+        - 'random_tie_breaking' : bool
             Passed to compute_winning_neuron for tie-breaking logic
 
     Returns
@@ -132,7 +133,7 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, params
                 inputs=x_local, layers=layers, params=params)
 
         # Use compute_winning_neuron with delayed_output handling for e-prop
-        if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
+        if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
             _, neuron_idc = compute_winning_neuron(
                 spk_rec_readout[:, -params["delayed_output"]:, :], params=params)
         else:
@@ -336,16 +337,16 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
         acc_test = acc_test.reshape(1, -1)
     if loss_train.ndim == 1:
         loss_train = loss_train.reshape(1, -1)
-    
+
     # calc mean and std
     acc_mean_train, acc_std_train = np.mean(
         acc_train, axis=0), np.std(acc_train, axis=0)
     acc_mean_test, acc_std_test = np.mean(
         acc_test, axis=0), np.std(acc_test, axis=0)
-    
+
     # Find best trial (highest final test accuracy)
     best_trial = np.argmax(np.max(acc_test, axis=1))
-    
+
     loss_train_mean, loss_train_std = np.mean(
         loss_train, axis=0), np.std(loss_train, axis=0)
 
@@ -520,7 +521,7 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
             Number of samples per batch for inference
         - 'device' : str
             Device for computation ("cuda:0", "cpu", etc.)
-        - 'use_random_tie_breaking' : bool
+        - 'random_tie_breaking' : bool
             Passed to compute_winning_neuron for prediction
         - Other parameters passed to run_snn for forward pass
 
@@ -703,13 +704,14 @@ def plot_network_activity(spr_recs: list, layer_names: list, params: dict, figna
         # Find all spike times and corresponding neuron IDs
         spike_times, neuron_ids = np.where(spk_per_layer == 1)
         neuron_ids += 1  # Shift neuron IDs to start from 1
-        
+
         # Convert spike times from timesteps to seconds
         spike_times_sec = spike_times * 0.001 * int(params['time_bin_size'])
-        
+
         # Plot spikes as vertical tick marks using scatter
-        ax.scatter(spike_times_sec, neuron_ids, marker='|', s=8, c='k', linewidths=0.5)
-        
+        ax.scatter(spike_times_sec, neuron_ids,
+                   marker='|', s=8, c='k', linewidths=0.5)
+
         ax.set_xlim(0, params["max_time"] * 0.001)
         ax.set_ylim(-0.5, num_neurons + 0.5)
         ax.set_ylabel("Neuron ID")

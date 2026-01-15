@@ -58,16 +58,16 @@ ste_fn = STEFunction.apply
 class SurrGradSpike(torch.autograd.Function):
     """
     Spiking nonlinearity with surrogate gradient for differentiable spike generation.
-    
+
     Implements a step function in the forward pass (binary spike output) with a
     surrogate gradient in the backward pass for gradient-based learning. Uses the
     normalized negative part of a fast sigmoid as surrogate gradient, following
     Zenke & Ganguli (2018).
-    
+
     The scale parameter controls the steepness of the surrogate gradient:
     - Higher scale: steeper gradient (sharper spike threshold)
     - Lower scale: smoother gradient (more gradual changes)
-    
+
     Class Attributes
     ----------------
     scale : float
@@ -85,7 +85,7 @@ class SurrGradSpike(torch.autograd.Function):
     def forward(ctx, input, scale=None):
         """
         Forward pass: compute step function of input.
-        
+
         In the forward pass, computes a step function where spikes occur when the
         input exceeds the threshold. The context saves the input and scale for
         use in the backward pass.
@@ -110,7 +110,7 @@ class SurrGradSpike(torch.autograd.Function):
             ctx.scale = scale
         else:
             ctx.scale = SurrGradSpike.scale
-            
+
         ctx.save_for_backward(input)
         out = torch.zeros_like(input)
         out[input > SurrGradSpike.threshold] = 1.0
@@ -120,10 +120,10 @@ class SurrGradSpike(torch.autograd.Function):
     def backward(ctx, grad_output):
         """
         Backward pass: compute surrogate gradient.
-        
+
         Uses the normalized negative part of a fast sigmoid as surrogate gradient:
             grad = grad_output / (scale * |input| + 1)^2
-        
+
         This allows gradient flow through the non-differentiable spike function,
         enabling backpropagation-based learning.
 
@@ -148,19 +148,19 @@ class SurrGradSpike(torch.autograd.Function):
 def spike_fn(input, scale=None):
     """
     Apply SurrGradSpike function with optional scale parameter.
-    
+
     Parameters
     ----------
     input : torch.Tensor
         Membrane potential tensor.
     scale : float, optional
         Surrogate gradient scale factor. If None, uses default class attribute.
-    
+
     Returns
     -------
     torch.Tensor
         Binary spike output.
-        
+
     Examples
     --------
     >>> mem = torch.randn(32, 100)
@@ -318,7 +318,8 @@ class feedforward_layer:
         """
         Initialize feedforward weight matrix.
 
-        Creates and initializes the weight matrix with Gaussian distribution.
+        Creates and initializes the weight matrix with Gaussian distribution 
+        following the Xavier/Glorot Initialization.
 
         Notes
         -----
@@ -581,7 +582,8 @@ class recurrent_layer:
         """
         Initialize feedforward and recurrent weight matrices.
 
-        Creates and initializes both weight matrices with Gaussian distributions.
+        Creates and initializes both weight matrices with Gaussian distributions 
+        following the Xavier/Glorot Initialization.
 
         Notes
         -----
@@ -700,8 +702,8 @@ class recurrent_layer:
         mem_rec = torch.stack(mem_rec, dim=1)
         spk_rec = torch.stack(spk_rec, dim=1)
         return spk_rec, mem_rec
-    
-    
+
+
 class FA_I_mechanoreceptor():
     """
     Models the fast-adapting (FA-I) mechanoreceptor response in tactile sensors.
@@ -795,7 +797,8 @@ class FA_I_mechanoreceptor():
                 # Calculate times
                 times = last_time + np.arange(1, n_events + 1) * dt
                 event_times[idx:idx+len(times)] = times
-                y_arr[idx:idx+len(times)] = channel  # Channel indices start from 0
+                # Channel indices start from 0
+                y_arr[idx:idx+len(times)] = channel
                 # Update last_taxel_value for this channel
                 # NOTE: now we have 'trailing' of event because value at last time is saved and not the possibly lower sample value
                 # self.last_taxel_value[channel] += direction[channel] * \
@@ -890,7 +893,8 @@ class SA_II_mechanoreceptor():
             # Generate event times within the window current_time and last_time taking into last_event_time
 
             if last_event_time + dt > current_time:
-                continue  # No new events if first event is after current time (no projection into the future)
+                # No new events if first event is after current time (no projection into the future)
+                continue
             elif last_event_time + dt < last_time:
                 # set first event to last_time if last event + dt is before last_time (no projection into the past)
                 event_times = np.arange(
@@ -901,9 +905,11 @@ class SA_II_mechanoreceptor():
                     last_event_time + dt, current_time, dt)
 
             if event_times.size > 0:
-                y_arr = np.full(event_times.shape, channel)  # Channel indices start from 0
+                # Channel indices start from 0
+                y_arr = np.full(event_times.shape, channel)
                 # Stack as (N, 2) array
-                new_events = np.vstack((new_events, np.column_stack((event_times, y_arr))))
+                new_events = np.vstack(
+                    (new_events, np.column_stack((event_times, y_arr))))
 
         if new_events.size > 0:
             # Append all new events at once
@@ -1002,7 +1008,8 @@ class SA_II_alt_mechanoreceptor():
             # Generate event times within the window current_time and last_time taking into last_event_time
 
             if last_event_time + dt > current_time:
-                continue  # No new events if first event is after current time (no projection into the future)
+                # No new events if first event is after current time (no projection into the future)
+                continue
             elif last_event_time + dt < last_time:
                 # set first event to last_time if last event + dt is before last_time (no projection into the past)
                 event_times = np.arange(
@@ -1013,9 +1020,11 @@ class SA_II_alt_mechanoreceptor():
                     last_event_time + dt, current_time, dt)
 
             if event_times.size > 0:
-                y_arr = np.full(event_times.shape, channel + 1)  # Channel indices start from 1
+                # Channel indices start from 1
+                y_arr = np.full(event_times.shape, channel + 1)
                 # Stack as (N, 2) array
-                new_events = np.vstack((new_events, np.column_stack((event_times, y_arr))))
+                new_events = np.vstack(
+                    (new_events, np.column_stack((event_times, y_arr))))
 
         if new_events.size > 0:
             # Append all new events at once

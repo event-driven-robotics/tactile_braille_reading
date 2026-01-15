@@ -72,9 +72,9 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
             Ratio of tau_mem to tau_syn (synaptic time constant)
         - 'time_step' : float
             Simulation timestep (seconds)
-        - 'no_synapse' : bool
-            If True, disables synaptic dynamics (alpha=0)
-        - 'use_linear_decay' : bool
+        - 'synapse' : bool
+            If True, enables synaptic dynamics; if False, disables them (alpha=0)
+        - 'linear_decay' : bool
             If True, uses linear membrane decay; if False, uses exponential
         - 'ref_per_timesteps' : int or None
             Refractory period duration in timesteps
@@ -82,7 +82,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
             Minimum membrane potential (clamping threshold)
 
         E-prop Specific:
-        - 'use_eprop' : bool
+        - 'eprop' : bool
             If True, uses e-prop; if False, uses BPTT
         - 'tau_trace' : float
             Eligibility trace time constant for hidden layer (seconds)
@@ -102,7 +102,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
             Number of training epochs
         - 'learning_rate' : float
             Initial learning rate for Adamax optimizer
-        - 'use_weight_quantization' : bool
+        - 'quantize_weights' : bool
             If True, applies weight quantization via STE
         - 'possible_weights' : torch.Tensor
             Discrete weight values for quantization
@@ -145,7 +145,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
             the epoch with highest test accuracy
         - vars_eprop : list
             [beta_trace, beta_trace_out] decay factors for eligibility traces
-            Values are float or None (None if use_eprop=False)
+            Values are float or None (None if eprop=False)
 
     Notes
     -----
@@ -162,7 +162,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     **Neuron Dynamics:**
     - Exponential decay: beta = exp(-dt/tau_mem)
     - Linear decay: beta = 0.005 (fixed decay rate)
-    - Synaptic dynamics: alpha = exp(-dt/tau_syn) or 0 if no_synapse=True
+    - Synaptic dynamics: alpha = exp(-dt/tau_syn) or 0 if synapse=False
 
     **Training Process:**
     - Uses train() function for the main training loop
@@ -199,12 +199,12 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     tau_syn = params['tau_mem']/params['tau_ratio']
     # print("tau_mem: ", params['tau_mem'], "tau_mem recurrent: ", params['tau_mem_rec'],
     #       "tau trace out: ", params['tau_trace_out'], "tau trace: ", params['tau_trace'])
-    if params["no_synapse"]:
+    if not params["synapse"]:
         alpha = 0.0  # here we disable synapse dynamics
     else:
         alpha = float(np.exp(-params["time_step"]/tau_syn))
 
-    if params["use_linear_decay"]:
+    if params["linear_decay"]:
         beta = 0.005  # 0.05 < 0.01 says how much to lose
     else:
         # says how much to keep
@@ -212,12 +212,14 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
         beta_rec = float(np.exp(-params["time_step"]/params['tau_mem_rec'])
                          )  # says how much to keep
 
-    if params["use_eprop"]:
-        beta_trace = float(np.exp(-params["time_step"]/params['tau_trace']))
-        beta_trace_out = float(
+    if params["eprop"]:
+        params['beta_trace'] = float(np.exp(-params["time_step"]/params['tau_trace']))
+        params['beta_trace_out'] = float(
             np.exp(-params["time_step"]/params['tau_trace_out']))
-        vars_eprop = [beta_trace, beta_trace_out]
+        vars_eprop = [params['beta_trace'], params['beta_trace_out']]
     else:
+        params['beta_trace'] = None
+        params['beta_trace_out'] = None
         vars_eprop = [None, None]
 
     fwd_weight_scale = params['fwd_weight_scale']
@@ -297,7 +299,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             Learning rate for Adamax optimizer
 
         Learning Algorithm:
-        - 'use_eprop' : bool
+        - 'eprop' : bool
             If True, uses e-prop (eligibility propagation);
             If False, uses BPTT (backpropagation through time)
         - 'delayed_output' : int or None
@@ -316,7 +318,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             Applied to hidden layer: reg_neurons * mean(sum(sum(spikes_hidden, dim=time), dim=batch)^2)
 
         Weight Quantization:
-        - 'use_weight_quantization' : bool
+        - 'quantize_weights' : bool
             If True, applies straight-through estimator (STE) after each forward pass
         - 'possible_weights' : torch.Tensor
             Discrete weight values for quantization (e.g., [-1, 0, 1])
@@ -365,7 +367,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
         - loss_hist_epochs : list of float
             Training loss values per epoch (length: epochs)
-            Loss includes NLL loss + regularization (for BPTT only)
+            Loss includes NLL loss + regularization (for BPTT only, e-prop computes gradients directly)
         - accs_hist_epochs : list of lists
             [[train_accuracies], [test_accuracies]] per epoch
             train_accuracies: list of float, length: epochs (range [0.0, 1.0])
@@ -477,7 +479,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             spk_rec_readout, recs = run_snn(
                 inputs=x_local, layers=layers, params=params)
             # weight quantization - apply directly to layer weights
-            if params["use_weight_quantization"]:
+            if params["quantize_weights"]:
                 layers[0].ff_weights.data = ste_fn(
                     layers[0].ff_weights, params['possible_weights']).to(params['dtype_torch'])
                 layers[0].rec_weights.data = ste_fn(
@@ -493,7 +495,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             _, spk_rec_hidden, _ = recs
 
             # Use all timesteps for BPTT, optionally use delayed_output window for e-prop
-            if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
+            if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
                 summed_spikes, neuron_idc = compute_winning_neuron(
                     spk_rec_readout[:, -params["delayed_output"]:, :], params=params)
             else:
@@ -501,7 +503,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                     spk_rec_readout=spk_rec_readout, params=params)
 
             # Compute gradients based on selected learning algorithm
-            if params["use_eprop"]:
+            if params["eprop"]:
                 one_hot_encoded = torch.nn.functional.one_hot(
                     y_local, num_classes=len(params['letters']))
                 # E-prop: manual gradient computation via eligibility traces
@@ -513,13 +515,20 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
                 # Compute e-prop gradients
                 mem_rec_hidden, spk_rec_hidden, _ = recs
-                grads_batch(x_local.permute(1, 0, 2), yo.permute(1, 0, 2), one_hot_encoded,
-                            params["gamma"], 1, mem_rec_hidden.permute(
-                                1, 0, 2),
-                            spk_rec_hidden.permute(
-                                1, 0, 2), layers[0].ff_weights,
-                            layers[0].rec_weights, layers[1].ff_weights,
-                            vars_eprop[0], vars_eprop[1])
+                grads_batch(x=x_local.permute(1, 0, 2), 
+                            yo=yo.permute(1, 0, 2), 
+                            yt=one_hot_encoded,
+                            thr=1, 
+                            v=mem_rec_hidden.permute(1, 0, 2),
+                            z=spk_rec_hidden.permute(1, 0, 2), 
+                            w_in=layers[0].ff_weights,
+                            w_rec=layers[0].rec_weights, 
+                            w_out=layers[1].ff_weights,
+                            params=params)
+                
+                # Compute loss for tracking purposes (not used for gradients in e-prop)
+                log_p_y = log_softmax_fn(summed_spikes)
+                loss_val = loss_fn(log_p_y, y_local)
             else:
                 log_p_y = log_softmax_fn(summed_spikes)
 
@@ -552,7 +561,8 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             # Debug: Print first batch of first epoch to check predictions
             if params['debug'] and count_epoch == 0:
-                acc_before_update = np.mean((y_local == neuron_idc).detach().cpu().numpy())
+                acc_before_update = np.mean(
+                    (y_local == neuron_idc).detach().cpu().numpy())
                 print(f"\nDebug - First batch:")
                 print(
                     f"  True labels (y_local): {y_local[:min(10, len(y_local))].cpu().numpy()}")
@@ -645,7 +655,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     return loss_hist_epochs, accs_hist_epochs, best_acc_layers
 
 
-def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: float, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, beta_trace: float, beta_trace_out: float, params: dict) -> None:
+def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, params: dict) -> None:
     """
     Compute weight gradients using e-prop (eligibility propagation) for spiking neural networks.
 
@@ -668,10 +678,6 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
     yt : torch.Tensor
         Target labels (one-hot encoded) with shape [batch, output_units]
         Ground truth class labels in one-hot format
-
-    gamma : float
-        Surrogate gradient scaling factor for the spike function derivative approximation
-        Typical value: 15.0 (controls steepness of surrogate gradient)
 
     thr : int
         Firing threshold for neurons (typically 1.0)
@@ -697,16 +703,6 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
         Hidden-to-output weight matrix with shape [output_units, hidden_neurons]
         Gradients are accumulated in w_out.grad (initialized to zeros if None)
 
-    beta_trace : float
-        Decay factor for eligibility traces of hidden layer connections
-        Computed as exp(-dt/tau_trace) where dt is timestep and tau_trace is trace time constant
-        Controls how long past spike events influence current weight updates
-
-    beta_trace_out : float
-        Decay factor for output eligibility traces
-        Computed as exp(-dt/tau_trace_out) for output layer
-        Typically equal to or larger than beta_trace
-
     params : dict
         Dictionary containing experimental parameters:
         - 'data_steps' : int
@@ -722,6 +718,17 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
         - 'delayed_output' : int or None
             If set, only uses final delayed_output timesteps for gradient computation
             If None or 0, uses all timesteps
+        - 'gamma' : float
+            Surrogate gradient scaling factor for the spike function derivative approximation
+            Typical value: 15.0 (controls steepness of surrogate gradient)
+        - 'beta_trace' : float
+            Decay factor for eligibility traces of hidden layer connections
+            Computed as exp(-dt/tau_trace) where dt is timestep and tau_trace is trace time constant
+            Controls how long past spike events influence current weight updates
+        - 'beta_trace_out' : float
+            Decay factor for output eligibility traces
+            Computed as exp(-dt/tau_trace_out) for output layer
+            Typically equal to or larger than beta_trace
 
     Returns
     -------
@@ -812,16 +819,16 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
     if w_out.grad is None:
         w_out.grad = torch.zeros_like(w_out)
     # Surrogate derivatives
-    h = gamma * torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
+    h = params['gamma'] * torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
 
     # Crea una variabile di errore vuota con le stesse dimensioni di yo
     err = torch.zeros_like(yo)
 
     # Eligibility traces convolution
-    beta_conv = torch.tensor([beta_trace_out ** (params['data_steps'] - i - 1)
-                             for i in range(params['data_steps'])]).float().view(1, 1, -1).to(params['device'])
-    beta_rec_conv = torch.tensor([beta_trace ** (params['data_steps'] - i - 1)
-                                 for i in range(params['data_steps'])]).float().view(1, 1, -1).to(params['device'])
+    beta_conv = torch.tensor([params['beta_trace_out'] ** (params['data_steps'] - i - 1)
+                             for i in range(params['data_steps'])], dtype=params['dtype_torch']).view(1, 1, -1).to(params['device'])
+    beta_rec_conv = torch.tensor([params['beta_trace'] ** (params['data_steps'] - i - 1)
+                                 for i in range(params['data_steps'])], dtype=params['dtype_torch']).view(1, 1, -1).to(params['device'])
 
     # Convoluzione Input eligibility traces
     trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(
@@ -863,7 +870,7 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, gamma: floa
 
     L = torch.einsum('tbo,or->brt', err, w_out)
 
-    if params["use_eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
+    if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
         L = L[:, :, -params["delayed_output"]:]
         err = err[-params["delayed_output"]:, :, :]
         trace_in = trace_in[:, :, :, -params["delayed_output"]:]

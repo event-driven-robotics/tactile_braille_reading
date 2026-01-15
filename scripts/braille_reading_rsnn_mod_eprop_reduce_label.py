@@ -18,30 +18,30 @@ hyperparameter searches, ablation studies, and production training runs.
 
 Usage Examples
 --------------
-Train with default settings (all letters, e-prop disabled, 50 neurons):
+Train with default settings (all letters, e-prop disabled, 450 neurons):
     python braille_reading_rsnn_mod_eprop_reduce_label.py
 
 Train with e-prop on specific letters:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --use_eprop --letters A B C
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --eprop --letters A B C
 
 Custom architecture with validation set:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --nb_hidden 100 --use_validation
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --nb_hidden 100 --validation
 
 Select specific tactile sensors:
     python braille_reading_rsnn_mod_eprop_reduce_label.py --selected_channels 0 1 2 5 8
 
 Author: Simon F. Muller-Cleve
-Date: January 13, 2026
+Date: January 15, 2026
 """
-
-import argparse
-import json
 import os
 import sys
 from datetime import datetime
 
 # Add parent directory to path to import from utils
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+import argparse
+import json
 
 import numpy as np
 import torch
@@ -89,11 +89,11 @@ def parse_arguments():
     # Training parameters
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable debug mode with verbose output')
-    parser.add_argument('--use_cuda', action='store_true', default=True,
+    parser.add_argument('--cuda', action='store_true', default=True,
                         help='Use CUDA for GPU acceleration')
-    parser.add_argument('--use_seed', action='store_true', default=False,
+    parser.add_argument('--seed', action='store_true', default=False,
                         help='Use seed for reproducibility')
-    parser.add_argument('--use_validation', action='store_true', default=False,
+    parser.add_argument('--validation', action='store_true', default=False,
                         help='Create validation set from training data')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of training epochs')
@@ -141,7 +141,7 @@ def parse_arguments():
                         help='L2 regularization coefficient for neurons')
 
     # Learning algorithm
-    parser.add_argument('--use_eprop', action='store_true', default=False,
+    parser.add_argument('--eprop', action='store_true', default=False,
                         help='Use e-prop instead of BPTT')
     parser.add_argument('--gamma', type=float, default=15.0,
                         help='Surrogate gradient scale factor')
@@ -155,17 +155,17 @@ def parse_arguments():
                         help='Threshold for data encoding')
     parser.add_argument('--time_bin_size', type=int, default=1,
                         help='Time bin size in milliseconds')
-    parser.add_argument('--use_mechanoreceptor_encoding', action='store_true', default=True,
-                        help='Use mechanoreceptor encoding (vs sigma-delta)')
+    parser.add_argument('--mechanoreceptor_encoding', action='store_true', default=True,
+                        help='Use mechanoreceptor encoding for input (default: True, alternatives: sigma-delta encoding)')
 
     # Model options
-    parser.add_argument('--no_synapse', action='store_true', default=True,
-                        help='Disable synaptic dynamics')
-    parser.add_argument('--use_linear_decay', action='store_true', default=False,
+    parser.add_argument('--synapse', action='store_true', default=False,
+                        help='Enable synaptic dynamics (default: disabled)')
+    parser.add_argument('--linear_decay', action='store_true', default=False,
                         help='Use linear decay instead of exponential')
-    parser.add_argument('--use_weight_quantization', action='store_true', default=False,
+    parser.add_argument('--quantize_weights', action='store_true', default=False,
                         help='Enable weight quantization')
-    parser.add_argument('--use_random_tie_breaking', action='store_true', default=False,
+    parser.add_argument('--random_tie_breaking', action='store_true', default=False,
                         help='Use random tie breaking for predictions')
     parser.add_argument('--dtype', type=str, default='float64',
                         choices=['float16', 'float32', 'float64'],
@@ -174,10 +174,14 @@ def parse_arguments():
     args = parser.parse_args()
 
     # Compute derived parameters
-    if args.use_mechanoreceptor_encoding:
+    if args.mechanoreceptor_encoding:
         args.max_time = 3700
     else:
         args.max_time = 3501
+    
+    # Handle synapse flag inversion (command line uses --synapse to ENABLE, params dict stores as synapse)
+    # synapse default is False (disabled), which matches the old no_synapse default of True (disabled)
+    # Convert to the new naming convention
 
     # Convert to dict for backward compatibility
     return vars(args)
@@ -233,7 +237,7 @@ os.makedirs(results_dir, exist_ok=True)
 ##############################################################################
 
 # Select computation device (GPU if available and requested, otherwise CPU)
-if params["use_cuda"] and torch.cuda.is_available():
+if params["cuda"] and torch.cuda.is_available():
     params['device'] = torch.device("cuda:0")
     print("Using CUDA for computation.")
 else:
@@ -245,7 +249,7 @@ else:
 ##############################################################################
 
 # Configure weight quantization for neuromorphic hardware deployment
-if params['use_weight_quantization']:
+if params['quantize_weights']:
     print("Using weight quantization.")
     # Generate discrete weight levels based on capacitor bank values (256 levels)
     neg_capacitance = torch.arange(255, -1, -1)
@@ -266,7 +270,7 @@ if params['use_weight_quantization']:
 ##############################################################################
 
 # Set random seeds for reproducible experiments
-if params["use_seed"]:
+if params["seed"]:
     seed = 42  # Answer to the Ultimate Question of Life, the Universe, and Everything
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
@@ -299,7 +303,7 @@ print(f"Parameters saved to {params_file}")
 
 # Determine which data file to load based on encoding method
 file_dir_data = params['input_data_path']
-if params["use_mechanoreceptor_encoding"]:
+if params["mechanoreceptor_encoding"]:
     file_name = file_dir_data + 'mechanoreceptor_encoded.pkl'
 else:
     # Use sigma-delta encoding with specified threshold
@@ -309,6 +313,31 @@ else:
 
 
 if __name__ == '__main__':
+    """
+    Main training pipeline execution.
+    
+    This block orchestrates the complete training workflow:
+    1. For each repetition:
+       a. Load and preprocess tactile sensor data
+       b. Build and train the SRNN (using either e-prop or BPTT)
+       c. Evaluate on validation/test set and compute confusion matrix
+       d. Save model weights and training metrics
+       e. Generate visualizations (learning curves, confusion matrix, network activity)
+    2. After all repetitions complete, generate aggregate performance plots
+    
+    Data flow:
+    - Raw braille letter data (mechanoreceptor or sigma-delta encoded)
+    - Pre-processed into train/test splits (with optional validation set)
+    - Fed through SRNN in batches
+    - Predictions compared to labels
+    - Metrics and plots saved to timestamped results directory
+    
+    Output artifacts:
+    - Trained model weights: model/<timestamp>/best_model_*.pt
+    - Metrics and loss curves: results/<timestamp>/*.npz
+    - Visualizations: figures/<timestamp>/*.png
+    - Experiment configuration: results/<timestamp>/experiment_parameters.json
+    """
     ##########################################################################
     # MAIN TRAINING PIPELINE
     ##########################################################################
@@ -316,7 +345,7 @@ if __name__ == '__main__':
     # Display learning algorithm configuration
     print(f"\n{'='*60}")
     print(
-        f"Training with: {'e-prop' if params['use_eprop'] else 'BPTT (Backpropagation Through Time)'}")
+        f"Training with: {'e-prop' if params['eprop'] else 'BPTT (Backpropagation Through Time)'}")
     print(f"{'='*60}\n")
 
     # Generate descriptive string for output files based on letter set
@@ -343,6 +372,10 @@ if __name__ == '__main__':
         ##########################################################################
 
         # Load and preprocess tactile sensor data
+        # This also computes and stores in params:
+        #   - 'data_steps': Number of simulation timesteps
+        #   - 'time_step': Duration of each simulation timestep (seconds)
+        #   - 'delayed_output': Optional parameter for e-prop (final timesteps used for gradient computation)
         ds_train, ds_test, ds_validation, labels = load_and_extract(
             params=params, file_name=file_name, letter_written=letters)
 
@@ -364,11 +397,11 @@ if __name__ == '__main__':
         print("Number of hidden neurons %i." % nb_hidden)
         print("Number of timesteps %i." % params["data_steps"])
         print("Delayed output ", params["delayed_output"])
-        if params["no_synapse"]:
-            print(f"No synapse dynamics.")
+        if not params["synapse"]:
+            print(f"No synaptic dynamics.")
         if params["lower_bound"]:
             print(f"Clamp membrane voltage to: {params['lower_bound']}.")
-        if params["use_linear_decay"]:
+        if params["linear_decay"]:
             print(f"Use linear decay.")
         else:
             print(f"Use exponential decay.")
@@ -384,6 +417,9 @@ if __name__ == '__main__':
         ##########################################################################
 
         # Build network architecture and train with specified algorithm
+        # Note: params dict is modified in-place by build_and_train() to include:
+        #   - 'beta_trace': Eligibility trace decay for hidden layer (e-prop only)
+        #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
         loss_hist_epochs, accs_hist, best_layers, vars_eprop = build_and_train(
             params=params, ds_train=ds_train, ds_test=ds_test)
 
@@ -395,7 +431,9 @@ if __name__ == '__main__':
         ##########################################################################
 
         # Compute final accuracy and predictions on validation or test set
-        if params["use_validation"]:
+        # Use validation set if available (created from training set)
+        # Otherwise use test set for evaluation
+        if params["validation"]:
             val_acc, trues, preds = compute_classification_accuracy(
                 dataset=ds_validation, layers=best_layers, params=params)
         else:
@@ -432,14 +470,16 @@ if __name__ == '__main__':
 
         # Plot training curves (loss and accuracy over epochs)
         plot_training_performance(
-            path=os.path.join(figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_rep_{repetition+1}"),
+            path=os.path.join(
+                figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_rep_{repetition+1}"),
             acc_train=np.array(accs_hist[0]),
             acc_test=np.array(accs_hist[1]),
             loss_train=np.array(loss_hist_epochs))
 
         # Generate confusion matrix showing classification performance per letter
         plot_confusion_matrix(
-            path=os.path.join(figures_dir, f"best_model_{nb_hidden}_neurons_{str_letters}_confusion_matrix_rep_{repetition+1}"),
+            path=os.path.join(
+                figures_dir, f"best_model_{nb_hidden}_neurons_{str_letters}_confusion_matrix_rep_{repetition+1}"),
             trues=trues,
             preds=preds,
             labels=letters)
@@ -497,7 +537,8 @@ if __name__ == '__main__':
 
     # Plot training curves (loss and accuracy over epochs)
     plot_training_performance_repetitive_runs(
-        path=os.path.join(figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
+        path=os.path.join(
+            figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
         acc_train=np.array(accs_hist_repetition)[:, 0],
         acc_test=np.array(accs_hist_repetition)[:, 1],
         loss_train=np.array(loss_hist_repetition))

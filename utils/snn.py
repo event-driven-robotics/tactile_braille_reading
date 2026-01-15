@@ -23,6 +23,7 @@ Date: January 13, 2026
 
 import torch
 
+
 def compute_winning_neuron(spk_rec_readout: torch.Tensor, params: dict) -> tuple:
     """
     Compute predictions from output spike counts with random tie-breaking.

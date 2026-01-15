@@ -73,6 +73,7 @@
                 "--debug",
                 "--reg_spikes", "0.0",
                 "--reg_neurons", "0.0",
+                "--use_weight_quantization",
                 "--use_seed", 
             ],
             "justMyCode": false

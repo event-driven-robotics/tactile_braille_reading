@@ -76,6 +76,15 @@ def parse_arguments():
         description='Train RSNN for Braille letter classification',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    # Path configuration
+    parser.add_argument('--fig_path', type=str, default='./figures',
+                        help='Path to save figures')
+    parser.add_argument('--model_path', type=str, default='./model',
+                        help='Path to save models')
+    parser.add_argument('--results_path', type=str, default='./results',
+                        help='Path to save results')
+    parser.add_argument('--input_data_path', type=str, default='./data/100Hz/',
+                        help='Path to input data files')
 
     # Training parameters
     parser.add_argument('--debug', action='store_true', default=False,
@@ -98,7 +107,7 @@ def parse_arguments():
     # Network architecture
     parser.add_argument('--selected_channels', type=int, nargs='+', default=list(range(12)),
                         help='List of selected input channels (taxels)')
-    parser.add_argument('--nb_hidden', type=int, default=50,
+    parser.add_argument('--nb_hidden', type=int, default=450,
                         help='Number of recurrent hidden neurons')
     parser.add_argument('--nb_input_copies', type=int, default=1,
                         help='Number of copies for each input channel')
@@ -120,7 +129,7 @@ def parse_arguments():
                         help='Lower bound for membrane potential')
 
     # Weight parameters
-    parser.add_argument('--fwd_weight_scale', type=float, default=1,
+    parser.add_argument('--fwd_weight_scale', type=float, default=1.0,
                         help='Forward weight initialization scale')
     parser.add_argument('--weight_scale_factor', type=float, default=0.02,
                         help='Recurrent weight scale factor')
@@ -204,16 +213,16 @@ print(f"Using torch dtype: {params['dtype']}")
 NB_BATCHES_TO_PLOT = 1  # Number of batches to visualize
 NB_TRIALS_TO_PLOT = 1   # Number of trials per batch to visualize
 
-# Create output directory for figures
-path = './figures'
-if not os.path.exists(path):
-    os.makedirs(path)
+# Create all necessary output directories
+for dir in [params['fig_path'], params['model_path'], params['results_path']]:
+    if not os.path.exists(dir):
+        os.makedirs(dir)
 
 # Create timestamped subfolders for this experiment run
 run_id = datetime.now().strftime('%Y%m%d_%H%M')
-figures_dir = os.path.join('./figures', run_id)
-models_dir = os.path.join('./model', run_id)
-results_dir = os.path.join('./results', run_id)
+figures_dir = os.path.join(params['fig_path'], run_id)
+models_dir = os.path.join(params['model_path'], run_id)
+results_dir = os.path.join(params['results_path'], run_id)
 os.makedirs(figures_dir, exist_ok=True)
 os.makedirs(models_dir, exist_ok=True)
 os.makedirs(results_dir, exist_ok=True)
@@ -289,7 +298,7 @@ print(f"Parameters saved to {params_file}")
 ##############################################################################
 
 # Determine which data file to load based on encoding method
-file_dir_data = './data/100Hz/'
+file_dir_data = params['input_data_path']
 if params["use_mechanoreceptor_encoding"]:
     file_name = file_dir_data + 'mechanoreceptor_encoded.pkl'
 else:

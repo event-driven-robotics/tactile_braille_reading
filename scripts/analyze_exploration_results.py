@@ -29,7 +29,7 @@ def load_exploration_results(exploration_dir):
     Parameters
     ----------
     exploration_dir : str
-        Path to exploration results directory
+        Path to exploration results directory. Can contain timestamped subdirectories.
         
     Returns
     -------
@@ -42,8 +42,8 @@ def load_exploration_results(exploration_dir):
     
     results = {}
     
-    # Find all .npz files
-    for npz_file in exploration_path.glob("*.npz"):
+    # Find all .npz files (including in timestamped subdirectories)
+    for npz_file in exploration_path.rglob("*.npz"):
         try:
             data = np.load(npz_file)
             

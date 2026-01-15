@@ -42,15 +42,16 @@
 set -e  # Exit on error
 
 # Default parameters
-NEURONS=(10 20 50 100)
+NEURONS=(5 10 20 50)
 EPOCHS=50
-REPETITIONS=3
+REPETITIONS=5
 LETTERS=("A" "B")
-LEARNING_RATE=0.0001
+LEARNING_RATE=0.00005
 BATCH_SIZE=128
 USE_EPROP=false
 USE_SEED=false
-VENV_PYTHON="/home/smullercleve/.virtualenvs/pytorch/bin/python"
+# VENV_PYTHON="/home/smullercleve/.virtualenvs/pytorch/bin/python"
+VENV_PYTHON="/home/smullercleve-iit.local/.virtualenvs/pytorch/bin/python"  # WS
 SCRIPT_PATH="scripts/braille_reading_rsnn_mod_eprop_reduce_label.py"
 
 # Colors for output
@@ -185,6 +186,9 @@ for NB_HIDDEN in "${NEURONS[@]}"; do
         "--learning_rate" "$LEARNING_RATE"
         "--repetitions" "$REPETITIONS"
         "--letters" "${LETTERS[@]}"
+        "--fig_path" "$FIGURES_DIR"
+        "--model_path" "$MODELS_DIR"
+        "--results_path" "$RESULTS_DIR"
     )
     
     # Add optional flags
@@ -198,9 +202,11 @@ for NB_HIDDEN in "${NEURONS[@]}"; do
         
         echo -e "${GREEN}✓ Completed in $((CONFIG_DURATION / 60))m $((CONFIG_DURATION % 60))s${NC}"
         
-        # Try to extract final test accuracy from results
-        RESULTS_FILE="./results/${EXPLORATION_DIR}/braille_reading_rsnn_${NB_HIDDEN}_neurons_A_B.npz"
-        if [ -f "$RESULTS_FILE" ]; then
+        # Try to find the results file (may be in a timestamped subdirectory)
+        LETTERS_STR=$(printf "_%s" "${LETTERS[@]}")
+        LETTERS_STR=${LETTERS_STR:1}
+        RESULTS_FILE=$(find "$RESULTS_DIR" -name "braille_reading_rsnn_${NB_HIDDEN}_neurons_${LETTERS_STR}.npz" -type f 2>/dev/null | head -n 1)
+        if [ -n "$RESULTS_FILE" ]; then
             echo "  Results: $RESULTS_FILE"
             echo "" >> "$SUMMARY_FILE"
             echo "✓ ${NB_HIDDEN} neurons - Completed in $((CONFIG_DURATION / 60))m $((CONFIG_DURATION % 60))s" >> "$SUMMARY_FILE"
@@ -232,7 +238,7 @@ echo "Summary saved to: $SUMMARY_FILE"
 echo "Results available in: $RESULTS_DIR"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
-echo "  1. Load results: python -c \"import numpy as np; data = np.load('$RESULTS_FILE'); print(data.files)\""
-echo "  2. View plots: ls $FIGURES_DIR/"
+echo "  1. Analyze results: python scripts/analyze_exploration_results.py --exploration-dir $RESULTS_DIR"
+echo "  2. View plots: ls $FIGURES_DIR/*/"
 echo "  3. Check summary: cat $SUMMARY_FILE"
 echo ""

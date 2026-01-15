@@ -10,12 +10,13 @@
             "args": [
                 "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
                 "--epochs", "10",
-                "--nb_hidden", "20",
+                "--nb_hidden", "50",
                 "--batch_size", "128",
-                "--learning_rate", "0.0001",
+                "--learning_rate", "0.00005",
                 "--letters", "A", "B",
-                "--repetitions", "3",
-                "--use_random_tie_breaking"
+                "--repetitions", "1",
+                "--use_random_tie_breaking",
+                "--use_seed"
             ],
             "problemMatcher": [],
             "group": {
@@ -30,7 +31,34 @@
             }
         },
         {
-            "label": "Run: Full Training (All Letters - 50 epochs)",
+            "label": "Run: Extensive Training (A, B - 500 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "--epochs", "500",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "1",
+                "--use_random_tie_breaking",
+                "--use_seed"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Run: Full Training 10 Times (All Letters - 50 epochs)",
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
@@ -38,8 +66,8 @@
                 "--epochs", "50",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
-                "--learning_rate", "0.001",
-                "--repetitions", "5",
+                "--learning_rate", "0.00005",
+                "--repetitions", "10",
                 "--use_random_tie_breaking"
             ],
             "problemMatcher": [],
@@ -55,31 +83,13 @@
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
                 "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
-                "--epochs", "50",
-                "--nb_hidden", "150",
+                "--epochs", "10",
+                "--nb_hidden", "50",
                 "--batch_size", "128",
-                "--learning_rate", "0.0005",
+                "--learning_rate", "0.00005",
                 "--letters", "A", "B",
                 "--repetitions", "3",
-            ],
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "focus": true
-            }
-        },
-        {
-            "label": "Run: E-prop Training (100 epochs)",
-            "type": "shell",
-            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
-            "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
-                "--use_eprop",
-                "--epochs", "100",
-                "--nb_hidden", "100",
-                "--batch_size", "128",
-                "--learning_rate", "0.001"
+                "--use_random_tie_breaking"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -97,13 +107,12 @@
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
-                "--learning_rate", "0.0001",
+                "--learning_rate", "0.00005",
                 "--letters", "A", "B",
-                "--repetitions", "3",
-                "--debug",
-                "--reg_spikes", "0.0",
-                "--reg_neurons", "0.0",
-                "--use_seed", 
+                "--repetitions", "1",
+                "--use_random_tie_breaking",
+                "--use_seed",
+                "--debug"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -111,6 +120,29 @@
                 "panel": "dedicated",
                 "focus": true
             }
-        }
+        },
+        {
+            "label": "Run: E-prop Training (100 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "--use_eprop",
+                "--epochs", "100",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "1",
+                "--use_random_tie_breaking",
+                "--use_seed"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
     ]
 }

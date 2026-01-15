@@ -39,7 +39,7 @@ def compute_winning_neuron(spk_rec_readout: torch.Tensor, params: dict) -> tuple
         Output layer spike recordings with shape [batch, timesteps, output_neurons]
     params : dict
         Dictionary containing experimental parameters:
-        - 'use_random_tie_breaking' : bool
+        - 'random_tie_breaking' : bool
             If True, randomly breaks ties when multiple neurons have equal max spike counts
 
     Returns
@@ -62,7 +62,7 @@ def compute_winning_neuron(spk_rec_readout: torch.Tensor, params: dict) -> tuple
     Examples
     --------
     >>> spikes = torch.tensor([[[0, 1], [1, 0], [0, 1]]])  # shape: [1, 3, 2]
-    >>> params = {'use_random_tie_breaking': True}
+    >>> params = {'random_tie_breaking': True}
     >>> summed_spikes, neuron_idc = compute_winning_neuron(spikes, params)
     >>> print(summed_spikes)  # spike counts: tensor([[1, 2]])
     >>> print(neuron_idc)  # prediction: tensor([1])  # neuron 1 has more spikes
@@ -74,7 +74,7 @@ def compute_winning_neuron(spk_rec_readout: torch.Tensor, params: dict) -> tuple
     # Select winner based on spike counts
     max_nb_spikes, neuron_idc = torch.max(
         summed_spikes, dim=1)  # argmax over output units
-    if params['use_random_tie_breaking']:
+    if params['random_tie_breaking']:
         # Handle ties: if multiple neurons have the same max spike count, select randomly
         mask = torch.sum(
             summed_spikes == max_nb_spikes.unsqueeze(-1), dim=-1) > 1
@@ -95,7 +95,7 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
 
     This function runs input data through a two-layer spiking neural network (recurrent hidden layer
     and feedforward readout layer) and computes network activity. Gradient computation is handled
-    in the training loop based on params["use_eprop"] setting.
+    in the training loop based on params["eprop"] setting.
 
     Parameters
     ----------

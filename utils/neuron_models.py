@@ -79,10 +79,10 @@ class SurrGradSpike(torch.autograd.Function):
     """
 
     scale = 15.0
-    threshold = 0
+    threshold = 1.0
 
     @staticmethod
-    def forward(ctx, input, scale=None):
+    def forward(ctx, input, scale=None, threshold=None):
         """
         Forward pass: compute step function of input.
 
@@ -98,6 +98,9 @@ class SurrGradSpike(torch.autograd.Function):
             Surrogate gradient scale factor. If provided, overrides the class
             attribute for this forward-backward pair. If None, uses the class
             attribute value.
+        threshold : float, optional
+            Spike threshold. If provided, overrides the class attribute.
+            If None, uses the class attribute value.
 
         Returns
         -------
@@ -111,9 +114,12 @@ class SurrGradSpike(torch.autograd.Function):
         else:
             ctx.scale = SurrGradSpike.scale
 
+        # Use provided threshold or class default
+        thr = threshold if threshold is not None else SurrGradSpike.threshold
+
         ctx.save_for_backward(input)
         out = torch.zeros_like(input)
-        out[input > SurrGradSpike.threshold] = 1.0
+        out[input > thr] = 1.0
         return out
 
     @staticmethod
@@ -142,12 +148,12 @@ class SurrGradSpike(torch.autograd.Function):
         input, = ctx.saved_tensors
         grad_input = grad_output.clone()
         grad = grad_input / (ctx.scale * torch.abs(input) + 1.0) ** 2
-        return grad, None  # Return None for scale gradient
+        return grad, None, None  # Return None for scale and threshold gradients
 
 
-def spike_fn(input, scale=None):
+def spike_fn(input, scale=None, threshold=None):
     """
-    Apply SurrGradSpike function with optional scale parameter.
+    Apply SurrGradSpike function with optional scale and threshold parameters.
 
     Parameters
     ----------
@@ -155,6 +161,8 @@ def spike_fn(input, scale=None):
         Membrane potential tensor.
     scale : float, optional
         Surrogate gradient scale factor. If None, uses default class attribute.
+    threshold : float, optional
+        Spike threshold. If None, uses default class attribute.
 
     Returns
     -------
@@ -164,13 +172,10 @@ def spike_fn(input, scale=None):
     Examples
     --------
     >>> mem = torch.randn(32, 100)
-    >>> spikes = spike_fn(mem)  # Use default scale (15.0)
-    >>> spikes = spike_fn(mem, scale=20.0)  # Use custom scale
+    >>> spikes = spike_fn(mem)  # Use default scale (15.0) and threshold (1.0)
+    >>> spikes = spike_fn(mem, scale=20.0, threshold=0.5)  # Use custom parameters
     """
-    if scale is not None:
-        return SurrGradSpike.apply(input, scale)
-    else:
-        return SurrGradSpike.apply(input, None)
+    return SurrGradSpike.apply(input, scale, threshold)
 
 
 class feedforward_layer:
@@ -195,9 +200,9 @@ class feedforward_layer:
         Synaptic current decay factor (0 for no synapse, or exp(-dt/tau_syn))
     beta : float
         Membrane potential decay factor (exp(-dt/tau_mem) or linear decay rate)
-    use_eprop : bool
+    eprop : bool
         Whether to use e-prop (True) or BPTT (False)
-    use_linear_decay : bool
+    linear_decay : bool
         Use linear decay instead of exponential decay
     device : str
         Device for tensor allocation (e.g., "cuda:0", "cpu")
@@ -217,7 +222,7 @@ class feedforward_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, use_eprop=False, use_linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0):
         """
         Initialize feedforward spiking layer.
 
@@ -235,9 +240,9 @@ class feedforward_layer:
             Synaptic current decay factor (0.0 to disable synaptic dynamics)
         beta : float
             Membrane potential decay factor (exp(-dt/tau_mem) for exponential decay)
-        use_eprop : bool, optional
+        eprop : bool, optional
             Whether to use e-prop (True) or BPTT (False) (default: False)
-        use_linear_decay : bool, optional
+        linear_decay : bool, optional
             Use linear decay instead of exponential (default: False)
         device : str, optional
             Device for tensor allocation (default: "cuda:0")
@@ -261,11 +266,12 @@ class feedforward_layer:
         self.beta = beta    # Membrane potential decay
 
         # Learning and simulation flags
-        self.use_eprop = use_eprop
-        self.use_linear_decay = use_linear_decay
+        self.eprop = eprop
+        self.linear_decay = linear_decay
 
         # Surrogate gradient parameter
         self.gamma = gamma  # Scale factor for surrogate gradient
+        self.spike_threshold = spike_threshold  # Spike threshold
 
         # Device and dtype
         self.device = device
@@ -386,15 +392,15 @@ class feedforward_layer:
         spk_rec = []
         # Compute feedforward layer activity
         for t in range(nb_steps):
-            mthr = mem-1.0
+            mthr = mem - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
-            if self.use_eprop:
+            if self.eprop:
                 # For e-prop, use hard threshold (no gradient needed through spikes)
                 out = torch.zeros_like(mthr)
                 out[mthr > 0] = 1
             else:
                 # For BPTT, use surrogate gradient with gamma parameter
-                out = spike_fn(mthr, scale=self.gamma)
+                out = spike_fn(mthr, scale=self.gamma, threshold=0.0)
             rst = out.detach()
 
             # update the correct counter
@@ -408,7 +414,7 @@ class feedforward_layer:
             else:
                 new_syn = self.alpha*syn + input_activity[:, t]
 
-            if self.use_linear_decay:
+            if self.linear_decay:
                 # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
                 new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
@@ -453,9 +459,9 @@ class recurrent_layer:
         Synaptic current decay factor (0 for no synapse, or exp(-dt/tau_syn))
     beta : float
         Membrane potential decay factor (exp(-dt/tau_mem) or linear decay rate)
-    use_eprop : bool
+    eprop : bool
         Whether to use e-prop (True) or BPTT (False)
-    use_linear_decay : bool
+    linear_decay : bool
         Use linear decay instead of exponential decay
     device : str
         Device for tensor allocation (e.g., "cuda:0", "cpu")
@@ -478,7 +484,7 @@ class recurrent_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, use_eprop=False, use_linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0):
         """
         Initialize recurrent spiking layer.
 
@@ -498,9 +504,9 @@ class recurrent_layer:
             Synaptic current decay factor (0.0 to disable synaptic dynamics)
         beta : float
             Membrane potential decay factor (exp(-dt/tau_mem) for exponential decay)
-        use_eprop : bool, optional
+        eprop : bool, optional
             Whether to use e-prop (True) or BPTT (False) (default: False)
-        use_linear_decay : bool, optional
+        linear_decay : bool, optional
             Use linear decay instead of exponential (default: False)
         device : str, optional
             Device for tensor allocation (default: "cuda:0")
@@ -525,11 +531,12 @@ class recurrent_layer:
         self.beta = beta    # Membrane potential decay
 
         # Learning and simulation flags
-        self.use_eprop = use_eprop
-        self.use_linear_decay = use_linear_decay
+        self.eprop = eprop
+        self.linear_decay = linear_decay
 
         # Surrogate gradient parameter
         self.gamma = gamma  # Scale factor for surrogate gradient
+        self.spike_threshold = spike_threshold  # Spike threshold
 
         # Device and dtype
         self.device = device
@@ -662,15 +669,15 @@ class recurrent_layer:
             # input activity plus last step output activity
             h1 = input_activity[:, t] + \
                 torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
-            mthr = mem-1.0
+            mthr = mem - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
-            if self.use_eprop:
+            if self.eprop:
                 # For e-prop, use hard threshold (no gradient needed through spikes)
                 out = torch.zeros_like(mthr)
                 out[mthr > 0] = 1
             else:
                 # For BPTT, use surrogate gradient with gamma parameter
-                out = spike_fn(mthr, scale=self.gamma)
+                out = spike_fn(mthr, scale=self.gamma, threshold=0.0)
             rst = out.detach()  # We do not want to backprop through the reset
 
             if self.ref_per is not None:
@@ -683,7 +690,7 @@ class recurrent_layer:
             else:
                 new_syn = self.alpha*syn + h1
 
-            if self.use_linear_decay:
+            if self.linear_decay:
                 new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
             else:
                 new_mem = (self.beta*mem + syn)*(1.0-rst)

@@ -24,7 +24,7 @@ Training Features:
 - Detailed debug output for network diagnostics
 
 Author: Simon F. Muller-Cleve
-Date: January 13, 2026
+Date: January 15, 2026
 """
 
 import numpy as np
@@ -213,7 +213,8 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                          )  # says how much to keep
 
     if params["eprop"]:
-        params['beta_trace'] = float(np.exp(-params["time_step"]/params['tau_trace']))
+        params['beta_trace'] = float(
+            np.exp(-params["time_step"]/params['tau_trace']))
         params['beta_trace_out'] = float(
             np.exp(-params["time_step"]/params['tau_trace_out']))
         vars_eprop = [params['beta_trace'], params['beta_trace_out']]
@@ -227,12 +228,35 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
 
     # Spiking network
     # recurrent layer
-    rec_layer = recurrent_layer(batch_size=params["batch_size"], nb_inputs=nb_inputs, nb_neurons=nb_hidden, fwd_weight_scale=fwd_weight_scale, rec_weight_scale=rec_weight_scale, alpha=alpha,
-                                beta=beta_rec, use_eprop=params["use_eprop"], use_linear_decay=params["use_linear_decay"], device=params["device"], dtype=params["dtype_torch"], ref_per=params["ref_per_timesteps"], gamma=params["gamma"])
+    rec_layer = recurrent_layer(batch_size=params["batch_size"],
+                                nb_inputs=nb_inputs,
+                                nb_neurons=nb_hidden,
+                                fwd_weight_scale=fwd_weight_scale,
+                                rec_weight_scale=rec_weight_scale,
+                                alpha=alpha,
+                                beta=beta_rec,
+                                eprop=params["eprop"],
+                                linear_decay=params["linear_decay"],
+                                device=params["device"],
+                                dtype=params["dtype_torch"],
+                                ref_per=params["ref_per_timesteps"],
+                                gamma=params["gamma"],
+                                spike_threshold=params["spike_threshold"])
 
     # readout layer
-    ff_layer = feedforward_layer(batch_size=params["batch_size"], nb_inputs=nb_hidden, nb_neurons=nb_outputs, fwd_weight_scale=fwd_weight_scale, alpha=alpha, beta=beta_rec,
-                                 use_eprop=params["use_eprop"], use_linear_decay=params["use_linear_decay"], device=params["device"], dtype=params["dtype_torch"], ref_per=params["ref_per_timesteps"], gamma=params["gamma"])
+    ff_layer = feedforward_layer(batch_size=params["batch_size"],
+                                 nb_inputs=nb_hidden,
+                                 nb_neurons=nb_outputs,
+                                 fwd_weight_scale=fwd_weight_scale,
+                                 alpha=alpha,
+                                 beta=beta_rec,
+                                 eprop=params["eprop"],
+                                 linear_decay=params["linear_decay"],
+                                 device=params["device"],
+                                 dtype=params["dtype_torch"],
+                                 ref_per=params["ref_per_timesteps"],
+                                 gamma=params["gamma"],
+                                 spike_threshold=params["spike_threshold"])
 
     layers = [rec_layer, ff_layer]
 
@@ -336,7 +360,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
         Debugging:
         - 'debug' : bool
             If True, prints detailed diagnostics for first batch of first epoch
-        - 'use_random_tie_breaking' : bool
+        - 'random_tie_breaking' : bool
             Passed to compute_winning_neuron for prediction logic
 
     dataset : TensorDataset
@@ -354,7 +378,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             Eligibility trace decay for hidden layer (exp(-dt/tau_trace))
         - beta_trace_out : float  
             Eligibility trace decay for output layer (exp(-dt/tau_trace_out))
-        - Both are None if use_eprop=False
+        - Both are None if eprop=False
 
     dataset_test : TensorDataset, optional
         Test dataset for evaluation after each epoch (default: None)
@@ -417,7 +441,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     **Prediction Logic:**
     - Uses compute_winning_neuron() for consistent winner-take-all selection
     - Sums spikes over time, selects neuron with highest count
-    - Supports random tie-breaking if use_random_tie_breaking=True
+    - Supports random tie-breaking if random_tie_breaking=True
 
     **Debug Output (first batch of first epoch only):**
     - True labels vs predicted labels (first 10 samples)
@@ -515,17 +539,17 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
                 # Compute e-prop gradients
                 mem_rec_hidden, spk_rec_hidden, _ = recs
-                grads_batch(x=x_local.permute(1, 0, 2), 
-                            yo=yo.permute(1, 0, 2), 
+                grads_batch(x=x_local.permute(1, 0, 2),
+                            yo=yo.permute(1, 0, 2),
                             yt=one_hot_encoded,
-                            thr=1, 
+                            thr=params["spike_threshold"],
                             v=mem_rec_hidden.permute(1, 0, 2),
-                            z=spk_rec_hidden.permute(1, 0, 2), 
+                            z=spk_rec_hidden.permute(1, 0, 2),
                             w_in=layers[0].ff_weights,
-                            w_rec=layers[0].rec_weights, 
+                            w_rec=layers[0].rec_weights,
                             w_out=layers[1].ff_weights,
                             params=params)
-                
+
                 # Compute loss for tracking purposes (not used for gradients in e-prop)
                 log_p_y = log_softmax_fn(summed_spikes)
                 loss_val = loss_fn(log_p_y, y_local)
@@ -627,7 +651,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             # Free up memory by deleting large intermediate tensors
             # del spk_rec_readout, recs, spk_rec_hidden, m, am
-            # if not params["use_eprop"]:
+            # if not params["eprop"]:
             # del log_p_y, reg_loss
         mean_loss_per_epoch = np.mean(loss_hist_batches)
         loss_hist_epochs.append(mean_loss_per_epoch)
@@ -713,7 +737,7 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
             Data type for tensors (float32, float64, etc.)
         - 'nb_hidden' : int
             Number of hidden neurons
-        - 'use_eprop' : bool
+        - 'eprop' : bool
             Should be True when calling this function
         - 'delayed_output' : int or None
             If set, only uses final delayed_output timesteps for gradient computation
@@ -819,7 +843,8 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
     if w_out.grad is None:
         w_out.grad = torch.zeros_like(w_out)
     # Surrogate derivatives
-    h = params['gamma'] * torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
+    h = params['gamma'] * \
+        torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
 
     # Crea una variabile di errore vuota con le stesse dimensioni di yo
     err = torch.zeros_like(yo)
@@ -975,7 +1000,13 @@ def copy_layers(layers: list) -> list:
         rec_weight_scale=rec_layer.rec_weight_scale,
         alpha=rec_layer.alpha,
         beta=rec_layer.beta,
-        ref_per=rec_layer.ref_per
+        eprop=rec_layer.eprop,
+        linear_decay=rec_layer.linear_decay,
+        device=rec_layer.device,
+        dtype=rec_layer.dtype,
+        ref_per=rec_layer.ref_per,
+        gamma=rec_layer.gamma,
+        spike_threshold=rec_layer.spike_threshold
     )
     # Copy weights (detached and cloned to break gradient connection)
     new_rec_layer.ff_weights.data = rec_layer.ff_weights.data.detach().clone()
@@ -989,7 +1020,13 @@ def copy_layers(layers: list) -> list:
         fwd_weight_scale=ff_layer.fwd_weight_scale,
         alpha=ff_layer.alpha,
         beta=ff_layer.beta,
-        ref_per=ff_layer.ref_per
+        eprop=ff_layer.eprop,
+        linear_decay=ff_layer.linear_decay,
+        device=ff_layer.device,
+        dtype=ff_layer.dtype,
+        ref_per=ff_layer.ref_per,
+        gamma=ff_layer.gamma,
+        spike_threshold=ff_layer.spike_threshold
     )
     # Copy weights (detached and cloned)
     new_ff_layer.ff_weights.data = ff_layer.ff_weights.data.detach().clone()

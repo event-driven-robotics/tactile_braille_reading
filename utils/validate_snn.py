@@ -21,7 +21,7 @@ Visualization Features:
 - PDF output for publication-ready figures
 
 Author: Simon F. Muller-Cleve
-Date: January 13, 2026
+Date: January 15, 2026
 """
 
 import matplotlib.pyplot as plt
@@ -190,23 +190,14 @@ def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.nda
 
     **Top Panel (Accuracy):**
     - Y-axis: Accuracy in percentage (0-105%)
-    - Shaded regions: ± 1 standard deviation around mean
-    - Dashed lines: Mean accuracy across all runs
-    - Solid lines: Best trial (trial with maximum test accuracy)
+    - Solid lines for both training and test accuracy
     - Colors: Blue for training, Orange/Red for test
-    - Legend: Shows mean, std, and best trial
+    - Legend: Training and Test labels
 
     **Bottom Panel (Loss):**
-    - Y-axis: Loss value (auto-scaled, starting at 0)
-    - Shaded region: ± 1 standard deviation around mean
-    - Dashed line: Mean loss across all runs
-    - Solid line: Loss from best trial (same trial as accuracy plot)
+    - Y-axis: Loss value (auto-scaled)
+    - Solid blue line for training loss
     - Color: Blue for training loss
-
-    **Best Trial Selection:**
-    - Best trial is defined as the run with maximum test accuracy
-    - If multiple runs achieve same max, selects first occurrence
-    - Both accuracy and loss plots show data from this same trial
 
     **Output Format:**
     - Saved as PDF for publication-ready vector graphics
@@ -528,11 +519,8 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
     Returns
     -------
     tuple
-        (accs, spk_rec_readout_list, spk_rec_hidden_list) where:
+        (spk_rec_readout_list, spk_rec_hidden_list) where:
 
-        - accs : list of float
-            Classification accuracy for each batch (values in range [0.0, 1.0])
-            Length: number of batches
         - spk_rec_readout_list : list of numpy.ndarray
             Output layer spike trains, one array per batch
             Each array shape: [batch_size, time_steps, n_output_neurons]
@@ -576,9 +564,8 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
     Examples
     --------
     >>> # Record activity on test set
-    >>> accs, output_spikes, hidden_spikes = get_network_activity(
+    >>> output_spikes, hidden_spikes = get_network_activity(
     ...     dataset=test_dataset, layers=trained_layers, params=params)
-    >>> print(f"Mean accuracy: {np.mean(accs)*100:.2f}%")
     >>> print(f"Output spikes shape (first batch): {output_spikes[0].shape}")
     >>> print(f"Hidden spikes shape (first batch): {hidden_spikes[0].shape}")
 

@@ -15,8 +15,8 @@
                 "--learning_rate", "0.00005",
                 "--letters", "A", "B",
                 "--repetitions", "1",
-                "--use_random_tie_breaking",
-                "--use_seed"
+                "--random_tie_breaking",
+                "--seed"
             ],
             "problemMatcher": [],
             "group": {
@@ -42,8 +42,8 @@
                 "--learning_rate", "0.00005",
                 "--letters", "A", "B",
                 "--repetitions", "1",
-                "--use_random_tie_breaking",
-                "--use_seed"
+                "--random_tie_breaking",
+                "--seed"
             ],
             "problemMatcher": [],
             "group": {
@@ -68,7 +68,7 @@
                 "--batch_size", "128",
                 "--learning_rate", "0.00005",
                 "--repetitions", "10",
-                "--use_random_tie_breaking"
+                "--random_tie_breaking"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -89,7 +89,7 @@
                 "--learning_rate", "0.00005",
                 "--letters", "A", "B",
                 "--repetitions", "3",
-                "--use_random_tie_breaking"
+                "--random_tie_breaking"
             ],
             "problemMatcher": [],
             "presentation": {
@@ -110,9 +110,9 @@
                 "--learning_rate", "0.00005",
                 "--letters", "A", "B",
                 "--repetitions", "1",
-                "--use_random_tie_breaking",
-                "--use_seed",
-                "--use_weight_quantization",
+                "--random_tie_breaking",
+                "--seed",
+                "--weight_quantization",
                 "--debug"
             ],
             "problemMatcher": [],
@@ -128,16 +128,16 @@
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
                 "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
-                "--use_eprop",
+                "--eprop",
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "32",
                 "--learning_rate", "0.00005",
                 "--letters", "A", "B",
                 "--repetitions", "1",
-                "--use_random_tie_breaking",
-                "--use_weight_quantization",
-                "--use_seed"
+                "--random_tie_breaking",
+                "--weight_quantization",
+                "--seed"
             ],
             "problemMatcher": [],
             "presentation": {

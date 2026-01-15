@@ -33,15 +33,14 @@ Select specific tactile sensors:
 Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
+import argparse
+import json
 import os
 import sys
 from datetime import datetime
 
 # Add parent directory to path to import from utils
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-import argparse
-import json
 
 import numpy as np
 import torch
@@ -145,6 +144,8 @@ def parse_arguments():
                         help='Use e-prop instead of BPTT')
     parser.add_argument('--gamma', type=float, default=15.0,
                         help='Surrogate gradient scale factor')
+    parser.add_argument('--spike_threshold', type=float, default=1.0,
+                        help='Spike threshold for neurons (membrane potential - spike_threshold)')
 
     # Data parameters
     parser.add_argument('--letters', type=str, nargs='+',
@@ -178,7 +179,7 @@ def parse_arguments():
         args.max_time = 3700
     else:
         args.max_time = 3501
-    
+
     # Handle synapse flag inversion (command line uses --synapse to ENABLE, params dict stores as synapse)
     # synapse default is False (disabled), which matches the old no_synapse default of True (disabled)
     # Convert to the new naming convention
@@ -315,7 +316,7 @@ else:
 if __name__ == '__main__':
     """
     Main training pipeline execution.
-    
+
     This block orchestrates the complete training workflow:
     1. For each repetition:
        a. Load and preprocess tactile sensor data
@@ -324,14 +325,14 @@ if __name__ == '__main__':
        d. Save model weights and training metrics
        e. Generate visualizations (learning curves, confusion matrix, network activity)
     2. After all repetitions complete, generate aggregate performance plots
-    
+
     Data flow:
     - Raw braille letter data (mechanoreceptor or sigma-delta encoded)
     - Pre-processed into train/test splits (with optional validation set)
     - Fed through SRNN in batches
     - Predictions compared to labels
     - Metrics and plots saved to timestamped results directory
-    
+
     Output artifacts:
     - Trained model weights: model/<timestamp>/best_model_*.pt
     - Metrics and loss curves: results/<timestamp>/*.npz
@@ -389,7 +390,7 @@ if __name__ == '__main__':
         # Print comprehensive dataset statistics
         print("Number of training data %i." % len(ds_train))
         print("Number of testing data %i." % len(ds_test))
-        if params["use_validation"]:
+        if params["validation"]:
             print("Number of validation data %i." % len(ds_validation))
         print("Number of outputs %i." % len(np.unique(labels)))
         print("Number of input channels %i." %
@@ -460,7 +461,7 @@ if __name__ == '__main__':
                  learning_rate=params['learning_rate'],
                  batch_size=params['batch_size'],
                  letters=str_letters,
-                 use_eprop=params['use_eprop'],
+                 eprop=params['eprop'],
                  run_id=run_id)
         print(f"Results saved to {results_file}")
 

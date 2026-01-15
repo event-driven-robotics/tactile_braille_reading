@@ -19,7 +19,7 @@
             "program": "${workspaceFolder}/scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
             "console": "integratedTerminal",
             "args": [
-                "--use_eprop",
+                "--eprop",
                 "--epochs", "100",
                 "--nb_hidden", "100"
             ],
@@ -36,7 +36,7 @@
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
-                "--use_seed"
+                "--seed"
             ],
             "justMyCode": false
         },
@@ -53,7 +53,7 @@
                 "--learning_rate", "0.0001",
                 "--letters", "A", "B",
                 "--repetitions", "3",
-                "--use_random_tie_breaking",
+                "--random_tie_breaking",
             ],
             "justMyCode": false
         },
@@ -73,8 +73,8 @@
                 "--debug",
                 "--reg_spikes", "0.0",
                 "--reg_neurons", "0.0",
-                "--use_weight_quantization",
-                "--use_seed", 
+                "--weight_quantization",
+                "--seed", 
             ],
             "justMyCode": false
         },
@@ -89,7 +89,7 @@
                 "--nb_hidden", "200",
                 "--learning_rate", "0.001",
                 "--reg_spikes", "0.002",
-                "--use_random_tie_breaking"
+                "--random_tie_breaking"
             ],
             "justMyCode": false
         }

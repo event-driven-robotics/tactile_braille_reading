@@ -16,7 +16,7 @@ Key Features:
 - Support for both encoding schemes with consistent API
 
 Author: Simon F. Muller-Cleve
-Date: January 13, 2026
+Date: January 15, 2026
 """
 
 import pickle as pkl
@@ -46,14 +46,14 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
             Maximum time duration in milliseconds
         - 'time_bin_size' : int
             Size of time bins in milliseconds
-        - 'use_mechanoreceptor_encoding' : bool
+        - 'mechanoreceptor_encoding' : bool
             If True, uses mechanoreceptor encoding (FA/SA channels);
             If False, uses sigma-delta encoding (ON/OFF channels)
         - 'selected_channels' : list of int or None
             List of taxel indices to include (0-indexed). If None, all taxels are used.
         - 'dtype_torch' : torch.dtype
             PyTorch data type for tensors
-        - 'use_validation' : bool
+        - 'validation' : bool
             If True, creates 70/20/10 train/test/validation split;
             If False, creates 80/20 train/test split
         - 'debug' : bool
@@ -94,7 +94,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
             Test dataset containing (data, labels) pairs
             Data shape: [n_test_samples, time_steps, n_channels]
         - ds_validation : TensorDataset or None
-            Validation dataset (None if params['use_validation']=False)
+            Validation dataset (None if params['validation']=False)
             Data shape: [n_val_samples, time_steps, n_channels]
         - labels : torch.Tensor
             All label values in the full dataset (before split), shape: [n_total_samples]
@@ -123,8 +123,8 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     **Dataset Splits:**
 
     - All splits use stratified sampling to maintain class balance
-    - If use_validation=True: 70% train, 20% test, 10% validation
-    - If use_validation=False: 80% train, 20% test, validation is None
+    - If validation=True: 70% train, 20% test, 10% validation
+    - If validation=False: 80% train, 20% test, validation is None
 
     **Side Effects:**
 
@@ -141,10 +141,10 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     >>> params = {
     ...     'max_time': 1000,
     ...     'time_bin_size': 10,
-    ...     'use_mechanoreceptor_encoding': True,
+    ...     'mechanoreceptor_encoding': True,
     ...     'selected_channels': [0, 1, 2],  # Use first 3 taxels
     ...     'dtype_torch': torch.float32,
-    ...     'use_validation': True,
+    ...     'validation': True,
     ...     'debug': False
     ... }
     >>> letters = ['a', 'b', 'c']
@@ -166,7 +166,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     # Extract data
     data = []
     labels = []
-    if params['use_mechanoreceptor_encoding']:
+    if params['mechanoreceptor_encoding']:
         with open(file_name, "rb") as f:
             data_dict = pkl.load(f)
         nchan = len(data_dict['taxel_data'][0][0])
@@ -276,7 +276,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
                 f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
         print(f"  Total: {total_samples} samples")
 
-    if params['use_validation']:
+    if params['validation']:
         # create 70/20/10 train/test/validation split
         # first create 70/30 train/(test + validation)
         x_train, x_test, y_train, y_test = train_test_split(
@@ -318,7 +318,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
             print(
                 f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
 
-        if params['use_validation']:
+        if params['validation']:
             print(f"\nValidation set:")
             unique_val, counts_val = np.unique(
                 y_validation.cpu().numpy(), return_counts=True)

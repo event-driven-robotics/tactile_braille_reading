@@ -18,6 +18,7 @@
 #   --batch-size 128            Batch size (default: 128)
 #   --early-stop-epochs 0       Early stop window (epochs, default: 0 = off)
 #   --early-stop-threshold 20.0 Percentage points above chance (default: 20.0)
+#   --log-level INFO            Logging level: DEBUG|INFO|WARNING|ERROR (default: INFO)
 #   --use-eprop                 Use e-prop instead of BPTT (default: false)
 #   --use-seed                  Use fixed seed for reproducibility
 #   --help                      Show this help message
@@ -52,6 +53,7 @@ LEARNING_RATE=0.00005
 BATCH_SIZE=128
 USE_EPROP=false
 USE_SEED=false
+LOG_LEVEL="INFO"
 # Early stopping defaults
 EARLY_STOP_EPOCHS=5
 EARLY_STOP_THRESHOLD=5
@@ -98,6 +100,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --early-stop-threshold)
             EARLY_STOP_THRESHOLD=$2
+            shift 2
+            ;;
+        --log-level)
+            LOG_LEVEL=$2
             shift 2
             ;;
         --use-eprop)
@@ -153,6 +159,7 @@ echo "  Learning rate:       $LEARNING_RATE"
 echo "  Batch size:          $BATCH_SIZE"
 echo "  Algorithm:           $([ "$USE_EPROP" = true ] && echo "e-prop" || echo "BPTT")"
 echo "  Seed:                $([ "$USE_SEED" = true ] && echo "Fixed (42)" || echo "Random")"
+echo "  Log level:           $LOG_LEVEL"
 echo "  Early stop epochs:   $EARLY_STOP_EPOCHS"
 echo "  Early stop thresh.:  ${EARLY_STOP_THRESHOLD}% above chance"
 echo ""
@@ -174,6 +181,7 @@ echo ""
     echo "  Learning rate: $LEARNING_RATE"
     echo "  Batch size: $BATCH_SIZE"
     echo "  Algorithm: $([ "$USE_EPROP" = true ] && echo "e-prop" || echo "BPTT")"
+    echo "  Log level: $LOG_LEVEL"
     echo ""
     echo "Results:"
     echo "--------"
@@ -207,6 +215,7 @@ for NB_HIDDEN in "${NEURONS[@]}"; do
         "--model_path" "$MODELS_DIR"
         "--results_path" "$RESULTS_DIR"
         "--log_path" "$LOGS_DIR"
+        "--log_level" "$LOG_LEVEL"
         "--early_stop_epochs" "$EARLY_STOP_EPOCHS"
         "--early_stop_threshold" "$EARLY_STOP_THRESHOLD"
     )

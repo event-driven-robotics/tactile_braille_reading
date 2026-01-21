@@ -19,6 +19,7 @@ Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
 
+import logging
 import pickle as pkl
 
 import numpy as np
@@ -26,6 +27,9 @@ import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset
+
+# Get logger instance
+logger = logging.getLogger('braille_training')
 
 
 def load_and_extract(params: dict, file_name: str, letter_written: list) -> tuple:
@@ -162,6 +166,11 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     params["data_steps"] = len(time)
     # params["delayed_output"] = data_steps
     params["delayed_output"] = None  # 0  # data_steps
+    
+    logger.debug(f"Loading data from: {file_name}")
+    logger.debug(f"Max time: {max_time}ms, Time bin size: {time_bin_size}ms, Data steps: {params['data_steps']}")
+    logger.debug(f"Encoding: {'Mechanoreceptor' if params['mechanoreceptor_encoding'] else 'Sigma-delta'}")
+    logger.debug(f"Selected channels/taxels: {params['selected_channels']}")
 
     # Extract data
     data = []
@@ -169,6 +178,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     if params['mechanoreceptor_encoding']:
         with open(file_name, "rb") as f:
             data_dict = pkl.load(f)
+        logger.debug(f"Loaded mechanoreceptor data with {len(data_dict['letter'])} samples")
         nchan = len(data_dict['taxel_data'][0][0])
 
         # Determine which channels to use
@@ -184,6 +194,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
 
         # Update params with actual number of input channels IMMEDIATELY
         params["nb_inputs"] = selected_chans
+        logger.debug(f"Total input channels: {selected_chans} (taxels: {len(selected_taxels)}, 2 channels per taxel)")
 
         # Total channels: FA channels for selected taxels + SA channels for selected taxels
         for letter, fa_spikes, sa_spikes in zip(data_dict['letter'], data_dict['fa_spikes'], data_dict['sa_spikes']):

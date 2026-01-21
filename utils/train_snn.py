@@ -21,12 +21,13 @@ Training Features:
 - L1 and L2 spike regularization for controlling network activity
 - Stratified train/test splits with progress monitoring
 - Best model tracking based on test accuracy
-- Detailed debug output for network diagnostics
+- Comprehensive logging for network diagnostics (DEBUG level)
 
 Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
 
+import logging
 import numpy as np
 import torch
 import torch.nn as nn
@@ -37,6 +38,9 @@ from tqdm import tqdm
 from .neuron_models import feedforward_layer, recurrent_layer, ste_fn
 from .snn import compute_winning_neuron, run_snn
 from .validate_snn import compute_classification_accuracy
+
+# Get logger instance
+logger = logging.getLogger('braille_training')
 
 
 def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset) -> tuple:
@@ -183,22 +187,14 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
 
     # Num of spiking neurons used to encode each channel
     nb_input_copies = params['nb_input_copies']
-    # print("Number of input copies ", nb_input_copies)
+    logger.debug(f"Number of input copies {nb_input_copies}")
     # Network parameters
     nb_inputs = 2*len(params["selected_channels"])*nb_input_copies
     nb_outputs = len(params["letters"])
     nb_hidden = params['nb_hidden']
-    # print("Number of hidden neurons ", nb_hidden)
+    logger.debug(f"Number of hidden neurons {nb_hidden}")
 
-    # tau_mem = 0.06  # params['tau_mem']  # ms
-    # # global tau_mem_rec
-    # tau_mem_rec = 0.06  # params['tau_mem'] #ms
-    # # global tau_trace
-    # tau_trace = 0.14
-    # tau_trace_out = 0.14
     tau_syn = params['tau_mem']/params['tau_ratio']
-    # print("tau_mem: ", params['tau_mem'], "tau_mem recurrent: ", params['tau_mem_rec'],
-    #       "tau trace out: ", params['tau_trace_out'], "tau trace: ", params['tau_trace'])
     if not params["synapse"]:
         alpha = 0.0  # here we disable synapse dynamics
     else:
@@ -225,6 +221,15 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
 
     fwd_weight_scale = params['fwd_weight_scale']
     rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']
+    
+    logger.debug(f"Building network architecture:")
+    logger.debug(f"  Input neurons: {nb_inputs}")
+    logger.debug(f"  Hidden neurons: {nb_hidden}")
+    logger.debug(f"  Output neurons: {nb_outputs}")
+    logger.debug(f"  Forward weight scale: {fwd_weight_scale}")
+    logger.debug(f"  Recurrent weight scale: {rec_weight_scale}")
+    logger.debug(f"  Alpha (synaptic decay): {alpha}")
+    logger.debug(f"  Beta (membrane decay): {beta_rec}")
 
     # Spiking network
     # recurrent layer
@@ -249,7 +254,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                  nb_neurons=nb_outputs,
                                  fwd_weight_scale=fwd_weight_scale,
                                  alpha=alpha,
-                                 beta=beta_rec,
+                                 beta=beta,
                                  eprop=params["eprop"],
                                  linear_decay=params["linear_decay"],
                                  device=params["device"],
@@ -262,17 +267,17 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
 
     # Save initial weights before training
     initial_weights = save_weights(layers)
-
-    # # Debug: Check initial weight statistics
-    # print(f"\nInitial weight statistics for {nb_hidden} hidden neurons:")
-    # print(f"  Recurrent layer input weights: mean={rec_layer.ff_weights.data.mean():.4f}, std={rec_layer.ff_weights.data.std():.4f}")
-    # print(f"  Recurrent layer recurrent weights: mean={rec_layer.rec_weights.data.mean():.4f}, std={rec_layer.rec_weights.data.std():.4f}")
-    # print(f"  Output layer weights shape: {ff_layer.ff_weights.shape}")
-    # print(f"  Output layer weights per neuron:")
-    # for neuron_idx in range(ff_layer.ff_weights.shape[0]):
-    #     w = ff_layer.ff_weights[neuron_idx]
-    #     print(f"    Neuron {neuron_idx}: mean={w.data.mean():.4f}, std={w.data.std():.4f}, min={w.data.min():.4f}, max={w.data.max():.4f}")
-    # print()
+    logger.debug(f"Initial weights saved (rec_ff: {initial_weights['rec_ff_weights'].shape}, "
+                f"rec_rec: {initial_weights['rec_rec_weights'].shape}, "
+                f"out: {initial_weights['out_weights'].shape})")
+    
+    # Log initial weight statistics in DEBUG mode
+    logger.debug(f"Initial recurrent ff weight stats: mean={initial_weights['rec_ff_weights'].mean():.6f}, "
+                f"std={initial_weights['rec_ff_weights'].std():.6f}")
+    logger.debug(f"Initial recurrent rec weight stats: mean={initial_weights['rec_rec_weights'].mean():.6f}, "
+                f"std={initial_weights['rec_rec_weights'].std():.6f}")
+    logger.debug(f"Initial output weight stats: mean={initial_weights['out_weights'].mean():.6f}, "
+                f"std={initial_weights['out_weights'].std():.6f}")
 
     # a fixed learning rate is already defined within the train function, that's why here it is omitted
     loss_hist_epochs, accs_hist_epochs, best_layers = train(
@@ -291,14 +296,6 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     acc_best_test = acc_best_test*100
     idx_best_test = np.argmax(accs_hist_epochs[1])
     acc_train_at_best_test = accs_hist_epochs[0][idx_best_test]*100
-
-    # TODO track time constants!!!
-    # print("Final results: ")
-    # print("Best training accuracy: {:.2f}% and according test accuracy: {:.2f}% at epoch: {}".format(
-    #     acc_best_train, acc_test_at_best_train, idx_best_train+1))
-    # print("Best test accuracy: {:.2f}% and according train accuracy: {:.2f}% at epoch: {}".format(
-    #     acc_best_test, acc_train_at_best_test, idx_best_test+1))
-    # print("------------------------------------------------------------------------------------\n")
 
     return loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop, initial_weights
 
@@ -362,7 +359,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
         Debugging:
         - 'debug' : bool
-            If True, prints detailed diagnostics for first batch of first epoch
+            If True, automatically sets log_level to DEBUG for detailed diagnostics
         - 'random_tie_breaking' : bool
             Passed to compute_winning_neuron for prediction logic
 
@@ -446,7 +443,8 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     - Sums spikes over time, selects neuron with highest count
     - Supports random tie-breaking if random_tie_breaking=True
 
-    **Debug Output (first batch of first epoch only):**
+    **Debug Logging (first batch of first epoch only, when debug=True):**
+    - Logged via logger.debug() at DEBUG level
     - True labels vs predicted labels (first 10 samples)
     - Spike counts and label distributions
     - Input data statistics (shape, spike counts, spike rate)
@@ -566,7 +564,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                     torch.mean(torch.sum(spk_rec_hidden, 1))
                 # L1 loss on total number of spikes (output layer)
                 # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
-                # print("L1: ", reg_loss)
+                logger.debug(f"L1: {reg_loss}")
                 # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
                 # L2 loss on spikes per neuron (hidden layer 1)
                 reg_loss += params['reg_neurons'] * \
@@ -575,8 +573,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                 # L2 loss on spikes per neuron (output layer)
                 # reg_loss += params['reg_neurons'] * \
                 #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
-                # print("L1 + L2: ", reg_loss)
-
+                logger.debug(f"L1 + L2: {reg_loss}")
                 # Here we combine supervised loss and the regularizer
                 loss_val = loss_fn(log_p_y, y_local) + reg_loss
                 # BPTT: standard backpropagation
@@ -586,56 +583,56 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
             loss_hist_batches.append(loss_val.item())
 
-            # Debug: Print first batch of first epoch to check predictions
+            # Debug logging: Log first batch of first epoch to check predictions
             if params['debug'] and count_epoch == 0:
                 acc_before_update = np.mean(
                     (y_local == neuron_idc).detach().cpu().numpy())
-                print(f"\nDebug - First batch:")
-                print(
+                logger.debug(f"\nDebug - First batch:")
+                logger.debug(
                     f"  True labels (y_local): {y_local[:min(10, len(y_local))].cpu().numpy()}")
-                print(
+                logger.debug(
                     f"  Predictions (neuron_idc): {neuron_idc[:min(10, len(y_local))].cpu().numpy()}")
-                print(
+                logger.debug(
                     f"  Spike counts (summed_spikes): {summed_spikes[:min(10, len(y_local))].detach().cpu().numpy()}")
-                print(
+                logger.debug(
                     f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
-                print(
+                logger.debug(
                     f"  Prediction distribution: 0={torch.sum(neuron_idc==0).item()}, 1={torch.sum(neuron_idc==1).item()}")
-                print(f"  Batch accuracy: {acc_before_update:.4f}")
+                logger.debug(f"  Batch accuracy: {acc_before_update:.4f}")
 
                 # Check input data
-                print(f"\n  Input data statistics:")
-                print(f"    Shape: {x_local.shape}")
-                print(
+                logger.debug(f"\n  Input data statistics:")
+                logger.debug(f"    Shape: {x_local.shape}")
+                logger.debug(
                     f"    Total input spikes (first 10 samples): {torch.sum(x_local[:min(10, len(y_local))], dim=(0,1)).cpu().numpy()}")
-                print(
+                logger.debug(
                     f"    Input spike rate (mean): {x_local.mean().item():.6f}")
 
                 # Check hidden layer
-                print(f"\n  Hidden layer statistics:")
+                logger.debug(f"\n  Hidden layer statistics:")
                 # sum over time: [batch, neurons]
                 hidden_spike_counts = torch.sum(spk_rec_hidden, dim=0)
-                print(
+                logger.debug(
                     f"    Spike count distribution (mean across batch): {hidden_spike_counts.mean(dim=0).cpu().detach().numpy()}")
-                print(
+                logger.debug(
                     f"    Spike count (min, max): ({hidden_spike_counts.min().item()}, {hidden_spike_counts.max().item()})")
-                print(
+                logger.debug(
                     f"    First 10 samples total spikes: {torch.sum(spk_rec_hidden[:min(10, len(y_local))], dim=(0,1)).cpu().detach().numpy()}")
 
                 # Check output layer
-                print(f"\n  Output layer statistics:")
-                print(f"    Weights shape: {layers[1].ff_weights.shape}")
-                print(
+                logger.debug(f"\n  Output layer statistics:")
+                logger.debug(f"    Weights shape: {layers[1].ff_weights.shape}")
+                logger.debug(
                     f"    Weights mean per neuron: {torch.mean(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
-                print(
+                logger.debug(
                     f"    Weights std per neuron: {torch.std(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
                 h2_sample = torch.einsum(
                     "abc,cd->abd", (spk_rec_hidden[:min(10, len(y_local))], layers[1].ff_weights.t()))
-                print(
+                logger.debug(
                     f"    Input current (h2) mean per output neuron: {h2_sample.mean(dim=(0,1)).detach().cpu().numpy()}")
-                print(
+                logger.debug(
                     f"    Number of positive weights: neuron0={torch.sum(layers[1].ff_weights[0] > 0).item()}, neuron1={torch.sum(layers[1].ff_weights[1] > 0).item()}")
-                print()
+                logger.debug()
 
             # Calculate train accuracy in each batch
             train_acc_per_batch, _, _ = compute_classification_accuracy(
@@ -643,7 +640,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             accs_hist_batches.append(train_acc_per_batch)
 
             if params['debug'] and count_epoch == 0:
-                print(
+                logger.debug(
                     f"Train acc after weight update: {train_acc_per_batch*100:.2f}%")
 
             # Update batch progress bar with current and running average accuracy
@@ -676,8 +673,6 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
 
         pbar_training.set_description("Train {:.2f}%, Test {:.2f}%".format(
             accs_hist_epochs[0][-1]*100, accs_hist_epochs[1][-1]*100))
-        # print("Train acc: ", accs_hist_epochs[0][-1]*100, "Test acc",
-        #       accs_hist_epochs[1][-1]*100, 'Loss: ', loss_hist_epochs[-1])
 
         # Early stopping: check if training is not improving in initial epochs
         if params.get('early_stop_epochs', 0) > 0 and count_epoch <= params['early_stop_epochs']:
@@ -691,12 +686,12 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
             
             # Check if we're still below threshold at the end of the early stopping window
             if count_epoch == params['early_stop_epochs'] and current_train_acc < adaptive_threshold:
-                print(f"\n\nEarly stopping triggered at epoch {count_epoch}:")
-                print(f"  Number of classes: {num_classes}")
-                print(f"  Chance level: {chance_level*100:.2f}%")
-                print(f"  Required threshold: {adaptive_threshold*100:.2f}% ({percentage_above_chance:.1f} percentage points above chance)")
-                print(f"  Training accuracy: {current_train_acc*100:.2f}%")
-                print(f"  Model appears to have poor weight initialization. Stopping training.\n")
+                logger.warning(f"Early stopping triggered at epoch {count_epoch}:")
+                logger.warning(f"  Number of classes: {num_classes}")
+                logger.warning(f"  Chance level: {chance_level*100:.2f}%")
+                logger.warning(f"  Required threshold: {adaptive_threshold*100:.2f}% ({percentage_above_chance:.1f} percentage points above chance)")
+                logger.warning(f"  Training accuracy: {current_train_acc*100:.2f}%")
+                logger.warning(f"  Model appears to have poor weight initialization. Stopping training.")
                 # If no best model was saved yet, save current state
                 if len(best_acc_layers) == 0:
                     best_acc_layers = copy_layers(layers)

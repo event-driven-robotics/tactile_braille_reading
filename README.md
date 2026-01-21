@@ -26,3 +26,29 @@ Scanning | Sample-based | Event-based
 3. Extract the files and add them in the main folder of this repository
 4. Run the jupiter notebook for the [feedforawrd SNN](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/notebooks/braille_reading_ffsnn.ipynb) and/or the [recurrent SNN](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/notebooks/braille_reading_rsnn.ipynb)
 5. If you want to use encoding thresholds not already contained run [this file](https://github.com/event-driven-robotics/tactile_braille_reading/blob/main/utils/event_transform.py) with your personal parameters again and change the data loading in the notebooks accordingly
+
+## Training with Logging and Early Stopping
+
+The training system now includes comprehensive logging for monitoring long runs and debugging weight initialization issues:
+
+**Quick start:**
+```bash
+# Run exploration with detailed debugging
+./scripts/explore_hidden_neurons.sh --log-level DEBUG
+
+# Monitor logs in real-time
+tail -f logs/*/training_log_*.txt
+```
+
+**Learn more:**
+- [Quick Start Guide](QUICK_START_LOGGING.md) - Get up and running immediately
+- [Logging and Debugging Guide](LOGGING_AND_DEBUGGING.md) - Comprehensive logging documentation
+- [Implementation Details](LOGGING_IMPLEMENTATION.md) - Technical implementation summary
+
+**Key features:**
+- ✓ Log files persist to disk (no terminal scrolling needed)
+- ✓ Configurable verbosity (DEBUG/INFO/WARNING/ERROR)
+- ✓ Weight initialization statistics for analysis
+- ✓ Adaptive early stopping based on number of classes
+- ✓ Automatic error detection and logging
+- ✓ Real-time progress monitoring

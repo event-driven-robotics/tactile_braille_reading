@@ -90,7 +90,7 @@ def parse_arguments():
 
     # Training parameters
     parser.add_argument('--debug', action='store_true', default=False,
-                        help='Enable debug mode with verbose output')
+                        help='Enable debug mode: automatically sets log_level to DEBUG for detailed diagnostics')
     parser.add_argument('--cuda', action='store_true', default=True,
                         help='Use CUDA for GPU acceleration')
     parser.add_argument('--seed', action='store_true', default=False,
@@ -186,6 +186,9 @@ def parse_arguments():
     parser.add_argument('--dtype', type=str, default='float64',
                         choices=['float16', 'float32', 'float64'],
                         help='Torch data type for computations')
+    parser.add_argument('--log_level', type=str, default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='Logging level (overridden by --debug flag): DEBUG for diagnostics, INFO normal, WARNING/ERROR for minimal output')
 
     args = parser.parse_args()
 
@@ -203,7 +206,7 @@ def parse_arguments():
     return vars(args)
 
 
-def setup_logger(log_dir, run_id):
+def setup_logger(log_dir, run_id, log_level='INFO'):
     """
     Configure logging to write to both console and file.
     
@@ -213,6 +216,8 @@ def setup_logger(log_dir, run_id):
         Directory where log file will be saved
     run_id : str
         Timestamp identifier for this run
+    log_level : str, optional
+        Logging level: 'DEBUG', 'INFO', 'WARNING', 'ERROR' (default: 'INFO')
     
     Returns
     -------
@@ -221,7 +226,8 @@ def setup_logger(log_dir, run_id):
     """
     # Create logger
     logger = logging.getLogger('braille_training')
-    logger.setLevel(logging.INFO)
+    log_level_enum = getattr(logging, log_level.upper())
+    logger.setLevel(log_level_enum)
     
     # Remove any existing handlers
     logger.handlers = []
@@ -230,16 +236,16 @@ def setup_logger(log_dir, run_id):
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     console_formatter = logging.Formatter('%(message)s')
     
-    # File handler - save to results directory
+    # File handler - save to logs directory
     log_file = os.path.join(log_dir, f'training_log_{run_id}.txt')
     file_handler = logging.FileHandler(log_file, mode='w')
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(log_level_enum)
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
     # Console handler - print to terminal
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level_enum)
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
     
@@ -252,6 +258,10 @@ def setup_logger(log_dir, run_id):
 
 # Parse all command-line arguments into params dictionary
 params = parse_arguments()
+
+# If --debug flag is set, automatically use DEBUG log level
+if params.get('debug', False):
+    params['log_level'] = 'DEBUG'
 
 # Configure letter set for classification
 letters = params['letters']
@@ -291,11 +301,12 @@ os.makedirs(results_dir, exist_ok=True)
 os.makedirs(logs_dir, exist_ok=True)
 
 # Initialize logger (must be done after logs_dir is created)
-logger = setup_logger(logs_dir, run_id)
+logger = setup_logger(logs_dir, run_id, params['log_level'])
 logger.info(f"="*80)
 logger.info(f"Braille Reading RSNN Training - Run ID: {run_id}")
 logger.info(f"="*80)
 logger.info(f"Log file: {os.path.join(logs_dir, f'training_log_{run_id}.txt')}")
+logger.info(f"Log level: {params['log_level']}")
 logger.info(f"Using letters: {', '.join(letters)}")
 logger.info(f"Using torch dtype: {params['dtype']}")
 logger.info(f"Logs directory: {logs_dir}")
@@ -312,6 +323,10 @@ logger.info(f"Models directory: {models_dir}")
 if params["cuda"] and torch.cuda.is_available():
     params['device'] = torch.device("cuda:0")
     logger.info("Using CUDA for computation.")
+elif params["cuda"] and not torch.cuda.is_available():
+    params['device'] = torch.device("cpu")
+    logger.warning("CUDA requested but not available. Falling back to CPU computation. "
+                   "Training will be significantly slower.")
 else:
     params['device'] = torch.device("cpu")
     logger.info("Using CPU for computation.")
@@ -365,9 +380,12 @@ params_to_save['run_id'] = run_id
 params_to_save['timestamp'] = datetime.now().isoformat()
 
 params_file = os.path.join(results_dir, 'experiment_parameters.json')
-with open(params_file, 'w') as f:
-    json.dump(params_to_save, f, indent=4, sort_keys=True)
-logger.info(f"Parameters saved to {params_file}")
+try:
+    with open(params_file, 'w') as f:
+        json.dump(params_to_save, f, indent=4, sort_keys=True)
+    logger.info(f"Parameters saved to {params_file}")
+except Exception as e:
+    logger.error(f"Failed to save parameters to {params_file}: {str(e)}")
 
 ##############################################################################
 # DATA FILE CONFIGURATION
@@ -448,8 +466,13 @@ if __name__ == '__main__':
         #   - 'data_steps': Number of simulation timesteps
         #   - 'time_step': Duration of each simulation timestep (seconds)
         #   - 'delayed_output': Optional parameter for e-prop (final timesteps used for gradient computation)
-        ds_train, ds_test, ds_validation, labels = load_and_extract(
-            params=params, file_name=file_name, letter_written=letters)
+        try:
+            ds_train, ds_test, ds_validation, labels = load_and_extract(
+                params=params, file_name=file_name, letter_written=letters)
+        except Exception as e:
+            logger.error(f"Failed to load data from {file_name}: {str(e)}")
+            logger.error(f"Skipping repetition {repetition + 1}")
+            continue
 
         # Clear GPU cache before training
         torch.cuda.empty_cache()
@@ -469,6 +492,14 @@ if __name__ == '__main__':
         logger.info("Number of hidden neurons %i." % nb_hidden)
         logger.info("Number of timesteps %i." % params["data_steps"])
         logger.info("Delayed output %s" % params["delayed_output"])
+        
+        # Warn if dataset is very small
+        if len(ds_train) < params['batch_size']:
+            logger.warning(f"Training set size ({len(ds_train)}) is smaller than batch size ({params['batch_size']}). "
+                          "This may cause training issues.")
+        if len(ds_test) < 10:
+            logger.warning(f"Test set size ({len(ds_test)}) is very small. "
+                          "Results may not be statistically significant.")
         if not params["synapse"]:
             logger.info(f"No synaptic dynamics.")
         if params["lower_bound"]:
@@ -492,8 +523,13 @@ if __name__ == '__main__':
         # Note: params dict is modified in-place by build_and_train() to include:
         #   - 'beta_trace': Eligibility trace decay for hidden layer (e-prop only)
         #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
-        loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
-            params=params, ds_train=ds_train, ds_test=ds_test)
+        try:
+            loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
+                params=params, ds_train=ds_train, ds_test=ds_test)
+        except Exception as e:
+            logger.error(f"Training failed for repetition {repetition + 1}: {str(e)}")
+            logger.error(f"Skipping this repetition and continuing...")
+            continue
 
         loss_hist_repetition.append(loss_hist_epochs)
         accs_hist_repetition.append(accs_hist)
@@ -511,40 +547,59 @@ if __name__ == '__main__':
         else:
             val_acc, trues, preds = compute_classification_accuracy(
                 dataset=ds_test, layers=best_layers, params=params)
+        
+        # Warn if final accuracy is low
+        num_classes = len(params['letters'])
+        chance_level = 1.0 / num_classes
+        if val_acc < (chance_level + 0.10):  # Less than 10% above chance
+            logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%). "
+                          f"Poor weight initialization or insufficient training.")
 
         ##########################################################################
         # SAVE RESULTS
         ##########################################################################
 
         # Save initial weights (at initialization, before training)
-        np.savez(os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                 **initial_weights)
+        try:
+            np.savez(os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                     **initial_weights)
+        except Exception as e:
+            logger.error(f"Failed to save initial weights: {str(e)}")
 
         # Save trained model weights (full layer objects for evaluation)
-        torch.save(
-            best_layers, os.path.join(models_dir, f'best_model_{nb_hidden}_neurons_{str_letters}.pt'))
+        try:
+            torch.save(
+                best_layers, os.path.join(models_dir, f'best_model_{nb_hidden}_neurons_{str_letters}.pt'))
+        except Exception as e:
+            logger.error(f"Failed to save trained model: {str(e)}")
         
         # Save final weights as numpy arrays for easy analysis
-        from utils.train_snn import save_weights
-        final_weights = save_weights(best_layers)
-        np.savez(os.path.join(models_dir, f'final_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                 **final_weights)
+        try:
+            from utils.train_snn import save_weights
+            final_weights = save_weights(best_layers)
+            np.savez(os.path.join(models_dir, f'final_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                     **final_weights)
+        except Exception as e:
+            logger.error(f"Failed to save final weights: {str(e)}")
 
         # Save training metrics and hyperparameters
-        np.savez(results_file,
-                 acc_train=accs_hist[0],
-                 acc_test=accs_hist[1],
-                 loss_train=loss_hist_epochs,
-                 val_acc=val_acc,
-                 repetition=repetition + 1,
-                 nb_hidden=nb_hidden,
-                 nb_epochs=params['epochs'],
-                 learning_rate=params['learning_rate'],
-                 batch_size=params['batch_size'],
-                 letters=str_letters,
-                 eprop=params['eprop'],
-                 run_id=run_id)
-        logger.info(f"Results saved to {results_file}")
+        try:
+            np.savez(results_file,
+                     acc_train=accs_hist[0],
+                     acc_test=accs_hist[1],
+                     loss_train=loss_hist_epochs,
+                     val_acc=val_acc,
+                     repetition=repetition + 1,
+                     nb_hidden=nb_hidden,
+                     nb_epochs=params['epochs'],
+                     learning_rate=params['learning_rate'],
+                     batch_size=params['batch_size'],
+                     letters=str_letters,
+                     eprop=params['eprop'],
+                     run_id=run_id)
+            logger.info(f"Results saved to {results_file}")
+        except Exception as e:
+            logger.error(f"Failed to save results to {results_file}: {str(e)}")
 
         ##########################################################################
         # GENERATE VISUALIZATIONS

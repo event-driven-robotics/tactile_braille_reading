@@ -102,6 +102,18 @@ def parse_arguments():
                         help='Training batch size')
     parser.add_argument('--learning_rate', type=float, default=0.0001,
                         help='Learning rate for optimizer')
+    parser.add_argument('--early_stop_epochs', type=int, default=0,
+                        help='Number of initial epochs to check for improvement. '
+                             'If training accuracy does not improve beyond random chance '
+                             'within this many epochs, training stops early. '
+                             'Set to 0 to disable early stopping. (default: 0)')
+    parser.add_argument('--early_stop_threshold', type=float, default=5.0,
+                        help='Percentage points above chance level required to continue training. '
+                             'Chance level = 1/num_classes. For example, with 2 classes (50%% chance), '
+                             'a threshold of 5.0 means training must reach 55%% accuracy. '
+                             'With 26 classes (3.85%% chance), 5.0 means 8.85%% accuracy. '
+                             'If training accuracy stays below this adaptive threshold for the first '
+                             'early_stop_epochs, training is stopped. (default: 5.0)')
 
     # Network architecture
     parser.add_argument('--selected_channels', type=int, nargs='+', default=list(range(12)),
@@ -421,7 +433,7 @@ if __name__ == '__main__':
         # Note: params dict is modified in-place by build_and_train() to include:
         #   - 'beta_trace': Eligibility trace decay for hidden layer (e-prop only)
         #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
-        loss_hist_epochs, accs_hist, best_layers, vars_eprop = build_and_train(
+        loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
             params=params, ds_train=ds_train, ds_test=ds_test)
 
         loss_hist_repetition.append(loss_hist_epochs)
@@ -445,9 +457,19 @@ if __name__ == '__main__':
         # SAVE RESULTS
         ##########################################################################
 
-        # Save trained model weights
+        # Save initial weights (at initialization, before training)
+        np.savez(os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                 **initial_weights)
+
+        # Save trained model weights (full layer objects for evaluation)
         torch.save(
             best_layers, os.path.join(models_dir, f'best_model_{nb_hidden}_neurons_{str_letters}.pt'))
+        
+        # Save final weights as numpy arrays for easy analysis
+        from utils.train_snn import save_weights
+        final_weights = save_weights(best_layers)
+        np.savez(os.path.join(models_dir, f'final_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                 **final_weights)
 
         # Save training metrics and hyperparameters
         np.savez(results_file,

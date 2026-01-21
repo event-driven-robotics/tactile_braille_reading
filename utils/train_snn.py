@@ -260,6 +260,9 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
 
     layers = [rec_layer, ff_layer]
 
+    # Save initial weights before training
+    initial_weights = save_weights(layers)
+
     # # Debug: Check initial weight statistics
     # print(f"\nInitial weight statistics for {nb_hidden} hidden neurons:")
     # print(f"  Recurrent layer input weights: mean={rec_layer.ff_weights.data.mean():.4f}, std={rec_layer.ff_weights.data.std():.4f}")
@@ -297,7 +300,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     #     acc_best_test, acc_train_at_best_test, idx_best_test+1))
     # print("------------------------------------------------------------------------------------\n")
 
-    return loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop
+    return loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop, initial_weights
 
 
 def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, dataset_test=None) -> tuple:
@@ -676,6 +679,29 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
         # print("Train acc: ", accs_hist_epochs[0][-1]*100, "Test acc",
         #       accs_hist_epochs[1][-1]*100, 'Loss: ', loss_hist_epochs[-1])
 
+        # Early stopping: check if training is not improving in initial epochs
+        if params.get('early_stop_epochs', 0) > 0 and count_epoch <= params['early_stop_epochs']:
+            current_train_acc = accs_hist_epochs[0][-1]
+            
+            # Calculate adaptive threshold based on number of classes
+            num_classes = len(params['letters'])
+            chance_level = 1.0 / num_classes
+            percentage_above_chance = params.get('early_stop_threshold', 20.0)  # default 20% above chance
+            adaptive_threshold = chance_level + (percentage_above_chance / 100.0)
+            
+            # Check if we're still below threshold at the end of the early stopping window
+            if count_epoch == params['early_stop_epochs'] and current_train_acc < adaptive_threshold:
+                print(f"\n\nEarly stopping triggered at epoch {count_epoch}:")
+                print(f"  Number of classes: {num_classes}")
+                print(f"  Chance level: {chance_level*100:.2f}%")
+                print(f"  Required threshold: {adaptive_threshold*100:.2f}% ({percentage_above_chance:.1f} percentage points above chance)")
+                print(f"  Training accuracy: {current_train_acc*100:.2f}%")
+                print(f"  Model appears to have poor weight initialization. Stopping training.\n")
+                # If no best model was saved yet, save current state
+                if len(best_acc_layers) == 0:
+                    best_acc_layers = copy_layers(layers)
+                break
+
     return loss_hist_epochs, accs_hist_epochs, best_acc_layers
 
 
@@ -918,6 +944,43 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
 
     # Free remaining large tensors
     # del trace_out, L, err
+
+
+def save_weights(layers: list) -> dict:
+    """
+    Extract weight matrices from network layers as numpy arrays for storage.
+
+    This function extracts all weight matrices from the network layers and converts
+    them to numpy arrays (detached from computational graph and moved to CPU).
+    Useful for saving weight snapshots at initialization or after training.
+
+    Parameters
+    ----------
+    layers : list
+        List of [recurrent_layer, feedforward_layer] objects
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'rec_ff_weights': input-to-hidden weights [hidden_neurons, input_features]
+        - 'rec_rec_weights': recurrent weights [hidden_neurons, hidden_neurons]
+        - 'out_weights': hidden-to-output weights [output_neurons, hidden_neurons]
+
+    Examples
+    --------
+    >>> initial_weights = save_weights(layers)
+    >>> np.savez('initial_weights.npz', **initial_weights)
+    """
+    rec_layer, ff_layer = layers
+
+    weights = {
+        'rec_ff_weights': rec_layer.ff_weights.data.detach().cpu().numpy(),
+        'rec_rec_weights': rec_layer.rec_weights.data.detach().cpu().numpy(),
+        'out_weights': ff_layer.ff_weights.data.detach().cpu().numpy()
+    }
+
+    return weights
 
 
 def copy_layers(layers: list) -> list:

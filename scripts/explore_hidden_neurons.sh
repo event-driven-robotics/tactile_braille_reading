@@ -132,8 +132,9 @@ EXPLORATION_DIR="${TIMESTAMP}_exploration"
 RESULTS_DIR="./results/${EXPLORATION_DIR}"
 MODELS_DIR="./model/${EXPLORATION_DIR}"
 FIGURES_DIR="./figures/${EXPLORATION_DIR}"
+LOGS_DIR="./logs/${EXPLORATION_DIR}"
 
-mkdir -p "$RESULTS_DIR" "$MODELS_DIR" "$FIGURES_DIR"
+mkdir -p "$RESULTS_DIR" "$MODELS_DIR" "$FIGURES_DIR" "$LOGS_DIR"
 
 # Create summary file
 SUMMARY_FILE="./results/exploration_summary_${TIMESTAMP}.txt"
@@ -159,6 +160,7 @@ echo "Output directories:"
 echo "  Results: $RESULTS_DIR"
 echo "  Models:  $MODELS_DIR"
 echo "  Figures: $FIGURES_DIR"
+echo "  Logs:    $LOGS_DIR"
 echo ""
 
 # Initialize summary with header
@@ -204,6 +206,7 @@ for NB_HIDDEN in "${NEURONS[@]}"; do
         "--fig_path" "$FIGURES_DIR"
         "--model_path" "$MODELS_DIR"
         "--results_path" "$RESULTS_DIR"
+        "--log_path" "$LOGS_DIR"
         "--early_stop_epochs" "$EARLY_STOP_EPOCHS"
         "--early_stop_threshold" "$EARLY_STOP_THRESHOLD"
     )

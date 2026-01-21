@@ -35,6 +35,7 @@ Date: January 15, 2026
 """
 import argparse
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -82,6 +83,8 @@ def parse_arguments():
                         help='Path to save models')
     parser.add_argument('--results_path', type=str, default='./results',
                         help='Path to save results')
+    parser.add_argument('--log_path', type=str, default='./logs',
+                        help='Path to save log files')
     parser.add_argument('--input_data_path', type=str, default='./data/100Hz/',
                         help='Path to input data files')
 
@@ -200,6 +203,49 @@ def parse_arguments():
     return vars(args)
 
 
+def setup_logger(log_dir, run_id):
+    """
+    Configure logging to write to both console and file.
+    
+    Parameters
+    ----------
+    log_dir : str
+        Directory where log file will be saved
+    run_id : str
+        Timestamp identifier for this run
+    
+    Returns
+    -------
+    logging.Logger
+        Configured logger instance
+    """
+    # Create logger
+    logger = logging.getLogger('braille_training')
+    logger.setLevel(logging.INFO)
+    
+    # Remove any existing handlers
+    logger.handlers = []
+    
+    # Create formatters
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_formatter = logging.Formatter('%(message)s')
+    
+    # File handler - save to results directory
+    log_file = os.path.join(log_dir, f'training_log_{run_id}.txt')
+    file_handler = logging.FileHandler(log_file, mode='w')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    
+    # Console handler - print to terminal
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+
 ##############################################################################
 # CONFIGURATION SETUP
 ##############################################################################
@@ -210,7 +256,6 @@ params = parse_arguments()
 # Configure letter set for classification
 letters = params['letters']
 all_letters = (len(letters) == 27)  # True if using complete alphabet + space
-print(f"Using letters: {', '.join(letters)}")
 
 # Configure PyTorch data type for all tensors
 dtype_map = {
@@ -220,7 +265,6 @@ dtype_map = {
 }
 params['dtype_torch'] = dtype_map[params['dtype']]
 torch.set_default_dtype(params['dtype_torch'])
-print(f"Using torch dtype: {params['dtype']}")
 
 ##############################################################################
 # VISUALIZATION AND OUTPUT CONFIGURATION
@@ -231,7 +275,7 @@ NB_BATCHES_TO_PLOT = 1  # Number of batches to visualize
 NB_TRIALS_TO_PLOT = 1   # Number of trials per batch to visualize
 
 # Create all necessary output directories
-for dir in [params['fig_path'], params['model_path'], params['results_path']]:
+for dir in [params['fig_path'], params['model_path'], params['results_path'], params['log_path']]:
     if not os.path.exists(dir):
         os.makedirs(dir)
 
@@ -240,9 +284,24 @@ run_id = datetime.now().strftime('%Y%m%d_%H%M')
 figures_dir = os.path.join(params['fig_path'], run_id)
 models_dir = os.path.join(params['model_path'], run_id)
 results_dir = os.path.join(params['results_path'], run_id)
+logs_dir = os.path.join(params['log_path'], run_id)
 os.makedirs(figures_dir, exist_ok=True)
 os.makedirs(models_dir, exist_ok=True)
 os.makedirs(results_dir, exist_ok=True)
+os.makedirs(logs_dir, exist_ok=True)
+
+# Initialize logger (must be done after logs_dir is created)
+logger = setup_logger(logs_dir, run_id)
+logger.info(f"="*80)
+logger.info(f"Braille Reading RSNN Training - Run ID: {run_id}")
+logger.info(f"="*80)
+logger.info(f"Log file: {os.path.join(logs_dir, f'training_log_{run_id}.txt')}")
+logger.info(f"Using letters: {', '.join(letters)}")
+logger.info(f"Using torch dtype: {params['dtype']}")
+logger.info(f"Logs directory: {logs_dir}")
+logger.info(f"Results directory: {results_dir}")
+logger.info(f"Figures directory: {figures_dir}")
+logger.info(f"Models directory: {models_dir}")
 
 
 ##############################################################################
@@ -252,10 +311,10 @@ os.makedirs(results_dir, exist_ok=True)
 # Select computation device (GPU if available and requested, otherwise CPU)
 if params["cuda"] and torch.cuda.is_available():
     params['device'] = torch.device("cuda:0")
-    print("Using CUDA for computation.")
+    logger.info("Using CUDA for computation.")
 else:
     params['device'] = torch.device("cpu")
-    print("Using CPU for computation.")
+    logger.info("Using CPU for computation.")
 
 ##############################################################################
 # WEIGHT QUANTIZATION SETUP (Optional)
@@ -263,7 +322,7 @@ else:
 
 # Configure weight quantization for neuromorphic hardware deployment
 if params['quantize_weights']:
-    print("Using weight quantization.")
+    logger.info("Using weight quantization.")
     # Generate discrete weight levels based on capacitor bank values (256 levels)
     neg_capacitance = torch.arange(255, -1, -1)
     pos_capacitance = torch.arange(1, 257)
@@ -291,9 +350,9 @@ if params["seed"]:
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-    print("Seed set to {}".format(seed))
+    logger.info("Seed set to {}".format(seed))
 else:
-    print("Shuffle data randomly")
+    logger.info("Shuffle data randomly")
 
 # Save experiment parameters to JSON for reproducibility
 params_to_save = params.copy()
@@ -308,7 +367,7 @@ params_to_save['timestamp'] = datetime.now().isoformat()
 params_file = os.path.join(results_dir, 'experiment_parameters.json')
 with open(params_file, 'w') as f:
     json.dump(params_to_save, f, indent=4, sort_keys=True)
-print(f"Parameters saved to {params_file}")
+logger.info(f"Parameters saved to {params_file}")
 
 ##############################################################################
 # DATA FILE CONFIGURATION
@@ -356,10 +415,10 @@ if __name__ == '__main__':
     ##########################################################################
 
     # Display learning algorithm configuration
-    print(f"\n{'='*60}")
-    print(
+    logger.info(f"\n{'='*60}")
+    logger.info(
         f"Training with: {'e-prop' if params['eprop'] else 'BPTT (Backpropagation Through Time)'}")
-    print(f"{'='*60}\n")
+    logger.info(f"{'='*60}\n")
 
     # Generate descriptive string for output files based on letter set
     if all_letters:
@@ -377,7 +436,7 @@ if __name__ == '__main__':
         results_dir, f"braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}.npz")
 
     for repetition in range(params['repetitions']):
-        print(
+        logger.info(
             f"\n{'#'*20} Starting repetition {repetition + 1} of {params['repetitions']} {'#'*20}\n")
 
         ##########################################################################
@@ -400,30 +459,30 @@ if __name__ == '__main__':
         ##########################################################################
 
         # Print comprehensive dataset statistics
-        print("Number of training data %i." % len(ds_train))
-        print("Number of testing data %i." % len(ds_test))
+        logger.info("Number of training data %i." % len(ds_train))
+        logger.info("Number of testing data %i." % len(ds_test))
         if params["validation"]:
-            print("Number of validation data %i." % len(ds_validation))
-        print("Number of outputs %i." % len(np.unique(labels)))
-        print("Number of input channels %i." %
+            logger.info("Number of validation data %i." % len(ds_validation))
+        logger.info("Number of outputs %i." % len(np.unique(labels)))
+        logger.info("Number of input channels %i." %
               len(params["selected_channels"]))
-        print("Number of hidden neurons %i." % nb_hidden)
-        print("Number of timesteps %i." % params["data_steps"])
-        print("Delayed output ", params["delayed_output"])
+        logger.info("Number of hidden neurons %i." % nb_hidden)
+        logger.info("Number of timesteps %i." % params["data_steps"])
+        logger.info("Delayed output %s" % params["delayed_output"])
         if not params["synapse"]:
-            print(f"No synaptic dynamics.")
+            logger.info(f"No synaptic dynamics.")
         if params["lower_bound"]:
-            print(f"Clamp membrane voltage to: {params['lower_bound']}.")
+            logger.info(f"Clamp membrane voltage to: {params['lower_bound']}.")
         if params["linear_decay"]:
-            print(f"Use linear decay.")
+            logger.info(f"Use linear decay.")
         else:
-            print(f"Use exponential decay.")
+            logger.info(f"Use exponential decay.")
         if params["ref_per_timesteps"]:
-            print(
+            logger.info(
                 f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
-        print("Input duration %fs" %
+        logger.info("Input duration %fs" %
               (params["data_steps"]*params["time_step"]))
-        print("---------------------------\n")
+        logger.info("---------------------------\n")
 
         ##########################################################################
         # NETWORK TRAINING
@@ -485,7 +544,7 @@ if __name__ == '__main__':
                  letters=str_letters,
                  eprop=params['eprop'],
                  run_id=run_id)
-        print(f"Results saved to {results_file}")
+        logger.info(f"Results saved to {results_file}")
 
         ##########################################################################
         # GENERATE VISUALIZATIONS
@@ -554,9 +613,9 @@ if __name__ == '__main__':
         # Free GPU memory
         torch.cuda.empty_cache()
 
-        print(f"\n{'='*60}")
-        print(f"Training complete! Results saved to {results_file}")
-        print(f"{'='*60}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Repetition {repetition + 1}/{params['repetitions']} complete! Results saved to {results_file}")
+        logger.info(f"{'='*60}")
 
     # Plot training curves (loss and accuracy over epochs)
     plot_training_performance_repetitive_runs(
@@ -565,3 +624,10 @@ if __name__ == '__main__':
         acc_train=np.array(accs_hist_repetition)[:, 0],
         acc_test=np.array(accs_hist_repetition)[:, 1],
         loss_train=np.array(loss_hist_repetition))
+    
+    logger.info(f"\n\n{'='*80}")
+    logger.info(f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions finished")
+    logger.info(f"Results directory: {results_dir}")
+    logger.info(f"Figures directory: {figures_dir}")
+    logger.info(f"Models directory: {models_dir}")
+    logger.info(f"{'='*80}\n")

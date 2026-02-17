@@ -43,7 +43,8 @@ from .validate_snn import compute_classification_accuracy
 logger = logging.getLogger('braille_training')
 
 
-def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset) -> tuple:
+def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset,
+                    resume_weights: dict = None) -> tuple:
     """
     Build and train a recurrent spiking neural network for braille letter classification.
 
@@ -132,6 +133,10 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     ds_test : TensorDataset
         Test dataset containing (input_data, labels) pairs
         Input shape: [n_samples, time_steps, n_channels]
+
+    resume_weights : dict or None
+        Optional weight dictionary used to initialize the model before training.
+        Expected keys: 'rec_ff_weights', 'rec_rec_weights', 'out_weights'.
 
     Returns
     -------
@@ -264,6 +269,10 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                  spike_threshold=params["spike_threshold"])
 
     layers = [rec_layer, ff_layer]
+
+    if resume_weights is not None:
+        apply_resume_weights(layers, resume_weights, params)
+        logger.info("Resume weights applied to initialized layers.")
 
     # Save initial weights before training
     initial_weights = save_weights(layers)
@@ -976,6 +985,70 @@ def save_weights(layers: list) -> dict:
     }
 
     return weights
+
+
+def apply_resume_weights(layers: list, weights: dict, params: dict) -> None:
+    """
+    Apply pretrained weights to newly initialized layers.
+
+    Parameters
+    ----------
+    layers : list
+        [recurrent_layer, feedforward_layer] objects to receive weights.
+    weights : dict
+        Weight dictionary with keys 'rec_ff_weights', 'rec_rec_weights', 'out_weights'.
+    params : dict
+        Training params containing 'device' and 'dtype_torch'.
+    """
+    required_keys = ["rec_ff_weights", "rec_rec_weights", "out_weights"]
+    missing = [key for key in required_keys if key not in weights]
+    if missing:
+        raise ValueError(f"Resume weights missing keys: {missing}")
+
+    rec_layer, ff_layer = layers
+
+    rec_ff = np.asarray(weights["rec_ff_weights"])
+    rec_rec = np.asarray(weights["rec_rec_weights"])
+    out = np.asarray(weights["out_weights"])
+
+    if rec_ff.shape != tuple(rec_layer.ff_weights.shape):
+        raise ValueError(
+            f"rec_ff_weights shape mismatch: expected {tuple(rec_layer.ff_weights.shape)}, "
+            f"got {rec_ff.shape}")
+    if rec_rec.shape != tuple(rec_layer.rec_weights.shape):
+        raise ValueError(
+            f"rec_rec_weights shape mismatch: expected {tuple(rec_layer.rec_weights.shape)}, "
+            f"got {rec_rec.shape}")
+    if out.shape != tuple(ff_layer.ff_weights.shape):
+        raise ValueError(
+            f"out_weights shape mismatch: expected {tuple(ff_layer.ff_weights.shape)}, "
+            f"got {out.shape}")
+
+    rec_ff_tensor = torch.as_tensor(rec_ff, device=params["device"], dtype=params["dtype_torch"])
+    rec_rec_tensor = torch.as_tensor(rec_rec, device=params["device"], dtype=params["dtype_torch"])
+    out_tensor = torch.as_tensor(out, device=params["device"], dtype=params["dtype_torch"])
+
+    rec_layer.ff_weights.data.copy_(rec_ff_tensor)
+    rec_layer.rec_weights.data.copy_(rec_rec_tensor)
+    ff_layer.ff_weights.data.copy_(out_tensor)
+
+
+def load_weights_from_model(model_path: str, map_location="cpu") -> dict:
+    """
+    Load a saved model (.pt) and return a weight dictionary.
+
+    Parameters
+    ----------
+    model_path : str
+        Path to a saved model file created with torch.save(best_layers, ...).
+    map_location : str or torch.device
+        Device mapping for torch.load (default: "cpu").
+    """
+    # NOTE: these checkpoints store full layer objects; weights_only must be False.
+    layers = torch.load(model_path, map_location=map_location, weights_only=False)
+    if not isinstance(layers, (list, tuple)) or len(layers) != 2:
+        raise ValueError("Expected a list/tuple of [recurrent_layer, feedforward_layer].")
+    return save_weights(layers)
 
 
 def copy_layers(layers: list) -> list:

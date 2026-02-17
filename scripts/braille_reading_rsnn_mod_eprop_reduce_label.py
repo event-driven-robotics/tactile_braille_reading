@@ -39,6 +39,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 # Add parent directory to path to import from utils
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -47,7 +48,7 @@ import numpy as np
 import torch
 
 from utils.data_loader import load_and_extract
-from utils.train_snn import build_and_train
+from utils.train_snn import build_and_train, load_weights_from_model
 from utils.validate_snn import (compute_classification_accuracy,
                                 get_network_activity, plot_confusion_matrix,
                                 plot_network_activity,
@@ -189,6 +190,10 @@ def parse_arguments():
     parser.add_argument('--log_level', type=str, default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='Logging level (overridden by --debug flag): DEBUG for diagnostics, INFO normal, WARNING/ERROR for minimal output')
+    parser.add_argument('--resume-run-id', type=str, default='',
+                        help='Run ID to resume from (loads model and params from model/results)')
+    parser.add_argument('--resume-model-name', type=str, default='',
+                        help='Optional best_model filename to load within the run_id model folder')
 
     args = parser.parse_args()
 
@@ -204,6 +209,33 @@ def parse_arguments():
 
     # Convert to dict for backward compatibility
     return vars(args)
+
+
+def _resolve_resume_paths(resume_run_id, params):
+    model_dir = Path(params["model_path"]) / resume_run_id
+    results_dir = Path(params["results_path"]) / resume_run_id
+
+    if params.get("resume_model_name"):
+        resume_from = model_dir / params["resume_model_name"]
+        if not resume_from.is_file():
+            raise FileNotFoundError(f"Resume model not found: {resume_from}")
+    else:
+        candidates = sorted(model_dir.glob("best_model_*.pt"))
+        if len(candidates) == 0:
+            raise FileNotFoundError(f"No best_model_*.pt found in {model_dir}")
+        if len(candidates) > 1:
+            candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+            print(
+                f"Multiple best_model_*.pt files found in {model_dir}; "
+                f"using newest: {candidates[0].name}")
+
+        resume_from = candidates[0]
+
+    resume_from = str(resume_from)
+    resume_params_path = results_dir / "experiment_parameters.json"
+    if not resume_params_path.is_file():
+        raise FileNotFoundError(f"Resume parameters file not found: {resume_params_path}")
+    return resume_from, str(resume_params_path)
 
 
 def setup_logger(log_dir, run_id, log_level='INFO'):
@@ -257,7 +289,59 @@ def setup_logger(log_dir, run_id, log_level='INFO'):
 ##############################################################################
 
 # Parse all command-line arguments into params dictionary
-params = parse_arguments()
+cli_params = parse_arguments()
+params = cli_params
+
+if params.get("resume_run_id"):
+    try:
+        resume_from, resume_params_path = _resolve_resume_paths(
+            params["resume_run_id"], params)
+    except Exception as exc:
+        print(f"Failed to resolve resume paths: {exc}")
+        sys.exit(1)
+
+    print(f"Resume run_id: {params['resume_run_id']}")
+    print(f"Resume model path: {resume_from}")
+    print(f"Resume params path: {resume_params_path}")
+
+    try:
+        with open(resume_params_path, "r") as handle:
+            loaded_params = json.load(handle)
+    except Exception as exc:
+        print(f"Failed to load resume params: {exc}")
+        sys.exit(1)
+
+    print("Overriding CLI parameters with loaded experiment parameters.")
+    print(json.dumps(loaded_params, indent=2, sort_keys=True))
+
+    merged_params = dict(cli_params)
+    merged_params.update(loaded_params)
+
+    legacy_map = {
+        "use_cuda": "cuda",
+        "use_seed": "seed",
+        "use_validation": "validation",
+        "use_eprop": "eprop",
+        "use_linear_decay": "linear_decay",
+        "use_mechanoreceptor_encoding": "mechanoreceptor_encoding",
+        "use_random_tie_breaking": "random_tie_breaking",
+        "use_weight_quantization": "quantize_weights",
+        "no_synapse": "synapse",
+    }
+    for legacy_key, current_key in legacy_map.items():
+        if legacy_key in merged_params and current_key not in merged_params:
+            if legacy_key == "no_synapse":
+                merged_params[current_key] = not bool(merged_params[legacy_key])
+            else:
+                merged_params[current_key] = merged_params[legacy_key]
+
+    params = merged_params
+    params["resume_from"] = resume_from
+    params["resume_params"] = resume_params_path
+
+    if "--epochs" in sys.argv:
+        params["epochs"] = cli_params["epochs"]
+        print(f"Overriding loaded epochs with CLI value: {params['epochs']}")
 
 # If --debug flag is set, automatically use DEBUG log level
 if params.get('debug', False):
@@ -290,7 +374,7 @@ for dir in [params['fig_path'], params['model_path'], params['results_path'], pa
         os.makedirs(dir)
 
 # Create timestamped subfolders for this experiment run
-run_id = datetime.now().strftime('%Y%m%d_%H%M')
+run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
 figures_dir = os.path.join(params['fig_path'], run_id)
 models_dir = os.path.join(params['model_path'], run_id)
 results_dir = os.path.join(params['results_path'], run_id)
@@ -313,6 +397,10 @@ logger.info(f"Logs directory: {logs_dir}")
 logger.info(f"Results directory: {results_dir}")
 logger.info(f"Figures directory: {figures_dir}")
 logger.info(f"Models directory: {models_dir}")
+if params.get("resume_params"):
+    logger.info(f"Resume parameters: {params['resume_params']}")
+if params.get("resume_from"):
+    logger.info(f"Resume model: {params['resume_from']}")
 
 
 ##############################################################################
@@ -449,9 +537,20 @@ if __name__ == '__main__':
     loss_hist_repetition = []
     accs_hist_repetition = []
 
-    # Define paths for saving results and models
-    results_file = os.path.join(
-        results_dir, f"braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}.npz")
+
+    resume_weights = None
+    if params.get("resume_from"):
+        resume_path = params["resume_from"]
+        if not os.path.isfile(resume_path):
+            logger.error(f"Resume file not found: {resume_path}")
+            sys.exit(1)
+        try:
+            resume_weights = load_weights_from_model(resume_path, map_location="cpu")
+            logger.info(f"Resuming from model: {resume_path}")
+        except Exception as e:
+            logger.error(f"Failed to load resume model: {resume_path}")
+            logger.error(str(e))
+            sys.exit(1)
 
     for repetition in range(params['repetitions']):
         logger.info(
@@ -525,7 +624,7 @@ if __name__ == '__main__':
         #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
         try:
             loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
-                params=params, ds_train=ds_train, ds_test=ds_test)
+                params=params, ds_train=ds_train, ds_test=ds_test, resume_weights=resume_weights)
         except Exception as e:
             logger.error(f"Training failed for repetition {repetition + 1}: {str(e)}")
             logger.error(f"Skipping this repetition and continuing...")
@@ -569,7 +668,10 @@ if __name__ == '__main__':
         # Save trained model weights (full layer objects for evaluation)
         try:
             torch.save(
-                best_layers, os.path.join(models_dir, f'best_model_{nb_hidden}_neurons_{str_letters}.pt'))
+                best_layers,
+                os.path.join(
+                    models_dir,
+                    f'best_model_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.pt'))
         except Exception as e:
             logger.error(f"Failed to save trained model: {str(e)}")
         
@@ -583,6 +685,9 @@ if __name__ == '__main__':
             logger.error(f"Failed to save final weights: {str(e)}")
 
         # Save training metrics and hyperparameters
+        results_file = os.path.join(
+            results_dir,
+            f"braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz")
         try:
             np.savez(results_file,
                      acc_train=accs_hist[0],
@@ -673,16 +778,94 @@ if __name__ == '__main__':
         logger.info(f"{'='*60}")
 
     # Plot training curves (loss and accuracy over epochs)
-    plot_training_performance_repetitive_runs(
-        path=os.path.join(
-            figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
-        acc_train=np.array(accs_hist_repetition)[:, 0],
-        acc_test=np.array(accs_hist_repetition)[:, 1],
-        loss_train=np.array(loss_hist_repetition))
+    if len(accs_hist_repetition) == 0 or len(loss_hist_repetition) == 0:
+        logger.warning(
+            "No successful repetitions completed; skipping summary performance plot.")
+    else:
+        plot_training_performance_repetitive_runs(
+            path=os.path.join(
+                figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
+            acc_train=np.array(accs_hist_repetition)[:, 0],
+            acc_test=np.array(accs_hist_repetition)[:, 1],
+            loss_train=np.array(loss_hist_repetition))
+
+    ##########################################################################
+    # FINAL PERFORMANCE REPORT
+    ##########################################################################
     
     logger.info(f"\n\n{'='*80}")
-    logger.info(f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions finished")
-    logger.info(f"Results directory: {results_dir}")
-    logger.info(f"Figures directory: {figures_dir}")
-    logger.info(f"Models directory: {models_dir}")
+    logger.info(f"FINAL PERFORMANCE REPORT")
+    logger.info(f"{'='*80}\n")
+    
+    # Experiment configuration summary
+    logger.info(f"Experiment Configuration:")
+    logger.info(f"  Run ID: {run_id}")
+    logger.info(f"  Learning Algorithm: {'e-prop' if params['eprop'] else 'BPTT'}")
+    logger.info(f"  Letters: {str_letters} ({len(params['letters'])} classes)")
+    logger.info(f"  Hidden Neurons: {nb_hidden}")
+    logger.info(f"  Training Epochs: {params['epochs']}")
+    logger.info(f"  Batch Size: {params['batch_size']}")
+    logger.info(f"  Learning Rate: {params['learning_rate']}")
+    logger.info(f"  Device: {params['device']}")
+    logger.info("")
+    
+    # Performance across repetitions
+    if len(accs_hist_repetition) > 0:
+        accs_array = np.array(accs_hist_repetition)
+        loss_array = np.array(loss_hist_repetition)
+        
+        # Extract final and best accuracies for each repetition
+        final_train_accs = accs_array[:, 0, -1]  # Last epoch train accuracy
+        final_test_accs = accs_array[:, 1, -1]   # Last epoch test accuracy
+        best_train_accs = np.max(accs_array[:, 0, :], axis=1)  # Best train accuracy
+        best_test_accs = np.max(accs_array[:, 1, :], axis=1)   # Best test accuracy
+        final_losses = loss_array[:, -1]  # Last epoch loss
+        
+        logger.info(f"Performance Summary ({len(accs_hist_repetition)} successful repetitions):")
+        logger.info(f"")
+        logger.info(f"  Training Accuracy (final epoch):")
+        logger.info(f"    Mean: {np.mean(final_train_accs)*100:.2f}% ± {np.std(final_train_accs)*100:.2f}%")
+        logger.info(f"    Min:  {np.min(final_train_accs)*100:.2f}%")
+        logger.info(f"    Max:  {np.max(final_train_accs)*100:.2f}%")
+        logger.info(f"")
+        logger.info(f"  Test Accuracy (final epoch):")
+        logger.info(f"    Mean: {np.mean(final_test_accs)*100:.2f}% ± {np.std(final_test_accs)*100:.2f}%")
+        logger.info(f"    Min:  {np.min(final_test_accs)*100:.2f}%")
+        logger.info(f"    Max:  {np.max(final_test_accs)*100:.2f}%")
+        logger.info(f"")
+        logger.info(f"  Best Training Accuracy (across all epochs):")
+        logger.info(f"    Mean: {np.mean(best_train_accs)*100:.2f}% ± {np.std(best_train_accs)*100:.2f}%")
+        logger.info(f"    Min:  {np.min(best_train_accs)*100:.2f}%")
+        logger.info(f"    Max:  {np.max(best_train_accs)*100:.2f}%")
+        logger.info(f"")
+        logger.info(f"  Best Test Accuracy (across all epochs):")
+        logger.info(f"    Mean: {np.mean(best_test_accs)*100:.2f}% ± {np.std(best_test_accs)*100:.2f}%")
+        logger.info(f"    Min:  {np.min(best_test_accs)*100:.2f}%")
+        logger.info(f"    Max:  {np.max(best_test_accs)*100:.2f}%")
+        logger.info(f"")
+        logger.info(f"  Final Loss:")
+        logger.info(f"    Mean: {np.mean(final_losses):.4f} ± {np.std(final_losses):.4f}")
+        logger.info(f"    Min:  {np.min(final_losses):.4f}")
+        logger.info(f"    Max:  {np.max(final_losses):.4f}")
+        logger.info(f"")
+        
+        # Chance level comparison
+        num_classes = len(params['letters'])
+        chance_level = 1.0 / num_classes
+        logger.info(f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
+        logger.info(f"  Improvement over chance (mean test): {(np.mean(final_test_accs) - chance_level)*100:.2f} percentage points")
+        logger.info(f"")
+    else:
+        logger.warning(f"  No successful repetitions to report.")
+        logger.info(f"")
+    
+    # Output directories
+    logger.info(f"Output Locations:")
+    logger.info(f"  Results:  {results_dir}")
+    logger.info(f"  Figures:  {figures_dir}")
+    logger.info(f"  Models:   {models_dir}")
+    logger.info(f"  Logs:     {logs_dir}")
+    
+    logger.info(f"\n{'='*80}")
+    logger.info(f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions requested, {len(accs_hist_repetition)} successful")
     logger.info(f"{'='*80}\n")

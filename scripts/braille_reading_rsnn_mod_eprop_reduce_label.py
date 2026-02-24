@@ -30,6 +30,27 @@ Custom architecture with validation set:
 Select specific tactile sensors:
     python braille_reading_rsnn_mod_eprop_reduce_label.py --selected_channels 0 1 2 5 8
 
+Run inference-only evaluation from a resumed model (no training):
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume-run-id 20260130_1151_exploration --inference-only
+
+Equivalent forms also supported:
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume_training 20260130_1151_exploration --inference_only=true
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume_training 20260130_1151_exploration --inference_only=false
+
+Resume existing training from a previous run folder (auto-picks newest best_model_*.pt):
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume-run-id 20260130_1151_exploration
+
+Resume from a specific checkpoint file in that run folder:
+    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume-run-id 20260130_1151_exploration --resume-model-name best_model_50_neurons_A_B_rep_1.pt
+
+Resume behavior and CLI overrides:
+    - When --resume-run-id is used, parameters are loaded from:
+      results/<run_id>/experiment_parameters.json
+    - Loaded parameters override most CLI values to preserve experiment consistency.
+    - Currently, --epochs is explicitly allowed to override the loaded value.
+    - --resume-model-name only selects which checkpoint to load; it does not alter
+      the loaded experiment hyperparameters.
+
 Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
@@ -73,6 +94,16 @@ def parse_arguments():
         Includes network architecture, training hyperparameters, neuron dynamics,
         regularization settings, data configuration, and model options.
     """
+    def _str2bool(value):
+        if isinstance(value, bool):
+            return value
+        value = str(value).strip().lower()
+        if value in {'true', 't', '1', 'yes', 'y'}:
+            return True
+        if value in {'false', 'f', '0', 'no', 'n'}:
+            return False
+        raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
     parser = argparse.ArgumentParser(
         description='Train RSNN for Braille letter classification',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -190,10 +221,14 @@ def parse_arguments():
     parser.add_argument('--log_level', type=str, default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='Logging level (overridden by --debug flag): DEBUG for diagnostics, INFO normal, WARNING/ERROR for minimal output')
-    parser.add_argument('--resume-run-id', type=str, default='',
-                        help='Run ID to resume from (loads model and params from model/results)')
+    parser.add_argument('--resume-run-id', '--resume-training', '--resume_training',
+                        dest='resume_run_id', type=str, default='',
+                        help='Run ID to resume from (loads model and params from model/results); aliases: --resume-training, --resume_training')
     parser.add_argument('--resume-model-name', type=str, default='',
                         help='Optional best_model filename to load within the run_id model folder')
+    parser.add_argument('--inference-only', '--inference_only',
+                        dest='inference_only', nargs='?', const=True, default=False, type=_str2bool,
+                        help='Skip training and only run evaluation/plots using a resumed model (requires --resume-run-id). Supports forms like --inference-only, --inference_only=true, --inference_only=false')
 
     args = parser.parse_args()
 
@@ -236,6 +271,26 @@ def _resolve_resume_paths(resume_run_id, params):
     if not resume_params_path.is_file():
         raise FileNotFoundError(f"Resume parameters file not found: {resume_params_path}")
     return resume_from, str(resume_params_path)
+
+
+def _prepare_layers_for_inference(resume_path, params):
+    """Load saved layers and align tensor/device settings for inference."""
+    layers = torch.load(resume_path, map_location=params['device'])
+
+    for layer in layers:
+        layer.device = params['device']
+        layer.dtype = params['dtype_torch']
+
+        if hasattr(layer, 'ff_weights'):
+            layer.ff_weights = layer.ff_weights.to(
+                device=params['device'], dtype=params['dtype_torch'])
+        if hasattr(layer, 'rec_weights'):
+            layer.rec_weights = layer.rec_weights.to(
+                device=params['device'], dtype=params['dtype_torch'])
+        if hasattr(layer, 'ref_per_tensor') and layer.ref_per_tensor is not None:
+            layer.ref_per_tensor = layer.ref_per_tensor.to(device=params['device'])
+
+    return layers
 
 
 def setup_logger(log_dir, run_id, log_level='INFO'):
@@ -343,6 +398,10 @@ if params.get("resume_run_id"):
         params["epochs"] = cli_params["epochs"]
         print(f"Overriding loaded epochs with CLI value: {params['epochs']}")
 
+if params.get('inference_only', False) and not params.get("resume_run_id"):
+    print("--inference-only requires --resume-run-id to load an existing model.")
+    sys.exit(1)
+
 # If --debug flag is set, automatically use DEBUG log level
 if params.get('debug', False):
     params['log_level'] = 'DEBUG'
@@ -397,6 +456,18 @@ logger.info(f"Logs directory: {logs_dir}")
 logger.info(f"Results directory: {results_dir}")
 logger.info(f"Figures directory: {figures_dir}")
 logger.info(f"Models directory: {models_dir}")
+
+if params.get('resume_run_id') and params.get('inference_only', False):
+    run_mode = 'Resume + Inference Only'
+elif params.get('resume_run_id'):
+    run_mode = 'Resume + Training'
+else:
+    run_mode = 'Fresh Training'
+
+logger.info(f"Run mode: {run_mode}")
+logger.info(f"Inference only: {params.get('inference_only', False)}")
+if params.get('resume_run_id'):
+    logger.info(f"Resume run ID: {params['resume_run_id']}")
 if params.get("resume_params"):
     logger.info(f"Resume parameters: {params['resume_params']}")
 if params.get("resume_from"):
@@ -536,9 +607,11 @@ if __name__ == '__main__':
 
     loss_hist_repetition = []
     accs_hist_repetition = []
+    eval_acc_repetition = []
 
 
     resume_weights = None
+    inference_layers = None
     if params.get("resume_from"):
         resume_path = params["resume_from"]
         if not os.path.isfile(resume_path):
@@ -551,6 +624,15 @@ if __name__ == '__main__':
             logger.error(f"Failed to load resume model: {resume_path}")
             logger.error(str(e))
             sys.exit(1)
+
+        if params.get('inference_only', False):
+            try:
+                inference_layers = _prepare_layers_for_inference(resume_path, params)
+                logger.info("Inference-only mode enabled: loaded resumed model for evaluation.")
+            except Exception as e:
+                logger.error(f"Failed to load model layers for inference from: {resume_path}")
+                logger.error(str(e))
+                sys.exit(1)
 
     for repetition in range(params['repetitions']):
         logger.info(
@@ -622,16 +704,28 @@ if __name__ == '__main__':
         # Note: params dict is modified in-place by build_and_train() to include:
         #   - 'beta_trace': Eligibility trace decay for hidden layer (e-prop only)
         #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
-        try:
-            loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
-                params=params, ds_train=ds_train, ds_test=ds_test, resume_weights=resume_weights)
-        except Exception as e:
-            logger.error(f"Training failed for repetition {repetition + 1}: {str(e)}")
-            logger.error(f"Skipping this repetition and continuing...")
-            continue
+        loss_hist_epochs = []
+        accs_hist = [[], []]
+        initial_weights = None
 
-        loss_hist_repetition.append(loss_hist_epochs)
-        accs_hist_repetition.append(accs_hist)
+        if params.get('inference_only', False):
+            if inference_layers is None:
+                logger.error("Inference-only mode requires a loaded resume model.")
+                logger.error(f"Skipping repetition {repetition + 1}")
+                continue
+            best_layers = inference_layers
+            logger.info("Inference-only mode: skipping training and running evaluation only.")
+        else:
+            try:
+                loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
+                    params=params, ds_train=ds_train, ds_test=ds_test, resume_weights=resume_weights)
+            except Exception as e:
+                logger.error(f"Training failed for repetition {repetition + 1}: {str(e)}")
+                logger.error(f"Skipping this repetition and continuing...")
+                continue
+
+            loss_hist_repetition.append(loss_hist_epochs)
+            accs_hist_repetition.append(accs_hist)
 
         ##########################################################################
         # MODEL EVALUATION
@@ -646,77 +740,66 @@ if __name__ == '__main__':
         else:
             val_acc, trues, preds = compute_classification_accuracy(
                 dataset=ds_test, layers=best_layers, params=params)
+        eval_acc_repetition.append(val_acc)
         
         # Warn if final accuracy is low
         num_classes = len(params['letters'])
         chance_level = 1.0 / num_classes
         if val_acc < (chance_level + 0.10):  # Less than 10% above chance
-            logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%). "
-                          f"Poor weight initialization or insufficient training.")
+            if params.get('inference_only', False):
+                logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%).")
+            else:
+                logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%). "
+                              f"Poor weight initialization or insufficient training.")
 
         ##########################################################################
         # SAVE RESULTS
         ##########################################################################
 
-        # Save initial weights (at initialization, before training)
-        try:
-            np.savez(os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                     **initial_weights)
-        except Exception as e:
-            logger.error(f"Failed to save initial weights: {str(e)}")
+        if not params.get('inference_only', False):
+            # Save initial weights (at initialization, before training)
+            try:
+                np.savez(os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                         **initial_weights)
+            except Exception as e:
+                logger.error(f"Failed to save initial weights: {str(e)}")
 
-        # Save trained model weights (full layer objects for evaluation)
-        try:
-            torch.save(
-                best_layers,
-                os.path.join(
-                    models_dir,
-                    f'best_model_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.pt'))
-        except Exception as e:
-            logger.error(f"Failed to save trained model: {str(e)}")
-        
-        # Save final weights as numpy arrays for easy analysis
-        try:
-            from utils.train_snn import save_weights
-            final_weights = save_weights(best_layers)
-            np.savez(os.path.join(models_dir, f'final_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                     **final_weights)
-        except Exception as e:
-            logger.error(f"Failed to save final weights: {str(e)}")
+            # Save trained model weights (full layer objects for evaluation)
+            try:
+                torch.save(
+                    best_layers,
+                    os.path.join(
+                        models_dir,
+                        f'best_model_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.pt'))
+            except Exception as e:
+                logger.error(f"Failed to save trained model: {str(e)}")
+            
+            # Save final weights as numpy arrays for easy analysis
+            try:
+                from utils.train_snn import save_weights
+                final_weights = save_weights(best_layers)
+                np.savez(os.path.join(models_dir, f'final_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                         **final_weights)
+            except Exception as e:
+                logger.error(f"Failed to save final weights: {str(e)}")
 
-        # Save training metrics and hyperparameters
+        # Results path for this repetition
         results_file = os.path.join(
             results_dir,
             f"braille_reading_rsnn_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz")
-        try:
-            np.savez(results_file,
-                     acc_train=accs_hist[0],
-                     acc_test=accs_hist[1],
-                     loss_train=loss_hist_epochs,
-                     val_acc=val_acc,
-                     repetition=repetition + 1,
-                     nb_hidden=nb_hidden,
-                     nb_epochs=params['epochs'],
-                     learning_rate=params['learning_rate'],
-                     batch_size=params['batch_size'],
-                     letters=str_letters,
-                     eprop=params['eprop'],
-                     run_id=run_id)
-            logger.info(f"Results saved to {results_file}")
-        except Exception as e:
-            logger.error(f"Failed to save results to {results_file}: {str(e)}")
 
         ##########################################################################
         # GENERATE VISUALIZATIONS
         ##########################################################################
 
-        # Plot training curves (loss and accuracy over epochs)
-        plot_training_performance(
-            path=os.path.join(
-                figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_rep_{repetition+1}"),
-            acc_train=np.array(accs_hist[0]),
-            acc_test=np.array(accs_hist[1]),
-            loss_train=np.array(loss_hist_epochs))
+        if not params.get('inference_only', False):
+            # Plot training curves (loss and accuracy over epochs)
+            plot_training_performance(
+                path=os.path.join(
+                    figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_rep_{repetition+1}"),
+                acc_train=np.array(accs_hist[0]),
+                acc_test=np.array(accs_hist[1]),
+                loss_train=np.array(loss_hist_epochs))
 
         # Generate confusion matrix showing classification performance per letter
         plot_confusion_matrix(
@@ -733,6 +816,40 @@ if __name__ == '__main__':
         # Extract spike activity from hidden and readout layers
         spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
             dataset=ds_test, layers=best_layers, params=params)
+
+        # Save training metrics, hyperparameters, and full spike recordings
+        # Concatenate per-batch arrays to avoid object arrays and keep load path simple.
+        try:
+            spk_rec_readout = np.concatenate(spk_rec_readout_array, axis=0)
+            spk_rec_hidden = np.concatenate(spk_rec_hidden_array, axis=0)
+            network_input = ds_test.tensors[0].detach().cpu().numpy()
+            network_input_labels = ds_test.tensors[1].detach().cpu().numpy()
+
+            np.savez_compressed(results_file,
+                                acc_train=accs_hist[0],
+                                acc_test=accs_hist[1],
+                                loss_train=loss_hist_epochs,
+                                val_acc=val_acc,
+                                trues=np.array(trues),
+                                preds=np.array(preds),
+                                repetition=repetition + 1,
+                                nb_hidden=nb_hidden,
+                                nb_epochs=params['epochs'],
+                                learning_rate=params['learning_rate'],
+                                batch_size=params['batch_size'],
+                                letters=str_letters,
+                                eprop=params['eprop'],
+                                run_id=run_id,
+                                network_input=network_input,
+                                network_input_labels=network_input_labels,
+                                spk_rec_hidden=spk_rec_hidden,
+                                spk_rec_readout=spk_rec_readout)
+
+            logger.info(
+                f"Results (including spike recordings) saved to {results_file} "
+                f"[input={network_input.shape}, hidden={spk_rec_hidden.shape}, readout={spk_rec_readout.shape}]")
+        except Exception as e:
+            logger.error(f"Failed to save results to {results_file}: {str(e)}")
 
         # Generate raster plots showing spike timing patterns
         layer_names = ["Hidden layer", "Readout layer"]
@@ -778,16 +895,17 @@ if __name__ == '__main__':
         logger.info(f"{'='*60}")
 
     # Plot training curves (loss and accuracy over epochs)
-    if len(accs_hist_repetition) == 0 or len(loss_hist_repetition) == 0:
-        logger.warning(
-            "No successful repetitions completed; skipping summary performance plot.")
-    else:
-        plot_training_performance_repetitive_runs(
-            path=os.path.join(
-                figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
-            acc_train=np.array(accs_hist_repetition)[:, 0],
-            acc_test=np.array(accs_hist_repetition)[:, 1],
-            loss_train=np.array(loss_hist_repetition))
+    if not params.get('inference_only', False):
+        if len(accs_hist_repetition) == 0 or len(loss_hist_repetition) == 0:
+            logger.warning(
+                "No successful repetitions completed; skipping summary performance plot.")
+        else:
+            plot_training_performance_repetitive_runs(
+                path=os.path.join(
+                    figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
+                acc_train=np.array(accs_hist_repetition)[:, 0],
+                acc_test=np.array(accs_hist_repetition)[:, 1],
+                loss_train=np.array(loss_hist_repetition))
 
     ##########################################################################
     # FINAL PERFORMANCE REPORT
@@ -810,7 +928,26 @@ if __name__ == '__main__':
     logger.info("")
     
     # Performance across repetitions
-    if len(accs_hist_repetition) > 0:
+    if params.get('inference_only', False):
+        if len(eval_acc_repetition) > 0:
+            eval_accs = np.array(eval_acc_repetition)
+            num_classes = len(params['letters'])
+            chance_level = 1.0 / num_classes
+
+            logger.info(f"Inference-only Summary ({len(eval_acc_repetition)} successful repetitions):")
+            logger.info("")
+            logger.info(f"  Evaluation Accuracy:")
+            logger.info(f"    Mean: {np.mean(eval_accs)*100:.2f}% ± {np.std(eval_accs)*100:.2f}%")
+            logger.info(f"    Min:  {np.min(eval_accs)*100:.2f}%")
+            logger.info(f"    Max:  {np.max(eval_accs)*100:.2f}%")
+            logger.info("")
+            logger.info(f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
+            logger.info(f"  Improvement over chance (mean eval): {(np.mean(eval_accs) - chance_level)*100:.2f} percentage points")
+            logger.info("")
+        else:
+            logger.warning(f"  No successful repetitions to report.")
+            logger.info(f"")
+    elif len(accs_hist_repetition) > 0:
         accs_array = np.array(accs_hist_repetition)
         loss_array = np.array(loss_hist_repetition)
         
@@ -867,5 +1004,6 @@ if __name__ == '__main__':
     logger.info(f"  Logs:     {logs_dir}")
     
     logger.info(f"\n{'='*80}")
-    logger.info(f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions requested, {len(accs_hist_repetition)} successful")
+    successful_repetitions = len(eval_acc_repetition) if params.get('inference_only', False) else len(accs_hist_repetition)
+    logger.info(f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions requested, {successful_repetitions} successful")
     logger.info(f"{'='*80}\n")

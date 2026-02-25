@@ -206,12 +206,15 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
         alpha = float(np.exp(-params["time_step"]/tau_syn))
 
     if params["linear_decay"]:
-        beta = 0.005  # 0.05 < 0.01 says how much to lose
+        # Linear decay uses a per-timestep voltage decrement, so make it explicit
+        # in terms of simulation timestep (dt) and membrane constants.
+        beta = float(params["time_step"] / params['tau_mem'])
+        beta_rec = float(params["time_step"] / params['tau_mem_rec'])
     else:
-        # says how much to keep
+        # Exponential decay uses a per-timestep retention factor.
         beta = float(np.exp(-params["time_step"]/params['tau_mem']))
         beta_rec = float(np.exp(-params["time_step"]/params['tau_mem_rec'])
-                         )  # says how much to keep
+                         )
 
     if params["eprop"]:
         params['beta_trace'] = float(

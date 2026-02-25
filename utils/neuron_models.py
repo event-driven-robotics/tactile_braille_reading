@@ -279,7 +279,7 @@ class feedforward_layer:
 
         # Optional features
         self.ref_per = ref_per
-        if ref_per is not None or ref_per > 0:
+        if ref_per is not None and ref_per > 0:
             self.ref_per_tensor = torch.zeros(
                 (batch_size, nb_neurons), device=self.device, dtype=torch.int)
         self.create_layer()
@@ -544,7 +544,7 @@ class recurrent_layer:
 
         # Optional features
         self.ref_per = ref_per
-        if ref_per is not None or ref_per > 0:
+        if ref_per is not None and ref_per > 0:
             self.ref_per_tensor = torch.zeros(
                 (batch_size, nb_neurons), device=self.device, dtype=torch.int)
         self.create_layer()

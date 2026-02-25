@@ -162,7 +162,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     time_bin_size = params["time_bin_size"]
     time = range(0, max_time, time_bin_size)
 
-    params["time_step"] = time_bin_size*0.001  # ms
+    params["time_step"] = time_bin_size*0.001  # seconds
     params["data_steps"] = len(time)
     # params["delayed_output"] = data_steps
     params["delayed_output"] = None  # 0  # data_steps

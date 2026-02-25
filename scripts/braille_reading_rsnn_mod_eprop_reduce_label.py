@@ -55,6 +55,7 @@ Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
 import argparse
+import math
 import json
 import logging
 import os
@@ -169,8 +170,10 @@ def parse_arguments():
                         help='Output trace time constant (seconds)')
     parser.add_argument('--tau_ratio', type=float, default=10,
                         help='Ratio for tau_syn calculation')
-    parser.add_argument('--ref_per_timesteps', type=int, default=3,
-                        help='Refractory period in timesteps')
+    parser.add_argument('--ref_per_ms', type=float, default=3.0,
+                        help='Refractory period in milliseconds (converted to timesteps using time_bin_size)')
+    parser.add_argument('--ref_per_timesteps', type=int, default=None,
+                        help='[Deprecated] Refractory period in timesteps. If set, it overrides --ref_per_ms.')
     parser.add_argument('--lower_bound', type=float, default=-1.0,
                         help='Lower bound for membrane potential')
 
@@ -271,6 +274,45 @@ def _resolve_resume_paths(resume_run_id, params):
     if not resume_params_path.is_file():
         raise FileNotFoundError(f"Resume parameters file not found: {resume_params_path}")
     return resume_from, str(resume_params_path)
+
+
+def _resolve_refractory_params(params):
+    """Resolve refractory period consistently from ms and timestep settings.
+
+    Priority:
+    1) If ref_per_timesteps is explicitly set, use it and derive ref_per_ms.
+    2) Otherwise, derive ref_per_timesteps from ref_per_ms and time_bin_size.
+    """
+    time_bin_size_ms = float(params.get("time_bin_size", 1))
+    if time_bin_size_ms <= 0.0:
+        raise ValueError(
+            f"time_bin_size must be > 0 ms, got {time_bin_size_ms}")
+
+    if params.get("ref_per_timesteps") is not None:
+        ref_steps = int(params["ref_per_timesteps"])
+        if ref_steps <= 0:
+            params["ref_per_timesteps"] = None
+            params["ref_per_ms"] = 0.0
+        else:
+            params["ref_per_timesteps"] = ref_steps
+            params["ref_per_ms"] = ref_steps * time_bin_size_ms
+        return
+
+    ref_ms = float(params.get("ref_per_ms", 3.0))
+    if ref_ms <= 0.0:
+        params["ref_per_timesteps"] = None
+        params["ref_per_ms"] = 0.0
+    else:
+        ref_steps = max(1, int(math.ceil(ref_ms / time_bin_size_ms)))
+        params["ref_per_timesteps"] = ref_steps
+        params["ref_per_ms"] = ref_ms
+
+
+def _format_timestep_count(n_steps):
+    """Return human-readable timestep count with correct singular/plural wording."""
+    step_count = int(n_steps)
+    unit = "timestep" if step_count == 1 else "timesteps"
+    return f"{step_count} {unit}"
 
 
 def _prepare_layers_for_inference(resume_path, params):
@@ -402,6 +444,9 @@ if params.get('inference_only', False) and not params.get("resume_run_id"):
     print("--inference-only requires --resume-run-id to load an existing model.")
     sys.exit(1)
 
+# Resolve refractory settings after all parameter merging/overrides
+_resolve_refractory_params(params)
+
 # If --debug flag is set, automatically use DEBUG log level
 if params.get('debug', False):
     params['log_level'] = 'DEBUG'
@@ -452,6 +497,18 @@ logger.info(f"Log file: {os.path.join(logs_dir, f'training_log_{run_id}.txt')}")
 logger.info(f"Log level: {params['log_level']}")
 logger.info(f"Using letters: {', '.join(letters)}")
 logger.info(f"Using torch dtype: {params['dtype']}")
+time_bin_size_ms = float(params['time_bin_size'])
+logger.info(
+    f"Time bin size: {time_bin_size_ms:g} ms ({time_bin_size_ms * 0.001:g} s)")
+if params['ref_per_timesteps'] is None:
+    logger.info("Refractory period: disabled (0.0 ms, 0 timesteps)")
+else:
+    effective_ref_ms = params['ref_per_timesteps'] * time_bin_size_ms
+    ref_steps_text = _format_timestep_count(params['ref_per_timesteps'])
+    logger.info(
+        f"Refractory period configured: {params['ref_per_ms']:g} ms")
+    logger.info(
+        f"Refractory period resolved: {ref_steps_text} ({effective_ref_ms:g} ms effective)")
 logger.info(f"Logs directory: {logs_dir}")
 logger.info(f"Results directory: {results_dir}")
 logger.info(f"Figures directory: {figures_dir}")
@@ -655,6 +712,25 @@ if __name__ == '__main__':
             logger.error(f"Skipping repetition {repetition + 1}")
             continue
 
+        dataset_steps = None
+        if len(ds_train) > 0:
+            dataset_steps = int(ds_train.tensors[0].shape[1])
+        elif len(ds_test) > 0:
+            dataset_steps = int(ds_test.tensors[0].shape[1])
+        elif params["validation"] and ds_validation is not None and len(ds_validation) > 0:
+            dataset_steps = int(ds_validation.tensors[0].shape[1])
+
+        if dataset_steps is None:
+            logger.error("No samples available to derive simulation timesteps from prepared dataset.")
+            logger.error(f"Skipping repetition {repetition + 1}")
+            continue
+
+        if params.get("data_steps") != dataset_steps:
+            logger.warning(
+                f"data_steps mismatch: params has {params.get('data_steps')}, "
+                f"prepared dataset has {dataset_steps}. Using dataset-derived value.")
+            params["data_steps"] = dataset_steps
+
         # Clear GPU cache before training
         torch.cuda.empty_cache()
 
@@ -663,16 +739,23 @@ if __name__ == '__main__':
         ##########################################################################
 
         # Print comprehensive dataset statistics
-        logger.info("Number of training data %i." % len(ds_train))
-        logger.info("Number of testing data %i." % len(ds_test))
+        logger.info("Number of training samples %i." % len(ds_train))
+        logger.info("Number of testing samples %i." % len(ds_test))
         if params["validation"]:
-            logger.info("Number of validation data %i." % len(ds_validation))
-        logger.info("Number of outputs %i." % len(np.unique(labels)))
-        logger.info("Number of input channels %i." %
-              len(params["selected_channels"]))
+            logger.info("Number of validation samples %i." % len(ds_validation))
+        logger.info("Number of output classes %i." % len(np.unique(labels)))
+        logger.info("Number of input channels %i." % len(params["selected_channels"]))
         logger.info("Number of hidden neurons %i." % nb_hidden)
-        logger.info("Number of timesteps %i." % params["data_steps"])
+        logger.info("Simulation time step %.3f ms (%.6f s)." %
+                    (params["time_step"] * 1000.0, params["time_step"]))
+        logger.info("Simulation timesteps (derived from prepared dataset): %i." % params["data_steps"])
         logger.info("Delayed output %s" % params["delayed_output"])
+
+        expected_time_step_s = float(params["time_bin_size"]) * 0.001
+        if not np.isclose(params["time_step"], expected_time_step_s):
+            logger.warning(
+                f"Inconsistent timestep conversion: time_step={params['time_step']:.6f}s "
+                f"but expected time_bin_size*0.001={expected_time_step_s:.6f}s")
         
         # Warn if dataset is very small
         if len(ds_train) < params['batch_size']:
@@ -690,10 +773,18 @@ if __name__ == '__main__':
         else:
             logger.info(f"Use exponential decay.")
         if params["ref_per_timesteps"]:
+            ref_steps_text = _format_timestep_count(params['ref_per_timesteps'])
             logger.info(
-                f"Refractory period set to {params['ref_per_timesteps']} simulation timesteps.")
-        logger.info("Input duration %fs" %
-              (params["data_steps"]*params["time_step"]))
+                f"Refractory period set to {ref_steps_text} "
+                f"({params['ref_per_ms']:g} ms target, "
+                f"{params['ref_per_timesteps'] * float(params['time_bin_size']):g} ms effective).")
+        else:
+            logger.info("Refractory period disabled (0.0 ms, 0 timesteps).")
+        total_duration_s = params["data_steps"] * params["time_step"]
+        total_duration_ms = total_duration_s * 1000.0
+        logger.info(
+            "Simulation duration %.3f ms (%.6f s)." %
+            (total_duration_ms, total_duration_s))
         logger.info("---------------------------\n")
 
         ##########################################################################
@@ -822,6 +913,8 @@ if __name__ == '__main__':
         try:
             spk_rec_readout = np.concatenate(spk_rec_readout_array, axis=0)
             spk_rec_hidden = np.concatenate(spk_rec_hidden_array, axis=0)
+            trues_array = np.concatenate(trues, axis=0)
+            preds_array = np.concatenate(preds, axis=0)
             network_input = ds_test.tensors[0].detach().cpu().numpy()
             network_input_labels = ds_test.tensors[1].detach().cpu().numpy()
 
@@ -830,8 +923,8 @@ if __name__ == '__main__':
                                 acc_test=accs_hist[1],
                                 loss_train=loss_hist_epochs,
                                 val_acc=val_acc,
-                                trues=np.array(trues),
-                                preds=np.array(preds),
+                                trues=trues_array,
+                                preds=preds_array,
                                 repetition=repetition + 1,
                                 nb_hidden=nb_hidden,
                                 nb_epochs=params['epochs'],

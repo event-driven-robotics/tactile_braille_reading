@@ -927,14 +927,14 @@ if __name__ == '__main__':
             except Exception as e:
                 logger.error(f"Failed to save trained model: {str(e)}")
             
-            # Save final weights as numpy arrays for easy analysis
+            # Save best-model weights as numpy arrays for easy analysis
             try:
                 from utils.train_snn import save_weights
-                final_weights = save_weights(best_layers)
-                np.savez(os.path.join(models_dir, f'final_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                         **final_weights)
+                best_model_weights = save_weights(best_layers)
+                np.savez(os.path.join(models_dir, f'best_model_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                         **best_model_weights)
             except Exception as e:
-                logger.error(f"Failed to save final weights: {str(e)}")
+                logger.error(f"Failed to save best-model weights: {str(e)}")
 
         # Results path for this repetition
         results_file = os.path.join(

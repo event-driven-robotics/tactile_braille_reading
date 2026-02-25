@@ -32,7 +32,7 @@ data_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 model_path = f"./model/{experiment_id}"
 model_file_name = "best_model_5_neurons_A_B_rep_1.pt"
 initial_weights_file_name = "initial_weights_5_neurons_A_B_rep_1.npz"
-final_weights_file_name = "final_weights_5_neurons_A_B_rep_1.npz"
+best_model_weights_file_name = "best_model_weights_5_neurons_A_B_rep_1.npz"
 
 def load_experiment_npz(npz_path: str) -> Dict[str, Any]:
     """Load a saved experiment .npz file and auto-convert scalar fields.
@@ -279,13 +279,24 @@ if __name__ == "__main__":
     npz_path: str = f"{data_path}/{data_file_name}"
     model_pt_path: str = f"{model_path}/{model_file_name}"
     initial_weights_path: str = f"{model_path}/{initial_weights_file_name}"
-    final_weights_path: str = f"{model_path}/{final_weights_file_name}"
+    best_model_weights_path: str = f"{model_path}/{best_model_weights_file_name}"
+    legacy_final_weights_path: str = f"{model_path}/{best_model_weights_file_name.replace('best_model_weights_', 'final_weights_')}"
     histogram_output_dir: str = f"./figures/{experiment_id}/weight_analysis"
 
     experiment: Dict[str, Any] = load_experiment_npz(npz_path)
     model_layers: List[Any] = load_model_pt(model_pt_path, map_location="cpu")
     initial_weights: Dict[str, np.ndarray] = load_weights_npz(initial_weights_path)
-    final_weights: Dict[str, np.ndarray] = load_weights_npz(final_weights_path)
+    if Path(best_model_weights_path).exists():
+        selected_best_weights_path = best_model_weights_path
+    elif Path(legacy_final_weights_path).exists():
+        selected_best_weights_path = legacy_final_weights_path
+        print(f"Using legacy weights filename: {legacy_final_weights_path}")
+    else:
+        raise FileNotFoundError(
+            "Neither best_model_weights nor legacy final_weights file found in model path."
+        )
+
+    final_weights: Dict[str, np.ndarray] = load_weights_npz(selected_best_weights_path)
     weight_change_summary: Dict[str, Dict[str, Any]] = summarize_weight_changes(initial_weights, final_weights)
     histogram_files: List[str] = plot_weight_histograms(
         initial_weights=initial_weights,

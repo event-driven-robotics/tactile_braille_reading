@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import date
 
 
-experiment_id = "20260115_0833_exploration/20260224_080144"
+experiment_id = "20260115_0833_exploration/20260225_075309"
 results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"
@@ -62,23 +62,23 @@ def infer_timing_header_values(params: dict, n_steps: int) -> dict[str, float]:
     - T_CLOCK: `time_step` if available, else `time_bin_size * 1e-3`.
     - T_REF_MIN/MAX: `ref_per_timesteps * T_CLOCK`.
     - T_LEAK_MIN/MAX: use `tau_mem` and `tau_mem_rec` (min/max).
-    - T_END: `max_time * T_CLOCK` if available, else `n_steps * T_CLOCK`.
+    - T_END: derived from prepared spike data as `n_steps * T_CLOCK`.
     """
     t_clock = float(params.get("time_step", params.get("time_bin_size", 1) * 1.0e-3))
 
-    ref_per_timesteps = int(params.get("ref_per_timesteps", 3))
-    t_ref = ref_per_timesteps * t_clock
+    ref_steps_raw = params.get("ref_per_timesteps")
+    if ref_steps_raw is None:
+        ref_per_timesteps = 0
+    else:
+        ref_per_timesteps = int(ref_steps_raw)
+    t_ref = max(0, ref_per_timesteps) * t_clock
 
     tau_mem = float(params.get("tau_mem", 0.06))
     tau_mem_rec = float(params.get("tau_mem_rec", tau_mem))
     t_leak_min = min(tau_mem, tau_mem_rec)
     t_leak_max = max(tau_mem, tau_mem_rec)
 
-    max_time = params.get("max_time")
-    if max_time is not None:
-        t_end = float(max_time) * t_clock
-    else:
-        t_end = float(n_steps) * t_clock
+    t_end = float(n_steps) * t_clock
 
     return {
         "t_clock": t_clock,
@@ -102,6 +102,7 @@ def write_circuit_spike_file(
     """Write spike events for one source layer with required header and clock events."""
     n_samples = layer_spk.shape[0]
     n_steps = layer_spk.shape[1]
+    t_clock = float(header_timing["t_clock"])
 
     if sample_idx < 0 or sample_idx >= n_samples:
         raise IndexError(f"sample_idx={sample_idx} out of range [0, {n_samples - 1}]")
@@ -123,7 +124,7 @@ def write_circuit_spike_file(
 
     last_event_time = 0.0
     for step in range(n_steps):
-        current_t = step * 1.0e-3
+        current_t = step * t_clock
         delta_clock = current_t - last_event_time
         lines.append(f"{current_t:.6f}{tab2}{delta_clock:.6e}{tab2}{7}")
         last_event_time = current_t

@@ -226,7 +226,9 @@ def parse_arguments():
                         help='Logging level (overridden by --debug flag): DEBUG for diagnostics, INFO normal, WARNING/ERROR for minimal output')
     parser.add_argument('--resume-run-id', '--resume-training', '--resume_training',
                         dest='resume_run_id', type=str, default='',
-                        help='Run ID to resume from (loads model and params from model/results); aliases: --resume-training, --resume_training')
+                        help='Run ID to resume from (loads model and params from model/results). '
+                            'When resuming, explicitly provided CLI arguments automatically override '
+                            'loaded experiment parameters; aliases: --resume-training, --resume_training')
     parser.add_argument('--resume-model-name', type=str, default='',
                         help='Optional best_model filename to load within the run_id model folder')
     parser.add_argument('--inference-only', '--inference_only',
@@ -234,6 +236,20 @@ def parse_arguments():
                         help='Skip training and only run evaluation/plots using a resumed model (requires --resume-run-id). Supports forms like --inference-only, --inference_only=true, --inference_only=false')
 
     args = parser.parse_args()
+
+    option_to_dest = {}
+    for action in parser._actions:
+        for option in action.option_strings:
+            option_to_dest[option] = action.dest
+
+    explicit_cli_dests = set()
+    for token in sys.argv[1:]:
+        if not token.startswith("--"):
+            continue
+        opt = token.split("=", 1)[0]
+        dest = option_to_dest.get(opt)
+        if dest is not None:
+            explicit_cli_dests.add(dest)
 
     # Compute derived parameters
     if args.mechanoreceptor_encoding:
@@ -246,7 +262,9 @@ def parse_arguments():
     # Convert to the new naming convention
 
     # Convert to dict for backward compatibility
-    return vars(args)
+    args_dict = vars(args)
+    args_dict["_explicit_cli_dests"] = sorted(explicit_cli_dests)
+    return args_dict
 
 
 def _resolve_resume_paths(resume_run_id, params):
@@ -288,7 +306,17 @@ def _resolve_refractory_params(params):
         raise ValueError(
             f"time_bin_size must be > 0 ms, got {time_bin_size_ms}")
 
-    if params.get("ref_per_timesteps") is not None:
+    explicit_cli_dests = set(params.get("_explicit_cli_dests", []))
+    ref_steps_explicit = "ref_per_timesteps" in explicit_cli_dests
+    ref_ms_explicit = "ref_per_ms" in explicit_cli_dests
+
+    use_ref_steps = params.get("ref_per_timesteps") is not None
+    if ref_ms_explicit and not ref_steps_explicit:
+        # If ref_per_ms was explicitly provided on CLI (resume case),
+        # derive timesteps from ms even if loaded params contain ref_per_timesteps.
+        use_ref_steps = False
+
+    if use_ref_steps:
         ref_steps = int(params["ref_per_timesteps"])
         if ref_steps <= 0:
             params["ref_per_timesteps"] = None
@@ -323,12 +351,27 @@ def _prepare_layers_for_inference(resume_path, params):
         layer.device = params['device']
         layer.dtype = params['dtype_torch']
 
+        # Backward compatibility for legacy serialized layers
+        if not hasattr(layer, 'spike_threshold'):
+            layer.spike_threshold = params.get('spike_threshold', 1.0)
+        if not hasattr(layer, 'gamma'):
+            layer.gamma = params.get('gamma', 15.0)
+        if not hasattr(layer, 'eprop'):
+            layer.eprop = params.get('eprop', False)
+        if not hasattr(layer, 'linear_decay'):
+            layer.linear_decay = params.get('linear_decay', False)
+        if not hasattr(layer, 'ref_per'):
+            layer.ref_per = params.get('ref_per_timesteps')
+
         if hasattr(layer, 'ff_weights'):
             layer.ff_weights = layer.ff_weights.to(
                 device=params['device'], dtype=params['dtype_torch'])
         if hasattr(layer, 'rec_weights'):
             layer.rec_weights = layer.rec_weights.to(
                 device=params['device'], dtype=params['dtype_torch'])
+        if layer.ref_per is not None and layer.ref_per > 0 and not hasattr(layer, 'ref_per_tensor'):
+            layer.ref_per_tensor = torch.zeros(
+                (params['batch_size'], layer.nb_neurons), device=params['device'], dtype=torch.int)
         if hasattr(layer, 'ref_per_tensor') and layer.ref_per_tensor is not None:
             layer.ref_per_tensor = layer.ref_per_tensor.to(device=params['device'])
 
@@ -414,6 +457,12 @@ if params.get("resume_run_id"):
     merged_params = dict(cli_params)
     merged_params.update(loaded_params)
 
+    # Always preserve current CLI control flags for this invocation
+    merged_params["resume_run_id"] = cli_params.get("resume_run_id", "")
+    merged_params["resume_model_name"] = cli_params.get("resume_model_name", "")
+    merged_params["inference_only"] = cli_params.get("inference_only", False)
+    merged_params["_explicit_cli_dests"] = cli_params.get("_explicit_cli_dests", [])
+
     legacy_map = {
         "use_cuda": "cuda",
         "use_seed": "seed",
@@ -436,9 +485,21 @@ if params.get("resume_run_id"):
     params["resume_from"] = resume_from
     params["resume_params"] = resume_params_path
 
-    if "--epochs" in sys.argv:
-        params["epochs"] = cli_params["epochs"]
-        print(f"Overriding loaded epochs with CLI value: {params['epochs']}")
+    auto_override_exclusions = {
+        "resume_run_id", "resume_model_name", "inference_only", "_explicit_cli_dests"
+    }
+    explicit_override_keys = [
+        key for key in cli_params.get("_explicit_cli_dests", [])
+        if key not in auto_override_exclusions
+    ]
+
+    if explicit_override_keys:
+        print("Applying explicit CLI overrides while resuming:")
+        for key in explicit_override_keys:
+            if key not in cli_params:
+                continue
+            params[key] = cli_params[key]
+            print(f"  - {key}: {params[key]}")
 
 if params.get('inference_only', False) and not params.get("resume_run_id"):
     print("--inference-only requires --resume-run-id to load an existing model.")
@@ -590,6 +651,7 @@ params_to_save = params.copy()
 # Convert non-serializable objects to string representations
 params_to_save['device'] = str(params['device'])
 params_to_save['dtype_torch'] = str(params['dtype_torch'])
+params_to_save.pop('_explicit_cli_dests', None)
 if 'possible_weights' in params_to_save:
     params_to_save['possible_weights'] = 'Quantized weight array (256 levels)'
 params_to_save['run_id'] = run_id

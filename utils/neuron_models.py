@@ -385,7 +385,7 @@ class feedforward_layer:
                           device=self.device, dtype=self.dtype)
 
         # always reset the refractory period counter at the beginning of a new forward pass
-        if self.ref_per is not None:
+        if self.ref_per is not None and self.ref_per > 0:
             self.reset_refractory_perdiod_counter()
 
         mem_rec = []
@@ -401,10 +401,14 @@ class feedforward_layer:
             else:
                 # For BPTT, use surrogate gradient with gamma parameter
                 out = spike_fn(mthr, scale=self.gamma, threshold=0.0)
+            if self.ref_per is not None and self.ref_per > 0:
+                refractory_mask = self.ref_per_tensor[:out.shape[0], :out.shape[1]] > 0
+                out = out.masked_fill(refractory_mask, 0.0)
+
             rst = out.detach()
 
             # update the correct counter
-            if self.ref_per is not None:
+            if self.ref_per is not None and self.ref_per > 0:
                 self.update_refractory_perdiod_counter(rst)
                 # take care of last batch
                 mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
@@ -658,7 +662,7 @@ class recurrent_layer:
                           device=self.device, dtype=self.dtype)
 
         # always reset the refractory period counter at the beginning of a new forward pass
-        if self.ref_per is not None:
+        if self.ref_per is not None and self.ref_per > 0:
             self.reset_refractory_perdiod_counter()
 
         mem_rec = []
@@ -678,9 +682,13 @@ class recurrent_layer:
             else:
                 # For BPTT, use surrogate gradient with gamma parameter
                 out = spike_fn(mthr, scale=self.gamma, threshold=0.0)
+            if self.ref_per is not None and self.ref_per > 0:
+                refractory_mask = self.ref_per_tensor[:out.shape[0], :out.shape[1]] > 0
+                out = out.masked_fill(refractory_mask, 0.0)
+
             rst = out.detach()  # We do not want to backprop through the reset
 
-            if self.ref_per is not None:
+            if self.ref_per is not None and self.ref_per > 0:
                 self.update_refractory_perdiod_counter(rst)
                 # only update the membrane potential if not in refractory period
                 # take care of last batch

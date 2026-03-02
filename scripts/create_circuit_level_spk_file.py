@@ -9,10 +9,13 @@ results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"
 header_data = date.today().isoformat()
+DEBUG = True
+debug_npwhere_samples = 2
 
 results_file = Path(f"./results/{experiment_id}/{results_file_name}")
 params_file = results_file.parent / "experiment_parameters.json"
 output_dir = Path(f"./results/{experiment_id}/circuit_level_spk")
+model_dir = Path(f"./model/{experiment_id}")
 
 
 def load_spike_records(npz_path: Path) -> list[tuple[str, np.ndarray]]:
@@ -138,6 +141,93 @@ def write_circuit_spike_file(
     file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_npwhere_debug_file(
+    layer_spk: np.ndarray,
+    layer_address_map: dict[int, int],
+    sample_idx: int,
+    file_path: Path,
+    t_clock: float,
+) -> None:
+    """Write a debug text file with the raw np.where(spk > 0) output.
+
+    Expected layer_spk shape: [samples, time, neurons].
+    """
+    n_samples = layer_spk.shape[0]
+    if sample_idx < 0 or sample_idx >= n_samples:
+        raise IndexError(f"sample_idx={sample_idx} out of range [0, {n_samples - 1}]")
+
+    spk = layer_spk[sample_idx]
+    time_indices, channel_indices = np.where(spk > 0)
+
+    lines = [
+        f"sample_idx: {sample_idx}",
+        f"spk_shape: {spk.shape}",
+        "",
+        "np.where(spk > 0):",
+        f"time_indices: {time_indices.tolist()}",
+        f"channel_indices: {channel_indices.tolist()}",
+        "",
+        "time_step, time_s, channel, address:",
+    ]
+
+    for time_idx, channel_idx in zip(time_indices, channel_indices):
+        time_s = float(time_idx) * t_clock
+        channel = int(channel_idx)
+        address = layer_address_map[channel]
+        lines.append(f"{int(time_idx)}\t{time_s:.6f}\t{channel}\t{address}")
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def infer_weights_suffix_from_results_name(npz_name: str) -> str:
+    """Extract suffix used by weight files from results npz filename."""
+    stem = Path(npz_name).stem
+    prefix = "braille_reading_rsnn_"
+    if not stem.startswith(prefix):
+        raise ValueError(f"Unexpected results filename format: {npz_name}")
+    return stem[len(prefix):]
+
+
+def load_selected_final_weights(model_path: Path, suffix: str) -> tuple[Path, dict[str, np.ndarray]]:
+    """Load best/final weights with backward-compatible filename fallback."""
+    best_weights_path = model_path / f"best_model_weights_{suffix}.npz"
+    legacy_final_weights_path = model_path / f"final_weights_{suffix}.npz"
+
+    if best_weights_path.exists():
+        selected_path = best_weights_path
+    elif legacy_final_weights_path.exists():
+        selected_path = legacy_final_weights_path
+    else:
+        raise FileNotFoundError(
+            "Neither best_model_weights nor legacy final_weights file found in model path. "
+            f"Tried: {best_weights_path} and {legacy_final_weights_path}"
+        )
+
+    with np.load(selected_path, allow_pickle=True) as data:
+        weights = {key: np.asarray(data[key]) for key in data.files}
+
+    return selected_path, weights
+
+
+def write_weights_debug_table(weights: dict[str, np.ndarray], selected_weights_path: Path, file_path: Path) -> None:
+    """Write all selected final/best weights as a flat table for debug inspection."""
+    lines = [
+        f"source_weights_file: {selected_weights_path}",
+        "matrix\tindex\tvalue",
+    ]
+
+    for matrix_name in sorted(weights.keys()):
+        matrix = np.asarray(weights[matrix_name])
+        for idx in np.ndindex(matrix.shape):
+            idx_text = ",".join(str(i) for i in idx)
+            value = float(matrix[idx])
+            lines.append(f"{matrix_name}\t{idx_text}\t{value:.10g}")
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 if __name__ == "__main__":
     layers_spikes = load_spike_records(results_file)
 
@@ -155,6 +245,7 @@ if __name__ == "__main__":
 
     output_dir.mkdir(parents=True, exist_ok=True)
     created_count = 0
+    debug_count = 0
     for trial_idx in range(n_trials):
         trial_name = f"{header_name} Trial {trial_idx}"
         for layer_idx, (layer_name, layer_spk) in enumerate(layers_spikes):
@@ -170,4 +261,36 @@ if __name__ == "__main__":
             )
             created_count += 1
 
+            if DEBUG and trial_idx < debug_npwhere_samples:
+                debug_file = output_dir / f"{layer_name}_trial_{trial_idx}_npwhere_debug.txt"
+                write_npwhere_debug_file(
+                    layer_spk=layer_spk,
+                    layer_address_map=address_maps[layer_idx],
+                    sample_idx=trial_idx,
+                    file_path=debug_file,
+                    t_clock=header_timing["t_clock"],
+                )
+                debug_count += 1
+
+    weights_debug_file = output_dir / "selected_final_weights_debug_table.txt"
+    selected_weights_path: Path | None = None
+    if DEBUG:
+        weights_suffix = infer_weights_suffix_from_results_name(results_file_name)
+        selected_weights_path, final_weights = load_selected_final_weights(
+            model_path=model_dir,
+            suffix=weights_suffix,
+        )
+        write_weights_debug_table(
+            weights=final_weights,
+            selected_weights_path=selected_weights_path,
+            file_path=weights_debug_file,
+        )
+
     print(f"Created {created_count} files in: {output_dir}")
+    if DEBUG:
+        print(
+            f"Created {debug_count} debug np.where files (first {debug_npwhere_samples} trials) in: {output_dir}"
+        )
+        if selected_weights_path is not None:
+            print(f"Created debug weights table from: {selected_weights_path}")
+        print(f"Weights debug table: {weights_debug_file}")

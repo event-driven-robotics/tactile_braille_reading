@@ -47,8 +47,9 @@ class STEFunction(torch.autograd.Function):
         return possible_weight_values[min_indices]
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_outputs):
         # Straight-through estimator: gradient passes through unchanged
+        grad_output = grad_outputs[0]
         return grad_output.clone(), None
 
 
@@ -123,7 +124,7 @@ class SurrGradSpike(torch.autograd.Function):
         return out
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_outputs):
         """
         Backward pass: compute surrogate gradient.
 
@@ -135,8 +136,9 @@ class SurrGradSpike(torch.autograd.Function):
 
         Parameters
         ----------
-        grad_output : torch.Tensor
-            Gradient from the next layer (same shape as forward output).
+        grad_outputs : tuple[torch.Tensor]
+            Gradients from the next layer (for this function, one tensor matching
+            the forward output shape).
 
         Returns
         -------
@@ -145,6 +147,7 @@ class SurrGradSpike(torch.autograd.Function):
             - grad_input : gradient w.r.t. input (same shape as input)
             - grad_scale : None (scale parameter is not differentiable)
         """
+        grad_output = grad_outputs[0]
         input, = ctx.saved_tensors
         grad_input = grad_output.clone()
         grad = grad_input / (ctx.scale * torch.abs(input) + 1.0) ** 2
@@ -264,6 +267,7 @@ class feedforward_layer:
         # Neuron dynamics parameters
         self.alpha = alpha  # Synaptic current decay
         self.beta = beta    # Membrane potential decay
+        self.use_synapse = self.alpha > 0.0
 
         # Learning and simulation flags
         self.eprop = eprop
@@ -312,11 +316,14 @@ class feedforward_layer:
         """
         current_batch_size = spk.shape[0]
         current_neurons = spk.shape[1]
+        if self.ref_per is None:
+            raise ValueError("ref_per must be set to update refractory period counter.")
+        ref_per_value = int(self.ref_per)
         # Only operate on the current batch slice
         batch_slice = self.ref_per_tensor[:current_batch_size,
                                           :current_neurons]
         batch_slice[batch_slice > 0.0] -= 1
-        batch_slice[spk > 0.0] = self.ref_per
+        batch_slice[spk > 0.0] = ref_per_value
         self.ref_per_tensor[:current_batch_size,
                             :current_neurons] = batch_slice
 
@@ -412,17 +419,26 @@ class feedforward_layer:
                 self.update_refractory_perdiod_counter(rst)
                 # take care of last batch
                 mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
-                new_syn = self.alpha * syn
-                new_syn[mask] = (self.alpha*syn[mask] +
-                                 input_activity[:, t][mask])
+                if self.use_synapse:
+                    new_syn = self.alpha * syn
+                    new_syn[mask] = (self.alpha*syn[mask] +
+                                        input_activity[:, t][mask])
+                    syn_drive = syn
+                else:
+                    syn_drive = torch.zeros_like(syn)
+                    syn_drive[mask] = input_activity[:, t][mask]
             else:
-                new_syn = self.alpha*syn + input_activity[:, t]
+                if self.use_synapse:
+                    new_syn = self.alpha*syn + input_activity[:, t]
+                    syn_drive = syn
+                else:
+                    syn_drive = input_activity[:, t]
 
             if self.linear_decay:
                 # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
-                new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
+                new_mem = ((mem-torch.sign(mem)*self.beta) + syn_drive)*(1.0-rst)
             else:
-                new_mem = (self.beta*mem + syn)*(1.0-rst)
+                new_mem = (self.beta*mem + syn_drive)*(1.0-rst)
             if lower_bound:
                 new_mem[new_mem < lower_bound] = lower_bound
 
@@ -430,7 +446,8 @@ class feedforward_layer:
             spk_rec.append(out)
 
             mem = new_mem
-            syn = new_syn
+            if self.use_synapse:
+                syn = new_syn
 
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)
@@ -533,6 +550,7 @@ class recurrent_layer:
         # Neuron dynamics parameters
         self.alpha = alpha  # Synaptic current decay
         self.beta = beta    # Membrane potential decay
+        self.use_synapse = self.alpha > 0.0
 
         # Learning and simulation flags
         self.eprop = eprop
@@ -581,11 +599,14 @@ class recurrent_layer:
         """
         current_batch_size = spk.shape[0]
         current_neurons = spk.shape[1]
+        if self.ref_per is None:
+            raise ValueError("ref_per must be set to update refractory period counter.")
+        ref_per_value = int(self.ref_per)
         # Only operate on the current batch slice
         batch_slice = self.ref_per_tensor[:current_batch_size,
                                           :current_neurons]
         batch_slice[batch_slice > 0.0] -= 1
-        batch_slice[spk > 0.0] = self.ref_per
+        batch_slice[spk > 0.0] = ref_per_value
         self.ref_per_tensor[:current_batch_size,
                             :current_neurons] = batch_slice
 
@@ -693,15 +714,24 @@ class recurrent_layer:
                 # only update the membrane potential if not in refractory period
                 # take care of last batch
                 mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
-                new_syn = self.alpha * syn
-                new_syn[mask] = (self.alpha*syn[mask] + h1[mask])
+                if self.use_synapse:
+                    new_syn = self.alpha * syn
+                    new_syn[mask] = (self.alpha*syn[mask] + h1[mask])
+                    syn_drive = syn
+                else:
+                    syn_drive = torch.zeros_like(syn)
+                    syn_drive[mask] = h1[mask]
             else:
-                new_syn = self.alpha*syn + h1
+                if self.use_synapse:
+                    new_syn = self.alpha*syn + h1
+                    syn_drive = syn
+                else:
+                    syn_drive = h1
 
             if self.linear_decay:
-                new_mem = ((mem-torch.sign(mem)*self.beta) + syn)*(1.0-rst)
+                new_mem = ((mem-torch.sign(mem)*self.beta) + syn_drive)*(1.0-rst)
             else:
-                new_mem = (self.beta*mem + syn)*(1.0-rst)
+                new_mem = (self.beta*mem + syn_drive)*(1.0-rst)
 
             if lower_bound:
                 # clamp membrane potential
@@ -711,7 +741,8 @@ class recurrent_layer:
             spk_rec.append(out)
 
             mem = new_mem
-            syn = new_syn
+            if self.use_synapse:
+                syn = new_syn
 
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)

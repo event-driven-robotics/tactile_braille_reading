@@ -859,7 +859,7 @@ if __name__ == '__main__':
         #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
         loss_hist_epochs = []
         accs_hist = [[], []]
-        initial_weights = None
+        initial_weights: dict[str, np.ndarray] | None = None
 
         if params.get('inference_only', False):
             if inference_layers is None:
@@ -912,8 +912,12 @@ if __name__ == '__main__':
         if not params.get('inference_only', False):
             # Save initial weights (at initialization, before training)
             try:
-                np.savez(os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                         **initial_weights)
+                if initial_weights is None:
+                    raise ValueError("initial_weights are missing after training.")
+                np.savez(
+                    os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                    **initial_weights,
+                )
             except Exception as e:
                 logger.error(f"Failed to save initial weights: {str(e)}")
 

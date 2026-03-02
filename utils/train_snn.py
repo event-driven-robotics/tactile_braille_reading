@@ -32,6 +32,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import cast
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
@@ -44,7 +45,7 @@ logger = logging.getLogger('braille_training')
 
 
 def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset,
-                    resume_weights: dict = None) -> tuple:
+                    resume_weights: dict[str, np.ndarray] | None = None) -> tuple:
     """
     Build and train a recurrent spiking neural network for braille letter classification.
 
@@ -312,7 +313,8 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     return loss_hist_epochs, accs_hist_epochs, best_layers, vars_eprop, initial_weights
 
 
-def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, dataset_test=None) -> tuple:
+def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
+          dataset_test: TensorDataset | None = None) -> tuple:
     """
     Train a spiking neural network and evaluate on test data.
 
@@ -477,6 +479,8 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
     copy_layers : Function to save best model weights
     run_snn : Forward pass through the network
     """
+    if dataset_test is None:
+        raise ValueError("dataset_test must be provided.")
 
     weights = [layers[0].ff_weights,
                layers[0].rec_weights, layers[1].ff_weights]
@@ -517,12 +521,17 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                 inputs=x_local, layers=layers, params=params)
             # weight quantization - apply directly to layer weights
             if params["quantize_weights"]:
-                layers[0].ff_weights.data = ste_fn(
-                    layers[0].ff_weights, params['possible_weights']).to(params['dtype_torch'])
-                layers[0].rec_weights.data = ste_fn(
-                    layers[0].rec_weights, params['possible_weights']).to(params['dtype_torch'])
-                layers[1].ff_weights.data = ste_fn(
-                    layers[1].ff_weights, params['possible_weights']).to(params['dtype_torch'])
+                possible_weights = params.get('possible_weights')
+                if possible_weights is None:
+                    raise ValueError("possible_weights must be set when quantize_weights=True")
+
+                quant_ff = cast(torch.Tensor, ste_fn(layers[0].ff_weights, possible_weights))
+                quant_rec = cast(torch.Tensor, ste_fn(layers[0].rec_weights, possible_weights))
+                quant_out = cast(torch.Tensor, ste_fn(layers[1].ff_weights, possible_weights))
+
+                layers[0].ff_weights.data = quant_ff.to(params['dtype_torch'])
+                layers[0].rec_weights.data = quant_rec.to(params['dtype_torch'])
+                layers[1].ff_weights.data = quant_out.to(params['dtype_torch'])
 
             # average_spike_output[count_epoch] = torch.mean(
             #     torch.sum(spk_rec_readout, 1))
@@ -644,7 +653,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list, 
                     f"    Input current (h2) mean per output neuron: {h2_sample.mean(dim=(0,1)).detach().cpu().numpy()}")
                 logger.debug(
                     f"    Number of positive weights: neuron0={torch.sum(layers[1].ff_weights[0] > 0).item()}, neuron1={torch.sum(layers[1].ff_weights[1] > 0).item()}")
-                logger.debug()
+                logger.debug("")
 
             # Calculate train accuracy in each batch
             train_acc_per_batch, _, _ = compute_classification_accuracy(
@@ -953,7 +962,7 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
     # del trace_out, L, err
 
 
-def save_weights(layers: list) -> dict:
+def save_weights(layers: list | tuple) -> dict[str, np.ndarray]:
     """
     Extract weight matrices from network layers as numpy arrays for storage.
 
@@ -963,8 +972,8 @@ def save_weights(layers: list) -> dict:
 
     Parameters
     ----------
-    layers : list
-        List of [recurrent_layer, feedforward_layer] objects
+    layers : list or tuple
+        Container with [recurrent_layer, feedforward_layer] objects
 
     Returns
     -------
@@ -990,7 +999,7 @@ def save_weights(layers: list) -> dict:
     return weights
 
 
-def apply_resume_weights(layers: list, weights: dict, params: dict) -> None:
+def apply_resume_weights(layers: list, weights: dict[str, np.ndarray], params: dict) -> None:
     """
     Apply pretrained weights to newly initialized layers.
 

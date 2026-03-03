@@ -8,7 +8,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
@@ -35,7 +35,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--epochs", "500",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
@@ -62,7 +62,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--epochs", "50",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
@@ -82,7 +82,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
@@ -103,7 +103,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--epochs", "10",
                 "--nb_hidden", "50",
                 "--batch_size", "128",
@@ -127,7 +127,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--eprop",
                 "--epochs", "10",
                 "--nb_hidden", "50",
@@ -151,7 +151,7 @@
             "type": "shell",
             "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
             "args": [
-                "scripts/braille_reading_rsnn_mod_eprop_reduce_label.py",
+                "scripts/braille_reading_rsnn.py",
                 "--resume-run-id", "20260115_0833_exploration/20260218_093035",
                 "--epochs", "50",
                 "--ref_per_ms", "3",

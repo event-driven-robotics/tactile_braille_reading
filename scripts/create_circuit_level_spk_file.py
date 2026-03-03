@@ -1,10 +1,36 @@
-import numpy as np
+"""create_circuit_level_spk_file.py
+
+Export trained RSNN spike activity into circuit-level event text files.
+
+This utility reads experiment outputs from a single `.npz` results file and writes
+per-trial event streams for downstream circuit-level tooling. It currently exports
+spikes for:
+- output layer (`spk_rec_readout`)
+- hidden layer (`spk_rec_hidden`)
+
+Generated files include:
+- one event file per trial and layer (`*_trial_<idx>.txt`)
+- optional debug dumps of `np.where(spk > 0)` for early trials
+- optional flat weight table from selected best/final weight file
+
+The event file header timing fields are inferred from `experiment_parameters.json`
+and the prepared spike tensor length, so exported timing remains consistent with the
+training run configuration.
+
+Notes
+-----
+- Layer order is assumed to be output -> hidden for address assignment.
+- Neuron addresses are reversed within each layer to match expected circuit layout.
+- A periodic clock event with fixed address `7` is emitted at every timestep.
+"""
+
 import json
-from pathlib import Path
 from datetime import date
+from pathlib import Path
 
+import numpy as np
 
-experiment_id = "20260115_0833_exploration/20260303_073235"
+experiment_id = "20260115_0833_exploration/20260303_073847"
 results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"
@@ -19,9 +45,27 @@ model_dir = Path(f"./model/{experiment_id}")
 
 
 def load_spike_records(npz_path: Path) -> list[tuple[str, np.ndarray]]:
-    """Load spike recordings and return named layers in output->hidden order.
+    """Load required spike recordings from a results `.npz` file.
 
-    Expects arrays with shape [samples, time, neurons].
+    Parameters
+    ----------
+    npz_path : Path
+        Path to a results archive that must contain `spk_rec_readout` and
+        `spk_rec_hidden` arrays.
+
+    Returns
+    -------
+    list[tuple[str, np.ndarray]]
+        Ordered list of named spike tensors in output->hidden order:
+        `[('output_layer', readout), ('hidden_layer', hidden)]`.
+        Each array has shape `[samples, time, neurons]`.
+
+    Raises
+    ------
+    KeyError
+        If one or more required arrays are missing in the archive.
+    ValueError
+        If any loaded spike array is not 3D.
     """
     with np.load(npz_path, allow_pickle=True) as data:
         required = ["spk_rec_readout", "spk_rec_hidden"]
@@ -33,41 +77,84 @@ def load_spike_records(npz_path: Path) -> list[tuple[str, np.ndarray]]:
         hidden = np.asarray(data["spk_rec_hidden"])
 
     if readout.ndim != 3 or hidden.ndim != 3:
-        raise ValueError("Spike arrays must be 3D with shape [samples, time, neurons].")
+        raise ValueError(
+            "Spike arrays must be 3D with shape [samples, time, neurons].")
 
     return [("output_layer", readout), ("hidden_layer", hidden)]
 
 
 def neuron_id_map(layer_sizes: list[int]) -> list[dict[int, int]]:
-    """Build neuron index -> address map with reverse order per layer.
+    """Build contiguous neuron address maps for all layers.
 
-    Layer order must be output->hidden->... .
+    Parameters
+    ----------
+    layer_sizes : list[int]
+        Number of neurons per layer, ordered as exported (typically output->hidden).
+
+    Returns
+    -------
+    list[dict[int, int]]
+        One mapping dictionary per layer: `local_neuron_idx -> global_address`.
+        Addresses are contiguous across layers and reversed within each layer.
+
+    Notes
+    -----
+    For a layer with `N` neurons, local index `0` maps to the highest address in
+    that layer block and index `N-1` maps to the lowest.
     """
     address_maps: list[dict[int, int]] = []
     next_addr = 0
     for n_neurons in layer_sizes:
-        mapping = {idx: next_addr + (n_neurons - 1 - idx) for idx in range(n_neurons)}
+        mapping = {idx: next_addr + (n_neurons - 1 - idx)
+                   for idx in range(n_neurons)}
         address_maps.append(mapping)
         next_addr += n_neurons
     return address_maps
 
 
 def load_experiment_parameters(json_path: Path) -> dict:
-    """Load experiment parameter JSON."""
+    """Load experiment parameters from JSON.
+
+    Parameters
+    ----------
+    json_path : Path
+        Path to `experiment_parameters.json`.
+
+    Returns
+    -------
+    dict
+        Parsed experiment parameter dictionary.
+    """
     with json_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
 def infer_timing_header_values(params: dict, n_steps: int) -> dict[str, float]:
-    """Infer timing-related header values from experiment parameters.
+    """Infer all timing-related header values used in export files.
 
+    Parameters
+    ----------
+    params : dict
+        Experiment parameter dictionary (typically loaded from JSON).
+    n_steps : int
+        Number of simulation timesteps present in exported spike records.
+
+    Returns
+    -------
+    dict[str, float]
+        Dictionary containing: `t_clock`, `t_ref_min`, `t_ref_max`,
+        `t_leak_min`, `t_leak_max`, `t_end`.
+
+    Notes
+    -----
     Inference rules:
     - T_CLOCK: `time_step` if available, else `time_bin_size * 1e-3`.
     - T_REF_MIN/MAX: `ref_per_timesteps * T_CLOCK`.
     - T_LEAK_MIN/MAX: use `tau_mem` and `tau_mem_rec` (min/max).
     - T_END: derived from prepared spike data as `n_steps * T_CLOCK`.
     """
-    t_clock = float(params.get("time_step", params.get("time_bin_size", 1) * 1.0e-3))
+    t_clock = float(params.get(
+        "time_step", params.get("time_bin_size", 1) * 1.0e-3))
 
     ref_steps_raw = params.get("ref_per_timesteps")
     if ref_steps_raw is None:
@@ -102,13 +189,47 @@ def write_circuit_spike_file(
     data_value: str,
     header_timing: dict[str, float],
 ) -> None:
-    """Write spike events for one source layer with required header and clock events."""
+    """Write one circuit-level event file for a specific layer and trial.
+
+    Parameters
+    ----------
+    layer_spk : np.ndarray
+        Spike tensor with shape `[samples, time, neurons]`.
+    layer_address_map : dict[int, int]
+        Mapping from local neuron index to exported circuit address.
+    sample_idx : int
+        Trial/sample index to export.
+    file_path : Path
+        Destination text file path.
+    name_value : str
+        Value written into the `NAME` header field.
+    data_value : str
+        Value written into the `DATA` header field.
+    header_timing : dict[str, float]
+        Precomputed timing values (from `infer_timing_header_values`).
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    IndexError
+        If `sample_idx` is out of range for `layer_spk`.
+
+    Notes
+    -----
+    - Emits a clock event (address `7`) for every timestep.
+    - Emits spike events at the same timestamp with delta `0.0`.
+    - Writes UTF-8 text and ensures destination directory exists.
+    """
     n_samples = layer_spk.shape[0]
     n_steps = layer_spk.shape[1]
     t_clock = float(header_timing["t_clock"])
 
     if sample_idx < 0 or sample_idx >= n_samples:
-        raise IndexError(f"sample_idx={sample_idx} out of range [0, {n_samples - 1}]")
+        raise IndexError(
+            f"sample_idx={sample_idx} out of range [0, {n_samples - 1}]")
 
     tab2 = "\t\t"
     lines = [
@@ -148,13 +269,34 @@ def write_npwhere_debug_file(
     file_path: Path,
     t_clock: float,
 ) -> None:
-    """Write a debug text file with the raw np.where(spk > 0) output.
+    """Write a debug dump of active spike coordinates for one trial.
 
-    Expected layer_spk shape: [samples, time, neurons].
+    Parameters
+    ----------
+    layer_spk : np.ndarray
+        Spike tensor with shape `[samples, time, neurons]`.
+    layer_address_map : dict[int, int]
+        Mapping from local neuron index to exported circuit address.
+    sample_idx : int
+        Trial/sample index to inspect.
+    file_path : Path
+        Destination debug text file path.
+    t_clock : float
+        Timestep duration in seconds for converting index -> time.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    IndexError
+        If `sample_idx` is out of range for `layer_spk`.
     """
     n_samples = layer_spk.shape[0]
     if sample_idx < 0 or sample_idx >= n_samples:
-        raise IndexError(f"sample_idx={sample_idx} out of range [0, {n_samples - 1}]")
+        raise IndexError(
+            f"sample_idx={sample_idx} out of range [0, {n_samples - 1}]")
 
     spk = layer_spk[sample_idx]
     time_indices, channel_indices = np.where(spk > 0)
@@ -181,7 +323,23 @@ def write_npwhere_debug_file(
 
 
 def infer_weights_suffix_from_results_name(npz_name: str) -> str:
-    """Extract suffix used by weight files from results npz filename."""
+    """Extract model weight filename suffix from a results filename.
+
+    Parameters
+    ----------
+    npz_name : str
+        Results filename, expected to start with `braille_reading_rsnn_`.
+
+    Returns
+    -------
+    str
+        Filename suffix after the prefix, used to locate matching weight files.
+
+    Raises
+    ------
+    ValueError
+        If the filename does not match expected format.
+    """
     stem = Path(npz_name).stem
     prefix = "braille_reading_rsnn_"
     if not stem.startswith(prefix):
@@ -190,7 +348,26 @@ def infer_weights_suffix_from_results_name(npz_name: str) -> str:
 
 
 def load_selected_final_weights(model_path: Path, suffix: str) -> tuple[Path, dict[str, np.ndarray]]:
-    """Load best/final weights with backward-compatible filename fallback."""
+    """Load selected exported weight matrices with compatibility fallback.
+
+    Parameters
+    ----------
+    model_path : Path
+        Directory that stores experiment model artifacts.
+    suffix : str
+        Filename suffix used to identify matching weight files.
+
+    Returns
+    -------
+    tuple[Path, dict[str, np.ndarray]]
+        `(selected_path, weights_dict)` where `selected_path` is the file that was
+        actually loaded and `weights_dict` maps matrix names to numpy arrays.
+
+    Raises
+    ------
+    FileNotFoundError
+        If neither best-model nor legacy final-weights file exists.
+    """
     best_weights_path = model_path / f"best_model_weights_{suffix}.npz"
     legacy_final_weights_path = model_path / f"final_weights_{suffix}.npz"
 
@@ -211,7 +388,21 @@ def load_selected_final_weights(model_path: Path, suffix: str) -> tuple[Path, di
 
 
 def write_weights_debug_table(weights: dict[str, np.ndarray], selected_weights_path: Path, file_path: Path) -> None:
-    """Write all selected final/best weights as a flat table for debug inspection."""
+    """Write a flat, human-readable table of all selected weight values.
+
+    Parameters
+    ----------
+    weights : dict[str, np.ndarray]
+        Mapping of matrix name -> ndarray values.
+    selected_weights_path : Path
+        Path of the source weight file included in the debug header.
+    file_path : Path
+        Destination debug text file path.
+
+    Returns
+    -------
+    None
+    """
     lines = [
         f"source_weights_file: {selected_weights_path}",
         "matrix\tindex\tvalue",
@@ -241,7 +432,8 @@ if __name__ == "__main__":
     n_trials = layers_spikes[0][1].shape[0]
     for _, layer in layers_spikes[1:]:
         if layer.shape[0] != n_trials:
-            raise ValueError("All layer spike arrays must have the same number of trials.")
+            raise ValueError(
+                "All layer spike arrays must have the same number of trials.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     created_count = 0
@@ -262,7 +454,8 @@ if __name__ == "__main__":
             created_count += 1
 
             if DEBUG and trial_idx < debug_npwhere_samples:
-                debug_file = output_dir / f"{layer_name}_trial_{trial_idx}_npwhere_debug.txt"
+                debug_file = output_dir / \
+                    f"{layer_name}_trial_{trial_idx}_npwhere_debug.txt"
                 write_npwhere_debug_file(
                     layer_spk=layer_spk,
                     layer_address_map=address_maps[layer_idx],
@@ -275,7 +468,8 @@ if __name__ == "__main__":
     weights_debug_file = output_dir / "selected_final_weights_debug_table.txt"
     selected_weights_path: Path | None = None
     if DEBUG:
-        weights_suffix = infer_weights_suffix_from_results_name(results_file_name)
+        weights_suffix = infer_weights_suffix_from_results_name(
+            results_file_name)
         selected_weights_path, final_weights = load_selected_final_weights(
             model_path=model_dir,
             suffix=weights_suffix,

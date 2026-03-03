@@ -122,7 +122,7 @@ def plot_performance_scaling(results, output_dir, title=""):
     ax1.set_title('Accuracy vs Network Size')
     ax1.legend(loc='best')
     ax1.grid(True, alpha=0.3)
-    ax1.set_ylim([0, 1.05])
+    ax1.set_ylim(0.0, 1.05)
     
     # Plot 2: Test Accuracy Improvement
     ax2 = fig.add_subplot(2, 2, 2)
@@ -146,7 +146,7 @@ def plot_performance_scaling(results, output_dir, title=""):
     ax3.set_title('Test Accuracy Learning Curves')
     ax3.legend(loc='best', fontsize=9)
     ax3.grid(True, alpha=0.3)
-    ax3.set_ylim([0, 1.05])
+    ax3.set_ylim(0.0, 1.05)
     
     # Plot 4: Final Accuracy Comparison
     ax4 = fig.add_subplot(2, 2, 4)
@@ -161,7 +161,7 @@ def plot_performance_scaling(results, output_dir, title=""):
     ax4.set_xticklabels(neuron_counts)
     ax4.legend()
     ax4.grid(True, alpha=0.3, axis='y')
-    ax4.set_ylim([0, 1.05])
+    ax4.set_ylim(0.0, 1.05)
     
     # Overall title
     overall_title = title or "Hidden Neuron Exploration Results"

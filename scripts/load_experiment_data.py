@@ -1,3 +1,20 @@
+"""load_experiment_data.py
+
+Inspect and validate artifacts from a single Braille RSNN experiment run.
+
+This script loads experiment outputs (metrics/spikes), model checkpoints, and
+weight snapshots, then provides:
+- normalized in-memory access to saved `.npz` results,
+- optional model deserialization with local `utils.*` safety for unpickling,
+- initial vs final weight change statistics,
+- histogram visualizations of weight distributions,
+- lightweight structural health checks for key arrays/metadata.
+
+Typical usage is interactive debugging/analysis of one experiment folder by editing
+the constants near the top of this file (`experiment_id`, file names) and running
+the script directly.
+"""
+
 import numpy as np
 import torch
 from typing import Any, Dict, List
@@ -13,7 +30,19 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _ensure_local_utils_for_unpickling() -> None:
-    """Ensure torch unpickling resolves `utils.*` from this workspace, not another project."""
+    """Ensure `torch.load` resolves `utils.*` modules from this workspace.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Serialized PyTorch objects can embed module paths (e.g. `utils.neuron_models`).
+    If another project previously imported a different `utils` package into the same
+    Python session, unpickling may resolve the wrong module. This helper clears those
+    stale entries and re-imports the local project module explicitly.
+    """
     # If a different project already loaded `utils`, remove it so importlib re-resolves.
     existing_utils = sys.modules.get("utils")
     if existing_utils is not None:
@@ -24,7 +53,7 @@ def _ensure_local_utils_for_unpickling() -> None:
 
     importlib.import_module("utils.neuron_models")
 
-experiment_id = "20260115_0833_exploration/20260303_073235"
+experiment_id = "20260115_0833_exploration/20260303_073847"
 
 data_path = f"./results/{experiment_id}"
 data_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
@@ -35,7 +64,18 @@ initial_weights_file_name = "initial_weights_5_neurons_A_B_rep_1.npz"
 best_model_weights_file_name = "best_model_weights_5_neurons_A_B_rep_1.npz"
 
 def load_experiment_npz(npz_path: str) -> Dict[str, Any]:
-    """Load a saved experiment .npz file and auto-convert scalar fields.
+    """Load experiment results from `.npz` and normalize key field types.
+
+    Parameters
+    ----------
+    npz_path : str
+        Path to the experiment `.npz` file.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary of arrays and metadata. Known scalar metadata fields are cast
+        to native Python types.
 
     Notes
     -----
@@ -77,19 +117,53 @@ def load_experiment_npz(npz_path: str) -> Dict[str, Any]:
 
 
 def load_model_pt(model_pt_path: str, map_location: str = "cpu") -> List[Any]:
-    """Load a saved model (.pt) containing the layer objects."""
+    """Load a serialized model checkpoint containing layer objects.
+
+    Parameters
+    ----------
+    model_pt_path : str
+        Path to the `.pt` model file.
+    map_location : str, optional
+        Device remapping argument passed to `torch.load` (default: `"cpu"`).
+
+    Returns
+    -------
+    List[Any]
+        Deserialized list of model layers/objects stored in the checkpoint.
+    """
     _ensure_local_utils_for_unpickling()
     return torch.load(model_pt_path, map_location=map_location)
 
 
 def load_weights_npz(weights_npz_path: str) -> Dict[str, np.ndarray]:
-    """Load saved weight arrays from an .npz file into a standard dict."""
+    """Load weight arrays from a `.npz` file.
+
+    Parameters
+    ----------
+    weights_npz_path : str
+        Path to a weight archive file.
+
+    Returns
+    -------
+    Dict[str, np.ndarray]
+        Mapping from weight name to numpy array.
+    """
     with np.load(weights_npz_path, allow_pickle=True) as data:
         return {key: data[key] for key in data.files}
 
 
 def _weight_stats(array: np.ndarray) -> Dict[str, Any]:
-    """Compute distribution statistics for one weight tensor.
+    """Compute descriptive distribution statistics for one weight tensor.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        Weight tensor to summarize.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Summary including shape, mean, std, min, max, abs_mean, and l2_norm.
 
     Why these metrics:
     - mean: detects global bias/drift in weights.
@@ -114,7 +188,20 @@ def summarize_weight_changes(
     initial_weights: Dict[str, np.ndarray],
     final_weights: Dict[str, np.ndarray]
 ) -> Dict[str, Dict[str, Any]]:
-    """Compare initial and final weights and return per-matrix change summaries.
+    """Compare initial vs final weights and summarize update magnitudes.
+
+    Parameters
+    ----------
+    initial_weights : Dict[str, np.ndarray]
+        Initial weight matrices keyed by matrix name.
+    final_weights : Dict[str, np.ndarray]
+        Final/best weight matrices keyed by matrix name.
+
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        Per-matrix summary containing initial/final stats and delta stats.
+        If shapes differ, marks `shape_mismatch=True` and omits delta metrics.
 
     Delta metrics show *how much* a weight tensor moved during training.
     """
@@ -160,7 +247,24 @@ def plot_weight_histograms(
     output_dir: str,
     bins: int = 60
 ) -> List[str]:
-    """Plot and save initial vs final weight histograms for each common weight matrix."""
+    """Plot and save initial vs final weight histograms for shared matrices.
+
+    Parameters
+    ----------
+    initial_weights : Dict[str, np.ndarray]
+        Initial weight matrices keyed by matrix name.
+    final_weights : Dict[str, np.ndarray]
+        Final/best weight matrices keyed by matrix name.
+    output_dir : str
+        Directory where histogram image files are written.
+    bins : int, optional
+        Number of histogram bins (default: 60).
+
+    Returns
+    -------
+    List[str]
+        List of saved figure paths.
+    """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -191,7 +295,17 @@ def plot_weight_histograms(
 
 
 def run_health_checks(experiment: Dict[str, Any]) -> List[str]:
-    """Run lightweight integrity checks on loaded experiment content.
+    """Run structural/integrity checks on loaded experiment content.
+
+    Parameters
+    ----------
+    experiment : Dict[str, Any]
+        Loaded experiment dictionary from `load_experiment_npz`.
+
+    Returns
+    -------
+    List[str]
+        Warning messages for detected inconsistencies.
 
     Returns a list of warning strings. Empty list means all checks passed.
     """

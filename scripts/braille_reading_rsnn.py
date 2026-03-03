@@ -1,4 +1,4 @@
-"""braille_reading_rsnn_mod_eprop_reduce_label.py
+"""braille_reading_rsnn.py
 
 Comprehensive training script for spiking recurrent neural networks (SRNNs) on tactile 
 braille letter classification tasks with full command-line configurability.
@@ -19,35 +19,35 @@ hyperparameter searches, ablation studies, and production training runs.
 Usage Examples
 --------------
 Train with default settings (all letters, e-prop disabled, 450 neurons):
-    python braille_reading_rsnn_mod_eprop_reduce_label.py
+    python braille_reading_rsnn.py
 
 Train with e-prop on specific letters:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --eprop --letters A B C
+    python braille_reading_rsnn.py --eprop --letters A B C
 
 Custom architecture with validation set:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --nb_hidden 100 --validation
+    python braille_reading_rsnn.py --nb_hidden 100 --validation
 
 Select specific tactile sensors:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --selected_channels 0 1 2 5 8
+    python braille_reading_rsnn.py --selected_channels 0 1 2 5 8
 
 Run inference-only evaluation from a resumed model (no training):
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume-run-id 20260130_1151_exploration --inference-only
+    python braille_reading_rsnn.py --resume-run-id 20260130_1151_exploration --inference-only
 
 Equivalent forms also supported:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume_training 20260130_1151_exploration --inference_only=true
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume_training 20260130_1151_exploration --inference_only=false
+    python braille_reading_rsnn.py --resume_training 20260130_1151_exploration --inference_only=true
+    python braille_reading_rsnn.py --resume_training 20260130_1151_exploration --inference_only=false
 
 Resume existing training from a previous run folder (auto-picks newest best_model_*.pt):
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume-run-id 20260130_1151_exploration
+    python braille_reading_rsnn.py --resume-run-id 20260130_1151_exploration
 
 Resume from a specific checkpoint file in that run folder:
-    python braille_reading_rsnn_mod_eprop_reduce_label.py --resume-run-id 20260130_1151_exploration --resume-model-name best_model_50_neurons_A_B_rep_1.pt
+    python braille_reading_rsnn.py --resume-run-id 20260130_1151_exploration --resume-model-name best_model_50_neurons_A_B_rep_1.pt
 
 Resume behavior and CLI overrides:
     - When --resume-run-id is used, parameters are loaded from:
       results/<run_id>/experiment_parameters.json
-    - Loaded parameters override most CLI values to preserve experiment consistency.
-    - Currently, --epochs is explicitly allowed to override the loaded value.
+        - Loaded parameters are merged with CLI arguments.
+        - Any parameter explicitly passed on the CLI overrides the loaded value.
     - --resume-model-name only selects which checkpoint to load; it does not alter
       the loaded experiment hyperparameters.
 
@@ -55,19 +55,19 @@ Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
 import argparse
-import math
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to path to import from utils
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
 import numpy as np
 import torch
+
+# Add parent directory to path to import from utils
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from utils.data_loader import load_and_extract
 from utils.train_snn import build_and_train, load_weights_from_model
@@ -76,6 +76,7 @@ from utils.validate_snn import (compute_classification_accuracy,
                                 plot_network_activity,
                                 plot_training_performance,
                                 plot_training_performance_repetitive_runs)
+
 
 # Configure PyTorch memory allocator for better GPU memory management
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
@@ -229,8 +230,8 @@ def parse_arguments():
     parser.add_argument('--resume-run-id', '--resume-training', '--resume_training',
                         dest='resume_run_id', type=str, default='',
                         help='Run ID to resume from (loads model and params from model/results). '
-                            'When resuming, explicitly provided CLI arguments automatically override '
-                            'loaded experiment parameters; aliases: --resume-training, --resume_training')
+                        'When resuming, explicitly provided CLI arguments automatically override '
+                        'loaded experiment parameters; aliases: --resume-training, --resume_training')
     parser.add_argument('--resume-model-name', type=str, default='',
                         help='Optional best_model filename to load within the run_id model folder')
     parser.add_argument('--inference-only', '--inference_only',
@@ -282,7 +283,8 @@ def _resolve_resume_paths(resume_run_id, params):
         if len(candidates) == 0:
             raise FileNotFoundError(f"No best_model_*.pt found in {model_dir}")
         if len(candidates) > 1:
-            candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+            candidates = sorted(
+                candidates, key=lambda p: p.stat().st_mtime, reverse=True)
             print(
                 f"Multiple best_model_*.pt files found in {model_dir}; "
                 f"using newest: {candidates[0].name}")
@@ -292,7 +294,8 @@ def _resolve_resume_paths(resume_run_id, params):
     resume_from = str(resume_from)
     resume_params_path = results_dir / "experiment_parameters.json"
     if not resume_params_path.is_file():
-        raise FileNotFoundError(f"Resume parameters file not found: {resume_params_path}")
+        raise FileNotFoundError(
+            f"Resume parameters file not found: {resume_params_path}")
     return resume_from, str(resume_params_path)
 
 
@@ -377,7 +380,8 @@ def _prepare_layers_for_inference(resume_path, params):
             layer.ref_per_tensor = torch.zeros(
                 (params['batch_size'], layer.nb_neurons), device=params['device'], dtype=torch.int)
         if hasattr(layer, 'ref_per_tensor') and layer.ref_per_tensor is not None:
-            layer.ref_per_tensor = layer.ref_per_tensor.to(device=params['device'])
+            layer.ref_per_tensor = layer.ref_per_tensor.to(
+                device=params['device'])
 
     return layers
 
@@ -385,7 +389,7 @@ def _prepare_layers_for_inference(resume_path, params):
 def setup_logger(log_dir, run_id, log_level='INFO'):
     """
     Configure logging to write to both console and file.
-    
+
     Parameters
     ----------
     log_dir : str
@@ -394,7 +398,7 @@ def setup_logger(log_dir, run_id, log_level='INFO'):
         Timestamp identifier for this run
     log_level : str, optional
         Logging level: 'DEBUG', 'INFO', 'WARNING', 'ERROR' (default: 'INFO')
-    
+
     Returns
     -------
     logging.Logger
@@ -404,27 +408,28 @@ def setup_logger(log_dir, run_id, log_level='INFO'):
     logger = logging.getLogger('braille_training')
     log_level_enum = getattr(logging, log_level.upper())
     logger.setLevel(log_level_enum)
-    
+
     # Remove any existing handlers
     logger.handlers = []
-    
+
     # Create formatters
-    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s')
     console_formatter = logging.Formatter('%(message)s')
-    
+
     # File handler - save to logs directory
     log_file = os.path.join(log_dir, f'training_log_{run_id}.txt')
     file_handler = logging.FileHandler(log_file, mode='w')
     file_handler.setLevel(log_level_enum)
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
-    
+
     # Console handler - print to terminal
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(log_level_enum)
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
-    
+
     return logger
 
 
@@ -463,9 +468,11 @@ if params.get("resume_run_id"):
 
     # Always preserve current CLI control flags for this invocation
     merged_params["resume_run_id"] = cli_params.get("resume_run_id", "")
-    merged_params["resume_model_name"] = cli_params.get("resume_model_name", "")
+    merged_params["resume_model_name"] = cli_params.get(
+        "resume_model_name", "")
     merged_params["inference_only"] = cli_params.get("inference_only", False)
-    merged_params["_explicit_cli_dests"] = cli_params.get("_explicit_cli_dests", [])
+    merged_params["_explicit_cli_dests"] = cli_params.get(
+        "_explicit_cli_dests", [])
 
     legacy_map = {
         "use_cuda": "cuda",
@@ -482,7 +489,8 @@ if params.get("resume_run_id"):
     for legacy_key, current_key in legacy_map.items():
         if legacy_key in merged_params and current_key not in merged_params:
             if legacy_key == "no_synapse":
-                merged_params[current_key] = not bool(merged_params[legacy_key])
+                merged_params[current_key] = not bool(
+                    merged_params[legacy_key])
             else:
                 merged_params[current_key] = merged_params[legacy_key]
 
@@ -559,7 +567,8 @@ logger = setup_logger(logs_dir, run_id, params['log_level'])
 logger.info(f"="*80)
 logger.info(f"Braille Reading RSNN Training - Run ID: {run_id}")
 logger.info(f"="*80)
-logger.info(f"Log file: {os.path.join(logs_dir, f'training_log_{run_id}.txt')}")
+logger.info(
+    f"Log file: {os.path.join(logs_dir, f'training_log_{run_id}.txt')}")
 logger.info(f"Log level: {params['log_level']}")
 logger.info(f"Using letters: {', '.join(letters)}")
 logger.info(f"Using torch dtype: {params['dtype']}")
@@ -620,19 +629,27 @@ else:
 # Configure weight quantization for neuromorphic hardware deployment
 if params['quantize_weights']:
     logger.info("Using weight quantization.")
-    # Generate discrete weight levels based on capacitor bank values (256 levels)
-    neg_capacitance = torch.arange(255, -1, -1)
-    pos_capacitance = torch.arange(1, 257)
-    diff_cap = pos_capacitance - neg_capacitance
-    diff_cap = diff_cap.to(params['device'])
-    q = 1/256
+    # Generate a symmetric signed quantization grid with exact zero.
+    # We intentionally use -127..127 (255 levels) so the range is symmetric
+    # and includes 0 exactly.
+    signed_levels = torch.arange(-127, 128, device=params['device'])
+    q = 1 / 127
+    possible_weights = signed_levels * q
 
-    possible_weights = diff_cap * q
-
-    # Round to 3 decimal places for hardware precision
+    # Round to 3 decimal places for hardware precision using proper rounding
+    # (instead of floor truncation, which introduces a one-sided bias).
     factor = 10 ** 3
-    params['possible_weights'] = torch.floor(
+    params['possible_weights'] = torch.round(
         possible_weights * factor) / factor
+    quant_step = float((params['possible_weights'][1] - params['possible_weights'][0]).item())
+    quant_min = float(params['possible_weights'].min().item())
+    quant_max = float(params['possible_weights'].max().item())
+    logger.info(
+        "Quantization grid: symmetric signed with exact zero | "
+        f"levels={params['possible_weights'].numel()} | "
+        f"range=[{quant_min:.3f}, {quant_max:.3f}] | "
+        f"step={quant_step:.3f}"
+    )
 
 ##############################################################################
 # RANDOM SEED CONFIGURATION (For Reproducibility)
@@ -658,7 +675,7 @@ params_to_save['device'] = str(params['device'])
 params_to_save['dtype_torch'] = str(params['dtype_torch'])
 params_to_save.pop('_explicit_cli_dests', None)
 if 'possible_weights' in params_to_save:
-    params_to_save['possible_weights'] = 'Quantized weight array (256 levels)'
+    params_to_save['possible_weights'] = 'Quantized weight array (symmetric -127..127, 255 levels incl. 0)'
 params_to_save['run_id'] = run_id
 params_to_save['timestamp'] = datetime.now().isoformat()
 
@@ -733,7 +750,6 @@ if __name__ == '__main__':
     accs_hist_repetition = []
     eval_acc_repetition = []
 
-
     resume_weights = None
     inference_layers = None
     if params.get("resume_from"):
@@ -742,7 +758,8 @@ if __name__ == '__main__':
             logger.error(f"Resume file not found: {resume_path}")
             sys.exit(1)
         try:
-            resume_weights = load_weights_from_model(resume_path, map_location="cpu")
+            resume_weights = load_weights_from_model(
+                resume_path, map_location="cpu")
             logger.info(f"Resuming from model: {resume_path}")
         except Exception as e:
             logger.error(f"Failed to load resume model: {resume_path}")
@@ -751,10 +768,13 @@ if __name__ == '__main__':
 
         if params.get('inference_only', False):
             try:
-                inference_layers = _prepare_layers_for_inference(resume_path, params)
-                logger.info("Inference-only mode enabled: loaded resumed model for evaluation.")
+                inference_layers = _prepare_layers_for_inference(
+                    resume_path, params)
+                logger.info(
+                    "Inference-only mode enabled: loaded resumed model for evaluation.")
             except Exception as e:
-                logger.error(f"Failed to load model layers for inference from: {resume_path}")
+                logger.error(
+                    f"Failed to load model layers for inference from: {resume_path}")
                 logger.error(str(e))
                 sys.exit(1)
 
@@ -788,7 +808,8 @@ if __name__ == '__main__':
             dataset_steps = int(ds_validation.tensors[0].shape[1])
 
         if dataset_steps is None:
-            logger.error("No samples available to derive simulation timesteps from prepared dataset.")
+            logger.error(
+                "No samples available to derive simulation timesteps from prepared dataset.")
             logger.error(f"Skipping repetition {repetition + 1}")
             continue
 
@@ -809,13 +830,16 @@ if __name__ == '__main__':
         logger.info("Number of training samples %i." % len(ds_train))
         logger.info("Number of testing samples %i." % len(ds_test))
         if params["validation"]:
-            logger.info("Number of validation samples %i." % len(ds_validation))
+            logger.info("Number of validation samples %i." %
+                        len(ds_validation))
         logger.info("Number of output classes %i." % len(np.unique(labels)))
-        logger.info("Number of input channels %i." % len(params["selected_channels"]))
+        logger.info("Number of input channels %i." %
+                    len(params["selected_channels"]))
         logger.info("Number of hidden neurons %i." % nb_hidden)
         logger.info("Simulation time step %.3f ms (%.6f s)." %
                     (params["time_step"] * 1000.0, params["time_step"]))
-        logger.info("Simulation timesteps (derived from prepared dataset): %i." % params["data_steps"])
+        logger.info(
+            "Simulation timesteps (derived from prepared dataset): %i." % params["data_steps"])
         logger.info("Delayed output %s" % params["delayed_output"])
 
         expected_time_step_s = float(params["time_bin_size"]) * 0.001
@@ -823,14 +847,14 @@ if __name__ == '__main__':
             logger.warning(
                 f"Inconsistent timestep conversion: time_step={params['time_step']:.6f}s "
                 f"but expected time_bin_size*0.001={expected_time_step_s:.6f}s")
-        
+
         # Warn if dataset is very small
         if len(ds_train) < params['batch_size']:
             logger.warning(f"Training set size ({len(ds_train)}) is smaller than batch size ({params['batch_size']}). "
-                          "This may cause training issues.")
+                           "This may cause training issues.")
         if len(ds_test) < 10:
             logger.warning(f"Test set size ({len(ds_test)}) is very small. "
-                          "Results may not be statistically significant.")
+                           "Results may not be statistically significant.")
         if not params["synapse"]:
             logger.info(f"No synaptic dynamics.")
         if params["lower_bound"]:
@@ -840,7 +864,8 @@ if __name__ == '__main__':
         else:
             logger.info(f"Use exponential decay.")
         if params["ref_per_timesteps"]:
-            ref_steps_text = _format_timestep_count(params['ref_per_timesteps'])
+            ref_steps_text = _format_timestep_count(
+                params['ref_per_timesteps'])
             logger.info(
                 f"Refractory period set to {ref_steps_text} "
                 f"({params['ref_per_ms']:g} ms target, "
@@ -868,17 +893,20 @@ if __name__ == '__main__':
 
         if params.get('inference_only', False):
             if inference_layers is None:
-                logger.error("Inference-only mode requires a loaded resume model.")
+                logger.error(
+                    "Inference-only mode requires a loaded resume model.")
                 logger.error(f"Skipping repetition {repetition + 1}")
                 continue
             best_layers = inference_layers
-            logger.info("Inference-only mode: skipping training and running evaluation only.")
+            logger.info(
+                "Inference-only mode: skipping training and running evaluation only.")
         else:
             try:
                 loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
                     params=params, ds_train=ds_train, ds_test=ds_test, resume_weights=resume_weights)
             except Exception as e:
-                logger.error(f"Training failed for repetition {repetition + 1}: {str(e)}")
+                logger.error(
+                    f"Training failed for repetition {repetition + 1}: {str(e)}")
                 logger.error(f"Skipping this repetition and continuing...")
                 continue
 
@@ -899,16 +927,17 @@ if __name__ == '__main__':
             val_acc, trues, preds = compute_classification_accuracy(
                 dataset=ds_test, layers=best_layers, params=params)
         eval_acc_repetition.append(val_acc)
-        
+
         # Warn if final accuracy is low
         num_classes = len(params['letters'])
         chance_level = 1.0 / num_classes
         if val_acc < (chance_level + 0.10):  # Less than 10% above chance
             if params.get('inference_only', False):
-                logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%).")
+                logger.warning(
+                    f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%).")
             else:
                 logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%). "
-                              f"Poor weight initialization or insufficient training.")
+                               f"Poor weight initialization or insufficient training.")
 
         ##########################################################################
         # SAVE RESULTS
@@ -918,9 +947,11 @@ if __name__ == '__main__':
             # Save initial weights (at initialization, before training)
             try:
                 if initial_weights is None:
-                    raise ValueError("initial_weights are missing after training.")
+                    raise ValueError(
+                        "initial_weights are missing after training.")
                 np.savez(
-                    os.path.join(models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
+                    os.path.join(
+                        models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
                     **initial_weights,
                 )
             except Exception as e:
@@ -935,7 +966,7 @@ if __name__ == '__main__':
                         f'best_model_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.pt'))
             except Exception as e:
                 logger.error(f"Failed to save trained model: {str(e)}")
-            
+
             # Save best-model weights as numpy arrays for easy analysis
             try:
                 from utils.train_snn import save_weights
@@ -1055,7 +1086,8 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"Repetition {repetition + 1}/{params['repetitions']} complete! Results saved to {results_file}")
+        logger.info(
+            f"Repetition {repetition + 1}/{params['repetitions']} complete! Results saved to {results_file}")
         logger.info(f"{'='*60}")
 
     # Plot training curves (loss and accuracy over epochs)
@@ -1074,15 +1106,16 @@ if __name__ == '__main__':
     ##########################################################################
     # FINAL PERFORMANCE REPORT
     ##########################################################################
-    
+
     logger.info(f"\n\n{'='*80}")
     logger.info(f"FINAL PERFORMANCE REPORT")
     logger.info(f"{'='*80}\n")
-    
+
     # Experiment configuration summary
     logger.info(f"Experiment Configuration:")
     logger.info(f"  Run ID: {run_id}")
-    logger.info(f"  Learning Algorithm: {'e-prop' if params['eprop'] else 'BPTT'}")
+    logger.info(
+        f"  Learning Algorithm: {'e-prop' if params['eprop'] else 'BPTT'}")
     logger.info(f"  Letters: {str_letters} ({len(params['letters'])} classes)")
     logger.info(f"  Hidden Neurons: {nb_hidden}")
     logger.info(f"  Training Epochs: {params['epochs']}")
@@ -1090,7 +1123,7 @@ if __name__ == '__main__':
     logger.info(f"  Learning Rate: {params['learning_rate']}")
     logger.info(f"  Device: {params['device']}")
     logger.info("")
-    
+
     # Performance across repetitions
     if params.get('inference_only', False):
         if len(eval_acc_repetition) > 0:
@@ -1098,15 +1131,19 @@ if __name__ == '__main__':
             num_classes = len(params['letters'])
             chance_level = 1.0 / num_classes
 
-            logger.info(f"Inference-only Summary ({len(eval_acc_repetition)} successful repetitions):")
+            logger.info(
+                f"Inference-only Summary ({len(eval_acc_repetition)} successful repetitions):")
             logger.info("")
             logger.info(f"  Evaluation Accuracy:")
-            logger.info(f"    Mean: {np.mean(eval_accs)*100:.2f}% ± {np.std(eval_accs)*100:.2f}%")
+            logger.info(
+                f"    Mean: {np.mean(eval_accs)*100:.2f}% ± {np.std(eval_accs)*100:.2f}%")
             logger.info(f"    Min:  {np.min(eval_accs)*100:.2f}%")
             logger.info(f"    Max:  {np.max(eval_accs)*100:.2f}%")
             logger.info("")
-            logger.info(f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
-            logger.info(f"  Improvement over chance (mean eval): {(np.mean(eval_accs) - chance_level)*100:.2f} percentage points")
+            logger.info(
+                f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
+            logger.info(
+                f"  Improvement over chance (mean eval): {(np.mean(eval_accs) - chance_level)*100:.2f} percentage points")
             logger.info("")
         else:
             logger.warning(f"  No successful repetitions to report.")
@@ -1114,60 +1151,72 @@ if __name__ == '__main__':
     elif len(accs_hist_repetition) > 0:
         accs_array = np.array(accs_hist_repetition)
         loss_array = np.array(loss_hist_repetition)
-        
+
         # Extract final and best accuracies for each repetition
         final_train_accs = accs_array[:, 0, -1]  # Last epoch train accuracy
         final_test_accs = accs_array[:, 1, -1]   # Last epoch test accuracy
-        best_train_accs = np.max(accs_array[:, 0, :], axis=1)  # Best train accuracy
-        best_test_accs = np.max(accs_array[:, 1, :], axis=1)   # Best test accuracy
+        best_train_accs = np.max(
+            accs_array[:, 0, :], axis=1)  # Best train accuracy
+        best_test_accs = np.max(
+            accs_array[:, 1, :], axis=1)   # Best test accuracy
         final_losses = loss_array[:, -1]  # Last epoch loss
-        
-        logger.info(f"Performance Summary ({len(accs_hist_repetition)} successful repetitions):")
+
+        logger.info(
+            f"Performance Summary ({len(accs_hist_repetition)} successful repetitions):")
         logger.info(f"")
         logger.info(f"  Training Accuracy (final epoch):")
-        logger.info(f"    Mean: {np.mean(final_train_accs)*100:.2f}% ± {np.std(final_train_accs)*100:.2f}%")
+        logger.info(
+            f"    Mean: {np.mean(final_train_accs)*100:.2f}% ± {np.std(final_train_accs)*100:.2f}%")
         logger.info(f"    Min:  {np.min(final_train_accs)*100:.2f}%")
         logger.info(f"    Max:  {np.max(final_train_accs)*100:.2f}%")
         logger.info(f"")
         logger.info(f"  Test Accuracy (final epoch):")
-        logger.info(f"    Mean: {np.mean(final_test_accs)*100:.2f}% ± {np.std(final_test_accs)*100:.2f}%")
+        logger.info(
+            f"    Mean: {np.mean(final_test_accs)*100:.2f}% ± {np.std(final_test_accs)*100:.2f}%")
         logger.info(f"    Min:  {np.min(final_test_accs)*100:.2f}%")
         logger.info(f"    Max:  {np.max(final_test_accs)*100:.2f}%")
         logger.info(f"")
         logger.info(f"  Best Training Accuracy (across all epochs):")
-        logger.info(f"    Mean: {np.mean(best_train_accs)*100:.2f}% ± {np.std(best_train_accs)*100:.2f}%")
+        logger.info(
+            f"    Mean: {np.mean(best_train_accs)*100:.2f}% ± {np.std(best_train_accs)*100:.2f}%")
         logger.info(f"    Min:  {np.min(best_train_accs)*100:.2f}%")
         logger.info(f"    Max:  {np.max(best_train_accs)*100:.2f}%")
         logger.info(f"")
         logger.info(f"  Best Test Accuracy (across all epochs):")
-        logger.info(f"    Mean: {np.mean(best_test_accs)*100:.2f}% ± {np.std(best_test_accs)*100:.2f}%")
+        logger.info(
+            f"    Mean: {np.mean(best_test_accs)*100:.2f}% ± {np.std(best_test_accs)*100:.2f}%")
         logger.info(f"    Min:  {np.min(best_test_accs)*100:.2f}%")
         logger.info(f"    Max:  {np.max(best_test_accs)*100:.2f}%")
         logger.info(f"")
         logger.info(f"  Final Loss:")
-        logger.info(f"    Mean: {np.mean(final_losses):.4f} ± {np.std(final_losses):.4f}")
+        logger.info(
+            f"    Mean: {np.mean(final_losses):.4f} ± {np.std(final_losses):.4f}")
         logger.info(f"    Min:  {np.min(final_losses):.4f}")
         logger.info(f"    Max:  {np.max(final_losses):.4f}")
         logger.info(f"")
-        
+
         # Chance level comparison
         num_classes = len(params['letters'])
         chance_level = 1.0 / num_classes
-        logger.info(f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
-        logger.info(f"  Improvement over chance (mean test): {(np.mean(final_test_accs) - chance_level)*100:.2f} percentage points")
+        logger.info(
+            f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
+        logger.info(
+            f"  Improvement over chance (mean test): {(np.mean(final_test_accs) - chance_level)*100:.2f} percentage points")
         logger.info(f"")
     else:
         logger.warning(f"  No successful repetitions to report.")
         logger.info(f"")
-    
+
     # Output directories
     logger.info(f"Output Locations:")
     logger.info(f"  Results:  {results_dir}")
     logger.info(f"  Figures:  {figures_dir}")
     logger.info(f"  Models:   {models_dir}")
     logger.info(f"  Logs:     {logs_dir}")
-    
+
     logger.info(f"\n{'='*80}")
-    successful_repetitions = len(eval_acc_repetition) if params.get('inference_only', False) else len(accs_hist_repetition)
-    logger.info(f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions requested, {successful_repetitions} successful")
+    successful_repetitions = len(eval_acc_repetition) if params.get(
+        'inference_only', False) else len(accs_hist_repetition)
+    logger.info(
+        f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions requested, {successful_repetitions} successful")
     logger.info(f"{'='*80}\n")

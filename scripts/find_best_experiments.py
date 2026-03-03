@@ -8,6 +8,7 @@ and summarizes the top experiments for each hidden layer size.
 
 import argparse
 import json
+import numbers
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +25,10 @@ def _to_scalar(value):
     if isinstance(value, np.ndarray) and value.shape == ():
         return value.item()
     if np.isscalar(value):
-        return float(value)
+        scalar = value.item() if isinstance(value, np.generic) else value
+        if isinstance(scalar, numbers.Real):
+            return float(scalar)
+        return scalar
     return value
 
 

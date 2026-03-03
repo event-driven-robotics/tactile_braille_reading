@@ -209,7 +209,7 @@ ax.grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4,
 ax.grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4,
         color="gray")  # Thinner and dashed for minor grid
 ax.minorticks_on()  # Turn on minor ticks
-ax.set_xlim([local_timestamps[0], local_timestamps[-1]])
+ax.set_xlim(local_timestamps[0], local_timestamps[-1])
 # Add custom legend entries for ON and OFF events
 legend_elements = [
     Line2D([0], [0], color="green", marker="|",
@@ -285,8 +285,8 @@ ax.grid(which="major", linestyle="-", linewidth=1.0, alpha=0.4,
 ax.grid(which="minor", linestyle="--", linewidth=0.5, alpha=0.4,
         color="gray")  # Thinner and dashed for minor grid
 ax.minorticks_on()  # Turn on minor ticks
-ax.set_xlim([local_timestamps[0], local_timestamps[-1]])
-ax.set_ylim([offset-4, 2])
+ax.set_xlim(local_timestamps[0], local_timestamps[-1])
+ax.set_ylim(offset-4, 2)
 ax.set_xlabel("Time (s)", fontsize=16)
 # Add custom legend entries for ON and OFF events
 legend_elements = [

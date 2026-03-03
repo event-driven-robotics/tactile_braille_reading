@@ -24,21 +24,21 @@ data_files = ["data_braille_letters_0.0.pkl",
               "data_braille_letters_0.000125.pkl"]
 
 if __name__ == "__main__":
+    out_dict = {"letter": [],
+                "taxel_data": [],
+                "timestamps": [],
+                "fa_spikes": [],
+                "sa_spikes": []}
+
+    longest_trial = -np.inf
+    shortest_trial = np.inf
+
     for file in tqdm(data_files, desc="Processing files"):
         with open(f"{data_path}/{file}", "rb") as f:
             data = pkl.load(f)
         letter_list = data["letter"].values
         taxels_list = data["taxel_data"].values
         timestamps_list = data["timestamp"].values
-
-        out_dict = {"letter": [],
-                    "taxel_data": [],
-                    "timestamps": [],
-                    "fa_spikes": [],
-                    "sa_spikes": []}
-        
-        longest_trial = -np.inf
-        shortest_trial = np.inf
 
         for trial, (letter, taxels, timestamps) in enumerate(tqdm(zip(letter_list, taxels_list, timestamps_list),
                                                                 total=len(
@@ -78,6 +78,10 @@ if __name__ == "__main__":
             out_dict["fa_spikes"].append(np.array(fa_spikes, dtype=float))
             out_dict["sa_spikes"].append(np.array(sa_spikes, dtype=float))
         pass
+
+    if not out_dict["letter"]:
+        print("No trials were processed. Nothing to save.")
+        raise SystemExit(0)
 
     print(f"Longest trial duration: {longest_trial} seconds")
     print(f"Shortest trial duration: {shortest_trial} seconds")

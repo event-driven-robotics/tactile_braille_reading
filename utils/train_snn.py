@@ -28,11 +28,11 @@ Date: January 15, 2026
 """
 
 import logging
+from typing import cast
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import cast
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
@@ -441,7 +441,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
     - Adamax optimizer with betas=(0.9, 0.995)
     - Learning rate remains constant (no scheduling in this version)
     - Gradients zeroed at start of each batch
-    - Weight quantization applied after forward pass but before backward pass
+    - Weight quantization applied in forward path via STE (master params remain float)
 
     **Weight Quantization:**
     - Applied to all weight matrices (ff_weights, rec_weights in both layers)
@@ -521,19 +521,6 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
 
             spk_rec_readout, recs = run_snn(
                 inputs=x_local, layers=layers, params=params)
-            # weight quantization - apply directly to layer weights
-            if params["quantize_weights"]:
-                possible_weights = params.get('possible_weights')
-                if possible_weights is None:
-                    raise ValueError("possible_weights must be set when quantize_weights=True")
-
-                quant_ff = cast(torch.Tensor, ste_fn(layers[0].ff_weights, possible_weights))
-                quant_rec = cast(torch.Tensor, ste_fn(layers[0].rec_weights, possible_weights))
-                quant_out = cast(torch.Tensor, ste_fn(layers[1].ff_weights, possible_weights))
-
-                layers[0].ff_weights.data = quant_ff.to(params['dtype_torch'])
-                layers[0].rec_weights.data = quant_rec.to(params['dtype_torch'])
-                layers[1].ff_weights.data = quant_out.to(params['dtype_torch'])
 
             # average_spike_output[count_epoch] = torch.mean(
             #     torch.sum(spk_rec_readout, 1))
@@ -563,16 +550,42 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
 
                 # Compute e-prop gradients
                 mem_rec_hidden, spk_rec_hidden, _ = recs
+
+                w_in_math: torch.Tensor
+                w_rec_math: torch.Tensor
+                w_out_math: torch.Tensor
+                grad_targets: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
+
+                if params.get("quantize_weights", False):
+                    possible_weights = params.get('possible_weights')
+                    if possible_weights is None:
+                        raise ValueError("possible_weights must be set when quantize_weights=True")
+                    possible_weights_tensor = cast(torch.Tensor, possible_weights)
+                    w_in_math = cast(torch.Tensor, ste_fn(layers[0].ff_weights, possible_weights_tensor))
+                    w_rec_math = cast(torch.Tensor, ste_fn(layers[0].rec_weights, possible_weights_tensor))
+                    w_out_math = cast(torch.Tensor, ste_fn(layers[1].ff_weights, possible_weights_tensor))
+                    grad_targets = (
+                        layers[0].ff_weights,
+                        layers[0].rec_weights,
+                        layers[1].ff_weights,
+                    )
+                else:
+                    w_in_math = layers[0].ff_weights
+                    w_rec_math = layers[0].rec_weights
+                    w_out_math = layers[1].ff_weights
+                    grad_targets = None
+
                 grads_batch(x=x_local.permute(1, 0, 2),
                             yo=yo.permute(1, 0, 2),
                             yt=one_hot_encoded,
                             thr=params["spike_threshold"],
                             v=mem_rec_hidden.permute(1, 0, 2),
                             z=spk_rec_hidden.permute(1, 0, 2),
-                            w_in=layers[0].ff_weights,
-                            w_rec=layers[0].rec_weights,
-                            w_out=layers[1].ff_weights,
-                            params=params)
+                            w_in=w_in_math,
+                            w_rec=w_rec_math,
+                            w_out=w_out_math,
+                            params=params,
+                            grad_targets=grad_targets)
 
                 # Compute loss for tracking purposes (not used for gradients in e-prop)
                 log_p_y = log_softmax_fn(summed_spikes)
@@ -723,7 +736,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
     return loss_hist_epochs, accs_hist_epochs, best_acc_layers
 
 
-def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, params: dict) -> None:
+def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v: torch.Tensor, z: torch.Tensor, w_in: torch.Tensor, w_rec: torch.Tensor, w_out: torch.Tensor, params: dict, grad_targets: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None) -> None:
     """
     Compute weight gradients using e-prop (eligibility propagation) for spiking neural networks.
 
@@ -880,12 +893,17 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
     """
     nb_inputs = x.shape[-1]
 
-    if w_in.grad is None:
-        w_in.grad = torch.zeros_like(w_in)
-    if w_rec.grad is None:
-        w_rec.grad = torch.zeros_like(w_rec)
-    if w_out.grad is None:
-        w_out.grad = torch.zeros_like(w_out)
+    if grad_targets is None:
+        grad_w_in, grad_w_rec, grad_w_out = w_in, w_rec, w_out
+    else:
+        grad_w_in, grad_w_rec, grad_w_out = grad_targets
+
+    if grad_w_in.grad is None:
+        grad_w_in.grad = torch.zeros_like(grad_w_in)
+    if grad_w_rec.grad is None:
+        grad_w_rec.grad = torch.zeros_like(grad_w_rec)
+    if grad_w_out.grad is None:
+        grad_w_out.grad = torch.zeros_like(grad_w_out)
     # Surrogate derivatives
     h = params['gamma'] * \
         torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
@@ -947,18 +965,18 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
         trace_out = trace_out[:, :, -params["delayed_output"]:]
 
     # Weight gradient updates
-    w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                           nb_inputs, -1) * trace_in, dim=(0, 3))
+    grad_w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
+                                nb_inputs, -1) * trace_in, dim=(0, 3))
 
     # Free trace_in immediately after use
     # del trace_in
 
-    w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                            params['nb_hidden'], -1) * trace_rec, dim=(0, 3))
+    grad_w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
+                                 params['nb_hidden'], -1) * trace_rec, dim=(0, 3))
 
     # Free trace_rec immediately after use
     # del trace_rec
-    w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
+    grad_w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
 
     # Free remaining large tensors
     # del trace_out, L, err

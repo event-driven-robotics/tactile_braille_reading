@@ -165,5 +165,25 @@
                 "focus": true
             }
         },
+        {
+            "label": "Run: Resume Training (200 epochs, ref_per_ms 3, time_bin_size 3, learning_rate 0.00001, quantize_weights true)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--resume-run-id", "20260115_0833_exploration/20260218_093035",
+                "--epochs", "200",
+                "--ref_per_ms", "3",
+                "--time_bin_size", "3",
+                "--learning_rate", "0.00001",
+                "--quantize_weights"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
     ]
 }

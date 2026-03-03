@@ -23,6 +23,8 @@ Date: January 13, 2026
 
 import torch
 
+from .neuron_models import ste_fn
+
 
 def compute_winning_neuron(spk_rec_readout: torch.Tensor, params: dict) -> tuple:
     """
@@ -137,18 +139,33 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
     """
     rec_layer, ff_layer = layers
 
+    # Standard STE quantization path:
+    # - keep floating-point master parameters for optimizer updates
+    # - use quantized proxy tensors only in the forward pass
+    if params.get("quantize_weights", False):
+        possible_weights = params.get("possible_weights")
+        if possible_weights is None:
+            raise ValueError("possible_weights must be set when quantize_weights=True")
+        rec_ff_weights = ste_fn(rec_layer.ff_weights, possible_weights)
+        rec_rec_weights = ste_fn(rec_layer.rec_weights, possible_weights)
+        out_ff_weights = ste_fn(ff_layer.ff_weights, possible_weights)
+    else:
+        rec_ff_weights = rec_layer.ff_weights
+        rec_rec_weights = rec_layer.rec_weights
+        out_ff_weights = ff_layer.ff_weights
+
     if params["nb_input_copies"] > 1:
         h1 = torch.einsum(
-            "abc,cd->abd", (inputs.tile((params["nb_input_copies"],)), rec_layer.ff_weights.t()))
+            "abc,cd->abd", (inputs.tile((params["nb_input_copies"],)), rec_ff_weights.t()))
     else:
         h1 = torch.einsum(
-            "abc,cd->abd", inputs, rec_layer.ff_weights.t())
+            "abc,cd->abd", inputs, rec_ff_weights.t())
 
     spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
-        h1, params['data_steps'], params["lower_bound"])
+        h1, params['data_steps'], params["lower_bound"], rec_weights=rec_rec_weights)
 
     # Readout layer
-    h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, ff_layer.ff_weights.t()))
+    h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, out_ff_weights.t()))
 
     spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
         h2, params['data_steps'], params["lower_bound"])

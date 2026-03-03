@@ -400,6 +400,7 @@ class feedforward_layer:
 
         mem_rec = []
         spk_rec = []
+
         # Compute feedforward layer activity
         for t in range(nb_steps):
             mthr = mem - self.spike_threshold
@@ -643,7 +644,7 @@ class recurrent_layer:
         torch.nn.init.normal_(self.rec_weights, mean=0.0,
                               std=self.rec_weight_scale / (self.nb_neurons ** 0.5))
 
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None):
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None, rec_weights=None):
         """
         Compute spiking activity of recurrent layer over time.
 
@@ -660,6 +661,9 @@ class recurrent_layer:
             Number of simulation timesteps
         lower_bound : float or None, optional
             Minimum membrane potential (clamping threshold, default: None)
+        rec_weights : torch.Tensor or None, optional
+            Optional recurrent weight matrix override used only for this
+            forward pass. If None, uses self.rec_weights.
 
         Returns
         -------
@@ -700,11 +704,13 @@ class recurrent_layer:
         mem_rec = []
         spk_rec = []
 
+        recurrent_weights = self.rec_weights if rec_weights is None else rec_weights
+
         # Compute recurrent layer activity
         for t in range(nb_steps):
             # input activity plus last step output activity
             h1 = input_activity[:, t] + \
-                torch.einsum("ab,bc->ac", (out, self.rec_weights.t()))
+                torch.einsum("ab,bc->ac", (out, recurrent_weights.t()))
             mthr = mem - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
             if self.eprop:

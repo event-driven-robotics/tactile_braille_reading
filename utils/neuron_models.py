@@ -225,7 +225,7 @@ class feedforward_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
         """
         Initialize feedforward spiking layer.
 
@@ -276,6 +276,7 @@ class feedforward_layer:
         # Surrogate gradient parameter
         self.gamma = gamma  # Scale factor for surrogate gradient
         self.spike_threshold = spike_threshold  # Spike threshold
+        self.soft_reset = soft_reset  # If True: subtract threshold on spike; else hard reset to 0
 
         # Device and dtype
         self.device = device
@@ -374,7 +375,9 @@ class feedforward_layer:
         Notes
         -----
         - Spike threshold: 1.0
-        - Reset mechanism: multiplicative (voltage * (1 - spike))
+                - Reset mechanism:
+                    - Hard reset (default): multiplicative (voltage * (1 - spike))
+                    - Soft reset (optional): subtract threshold on spike (voltage - spike * threshold)
         - For e-prop: uses hard threshold (no gradient through spikes)
         - For BPTT: uses surrogate gradient function for differentiability
         - Synaptic dynamics: syn = alpha * syn + input (if alpha > 0)
@@ -436,9 +439,14 @@ class feedforward_layer:
 
             if self.linear_decay:
                 # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
-                new_mem = ((mem-torch.sign(mem)*self.beta) + syn_drive)*(1.0-rst)
+                membrane_drive = (mem-torch.sign(mem)*self.beta) + syn_drive
             else:
-                new_mem = (self.beta*mem + syn_drive)*(1.0-rst)
+                membrane_drive = self.beta*mem + syn_drive
+
+            if self.soft_reset:
+                new_mem = membrane_drive - rst * self.spike_threshold
+            else:
+                new_mem = membrane_drive * (1.0-rst)
             if lower_bound:
                 new_mem[new_mem < lower_bound] = lower_bound
 
@@ -505,7 +513,7 @@ class recurrent_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
         """
         Initialize recurrent spiking layer.
 
@@ -559,6 +567,7 @@ class recurrent_layer:
         # Surrogate gradient parameter
         self.gamma = gamma  # Scale factor for surrogate gradient
         self.spike_threshold = spike_threshold  # Spike threshold
+        self.soft_reset = soft_reset  # If True: subtract threshold on spike; else hard reset to 0
 
         # Device and dtype
         self.device = device
@@ -664,7 +673,9 @@ class recurrent_layer:
         Notes
         -----
         - Spike threshold: 1.0
-        - Reset mechanism: multiplicative (voltage * (1 - spike))
+                - Reset mechanism:
+                    - Hard reset (default): multiplicative (voltage * (1 - spike))
+                    - Soft reset (optional): subtract threshold on spike (voltage - spike * threshold)
         - For e-prop: uses hard threshold (no gradient through spikes)
         - For BPTT: uses surrogate gradient function for differentiability
         - Total input: feedforward input + recurrent input (previous spikes)
@@ -729,9 +740,14 @@ class recurrent_layer:
                     syn_drive = h1
 
             if self.linear_decay:
-                new_mem = ((mem-torch.sign(mem)*self.beta) + syn_drive)*(1.0-rst)
+                membrane_drive = (mem-torch.sign(mem)*self.beta) + syn_drive
             else:
-                new_mem = (self.beta*mem + syn_drive)*(1.0-rst)
+                membrane_drive = self.beta*mem + syn_drive
+
+            if self.soft_reset:
+                new_mem = membrane_drive - rst * self.spike_threshold
+            else:
+                new_mem = membrane_drive * (1.0-rst)
 
             if lower_bound:
                 # clamp membrane potential

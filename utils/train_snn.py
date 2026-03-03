@@ -255,7 +255,8 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                 dtype=params["dtype_torch"],
                                 ref_per=params["ref_per_timesteps"],
                                 gamma=params["gamma"],
-                                spike_threshold=params["spike_threshold"])
+                                spike_threshold=params["spike_threshold"],
+                                soft_reset=params.get("soft_reset", False))
 
     # readout layer
     ff_layer = feedforward_layer(batch_size=params["batch_size"],
@@ -270,7 +271,8 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                  dtype=params["dtype_torch"],
                                  ref_per=params["ref_per_timesteps"],
                                  gamma=params["gamma"],
-                                 spike_threshold=params["spike_threshold"])
+                                 spike_threshold=params["spike_threshold"],
+                                 soft_reset=params.get("soft_reset", False))
 
     layers = [rec_layer, ff_layer]
 
@@ -1149,7 +1151,8 @@ def copy_layers(layers: list) -> list:
         dtype=rec_layer.dtype,
         ref_per=rec_layer.ref_per,
         gamma=rec_layer.gamma,
-        spike_threshold=rec_layer.spike_threshold
+        spike_threshold=rec_layer.spike_threshold,
+        soft_reset=getattr(rec_layer, "soft_reset", False)
     )
     # Copy weights (detached and cloned to break gradient connection)
     new_rec_layer.ff_weights.data = rec_layer.ff_weights.data.detach().clone()
@@ -1169,7 +1172,8 @@ def copy_layers(layers: list) -> list:
         dtype=ff_layer.dtype,
         ref_per=ff_layer.ref_per,
         gamma=ff_layer.gamma,
-        spike_threshold=ff_layer.spike_threshold
+        spike_threshold=ff_layer.spike_threshold,
+        soft_reset=getattr(ff_layer, "soft_reset", False)
     )
     # Copy weights (detached and cloned)
     new_ff_layer.ff_weights.data = ff_layer.ff_weights.data.detach().clone()

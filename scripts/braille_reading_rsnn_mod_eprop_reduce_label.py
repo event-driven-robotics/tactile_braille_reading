@@ -196,6 +196,8 @@ def parse_arguments():
                         help='Surrogate gradient scale factor')
     parser.add_argument('--spike_threshold', type=float, default=1.0,
                         help='Spike threshold for neurons (membrane potential - spike_threshold)')
+    parser.add_argument('--soft_reset', action='store_true', default=False,
+                        help='Use soft reset (subtract threshold after spike) instead of hard reset to zero')
 
     # Data parameters
     parser.add_argument('--letters', type=str, nargs='+',
@@ -362,6 +364,8 @@ def _prepare_layers_for_inference(resume_path, params):
             layer.linear_decay = params.get('linear_decay', False)
         if not hasattr(layer, 'ref_per'):
             layer.ref_per = params.get('ref_per_timesteps')
+        if not hasattr(layer, 'soft_reset'):
+            layer.soft_reset = params.get('soft_reset', False)
 
         if hasattr(layer, 'ff_weights'):
             layer.ff_weights = layer.ff_weights.to(
@@ -469,6 +473,7 @@ if params.get("resume_run_id"):
         "use_validation": "validation",
         "use_eprop": "eprop",
         "use_linear_decay": "linear_decay",
+        "use_soft_reset": "soft_reset",
         "use_mechanoreceptor_encoding": "mechanoreceptor_encoding",
         "use_random_tie_breaking": "random_tie_breaking",
         "use_weight_quantization": "quantize_weights",

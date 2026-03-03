@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import date
 
 
-experiment_id = "20260115_0833_exploration/20260225_092341"
+experiment_id = "20260115_0833_exploration/20260303_073235"
 results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"

@@ -970,7 +970,9 @@ if __name__ == '__main__':
             # Save best-model weights as numpy arrays for easy analysis
             try:
                 from utils.train_snn import save_weights
-                best_model_weights = save_weights(best_layers)
+                best_model_weights = save_weights(
+                    best_layers,
+                    possible_weights=params.get('possible_weights'))
                 np.savez(os.path.join(models_dir, f'best_model_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
                          **best_model_weights)
             except Exception as e:

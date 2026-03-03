@@ -982,7 +982,9 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
     # del trace_out, L, err
 
 
-def save_weights(layers: list | tuple) -> dict[str, np.ndarray]:
+def save_weights(
+    layers: list | tuple,
+    possible_weights: torch.Tensor | None = None) -> dict[str, np.ndarray]:
     """
     Extract weight matrices from network layers as numpy arrays for storage.
 
@@ -993,7 +995,10 @@ def save_weights(layers: list | tuple) -> dict[str, np.ndarray]:
     Parameters
     ----------
     layers : list or tuple
-        Container with [recurrent_layer, feedforward_layer] objects
+        Container with [recurrent_layer, feedforward_layer] objects.
+    possible_weights : torch.Tensor or None, optional
+        Quantization levels tensor. When provided, exported weights are snapped
+        to the nearest level before conversion to numpy.
 
     Returns
     -------
@@ -1010,10 +1015,20 @@ def save_weights(layers: list | tuple) -> dict[str, np.ndarray]:
     """
     rec_layer, ff_layer = layers
 
+    def _export_tensor(weight_tensor: torch.Tensor) -> np.ndarray:
+        tensor = weight_tensor.detach()
+        if possible_weights is not None:
+            levels = possible_weights.to(device=tensor.device, dtype=tensor.dtype)
+            quantized = ste_fn(tensor, levels)
+            if quantized is None:
+                raise RuntimeError("STE quantization returned None")
+            tensor = quantized.detach()
+        return tensor.cpu().numpy()
+
     weights = {
-        'rec_ff_weights': rec_layer.ff_weights.data.detach().cpu().numpy(),
-        'rec_rec_weights': rec_layer.rec_weights.data.detach().cpu().numpy(),
-        'out_weights': ff_layer.ff_weights.data.detach().cpu().numpy()
+        'rec_ff_weights': _export_tensor(rec_layer.ff_weights.data),
+        'rec_rec_weights': _export_tensor(rec_layer.rec_weights.data),
+        'out_weights': _export_tensor(ff_layer.ff_weights.data)
     }
 
     return weights

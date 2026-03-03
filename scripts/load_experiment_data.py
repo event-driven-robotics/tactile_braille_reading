@@ -53,7 +53,7 @@ def _ensure_local_utils_for_unpickling() -> None:
 
     importlib.import_module("utils.neuron_models")
 
-experiment_id = "20260115_0833_exploration/20260303_073847"
+experiment_id = "20260115_0833_exploration/20260303_090740"
 
 data_path = f"./results/{experiment_id}"
 data_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"

@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-experiment_id = "20260115_0833_exploration/20260303_073847"
+experiment_id = "20260115_0833_exploration/20260303_090740"
 results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"
@@ -404,8 +404,10 @@ def write_weights_debug_table(weights: dict[str, np.ndarray], selected_weights_p
     None
     """
     lines = [
-        f"source_weights_file: {selected_weights_path}",
-        "matrix\tindex\tvalue",
+        f"source_weights_file\t{selected_weights_path}",
+        "column_separator\ttab",
+        "id_convention\treceiver_id=index[0], sender_id=index[1] for 2D matrices",
+        "matrix\treceiver_id\tsender_id\tindex\tvalue",
     ]
 
     for matrix_name in sorted(weights.keys()):
@@ -413,7 +415,15 @@ def write_weights_debug_table(weights: dict[str, np.ndarray], selected_weights_p
         for idx in np.ndindex(matrix.shape):
             idx_text = ",".join(str(i) for i in idx)
             value = float(matrix[idx])
-            lines.append(f"{matrix_name}\t{idx_text}\t{value:.10g}")
+            if len(idx) >= 2:
+                receiver_id = str(idx[0])
+                sender_id = str(idx[1])
+            else:
+                receiver_id = "NA"
+                sender_id = "NA"
+            lines.append(
+                f"{matrix_name}\t{receiver_id}\t{sender_id}\t{idx_text}\t{value:.10g}"
+            )
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -24,6 +24,7 @@ Date: January 12, 2026
 """
 
 import logging
+from typing import cast
 
 import numpy as np
 import torch
@@ -341,8 +342,11 @@ class feedforward_layer:
         - Initialization: N(0, fwd_weight_scale/sqrt(nb_inputs))
         - Requires gradient for learning
         """
-        self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
-                                      device=self.device, dtype=self.dtype, requires_grad=True)
+        self.ff_weights = torch.empty(
+            (self.nb_neurons, self.nb_inputs),
+            device=self.device,
+            dtype=self.dtype,
+        )
         torch.nn.init.normal_(self.ff_weights, mean=0.0,
                               std=self.fwd_weight_scale / (self.nb_inputs ** 0.5))
 
@@ -411,7 +415,8 @@ class feedforward_layer:
                 out[mthr > 0] = 1
             else:
                 # For BPTT, use surrogate gradient with gamma parameter
-                out = spike_fn(mthr, scale=self.gamma, threshold=0.0)
+                out = cast(torch.Tensor, spike_fn(
+                    mthr, scale=self.gamma, threshold=0.0))
             if self.ref_per is not None and self.ref_per > 0:
                 refractory_mask = self.ref_per_tensor[:out.shape[0], :out.shape[1]] > 0
                 out = out.masked_fill(refractory_mask, 0.0)
@@ -635,12 +640,18 @@ class recurrent_layer:
           Initialization: N(0, rec_weight_scale/sqrt(nb_neurons))
         - Both require gradients for learning
         """
-        self.ff_weights = torch.empty((self.nb_neurons, self.nb_inputs),
-                                      device=self.device, dtype=self.dtype, requires_grad=True)
+        self.ff_weights = torch.empty(
+            (self.nb_neurons, self.nb_inputs),
+            device=self.device,
+            dtype=self.dtype,
+        )
         torch.nn.init.normal_(self.ff_weights, mean=0.0,
                               std=self.fwd_weight_scale / (self.nb_inputs ** 0.5))
-        self.rec_weights = torch.empty((self.nb_neurons, self.nb_neurons),
-                                       device=self.device, dtype=self.dtype, requires_grad=True)
+        self.rec_weights = torch.empty(
+            (self.nb_neurons, self.nb_neurons),
+            device=self.device,
+            dtype=self.dtype,
+        )
         torch.nn.init.normal_(self.rec_weights, mean=0.0,
                               std=self.rec_weight_scale / (self.nb_neurons ** 0.5))
 
@@ -705,6 +716,12 @@ class recurrent_layer:
         spk_rec = []
 
         recurrent_weights = self.rec_weights if rec_weights is None else rec_weights
+        rec_mask = 1.0 - torch.eye(
+            self.nb_neurons,
+            device=recurrent_weights.device,
+            dtype=recurrent_weights.dtype,
+        )
+        recurrent_weights = recurrent_weights * rec_mask
 
         # Compute recurrent layer activity
         for t in range(nb_steps):
@@ -719,7 +736,8 @@ class recurrent_layer:
                 out[mthr > 0] = 1
             else:
                 # For BPTT, use surrogate gradient with gamma parameter
-                out = spike_fn(mthr, scale=self.gamma, threshold=0.0)
+                out = cast(torch.Tensor, spike_fn(
+                    mthr, scale=self.gamma, threshold=0.0))
             if self.ref_per is not None and self.ref_per > 0:
                 refractory_mask = self.ref_per_tensor[:out.shape[0], :out.shape[1]] > 0
                 out = out.masked_fill(refractory_mask, 0.0)

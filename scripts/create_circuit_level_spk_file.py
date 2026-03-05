@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-experiment_id = "20260115_0833_exploration/20260303_090740"
+experiment_id = "20260115_0833_exploration/20260303_120143"
 results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"

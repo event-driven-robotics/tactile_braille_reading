@@ -129,16 +129,25 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, params
         x_local, y_local = x_local.to(
             params['device']), y_local.to(params['device'])
         with torch.no_grad():
-            spk_rec_readout, _ = run_snn(
+            readout_activity, recs = run_snn(
                 inputs=x_local, layers=layers, params=params)
 
-        # Use compute_winning_neuron with delayed_output handling for e-prop
-        if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-            _, neuron_idc = compute_winning_neuron(
-                spk_rec_readout[:, -params["delayed_output"]:, :], params=params)
+        if params["eprop"]:
+            _, _, mem_rec_readout = recs
+            yo = torch.softmax(mem_rec_readout, dim=2)
+            if params["delayed_output"] is not None and params["delayed_output"] > 0:
+                _, neuron_idc = compute_winning_neuron(
+                    yo[:, -params["delayed_output"]:, :], params=params)
+            else:
+                _, neuron_idc = compute_winning_neuron(yo, params=params)
         else:
-            _, neuron_idc = compute_winning_neuron(
-                spk_rec_readout, params=params)
+            # Use compute_winning_neuron with delayed_output handling for BPTT
+            if params["delayed_output"] is not None and params["delayed_output"] > 0:
+                _, neuron_idc = compute_winning_neuron(
+                    readout_activity[:, -params["delayed_output"]:, :], params=params)
+            else:
+                _, neuron_idc = compute_winning_neuron(
+                    readout_activity, params=params)
 
         # Compare to labels
         mean_acc = np.mean((y_local == neuron_idc).detach().cpu().numpy())

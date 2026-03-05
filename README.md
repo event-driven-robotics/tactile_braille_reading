@@ -52,3 +52,38 @@ tail -f logs/*/training_log_*.txt
 - ✓ Adaptive early stopping based on number of classes
 - ✓ Automatic error detection and logging
 - ✓ Real-time progress monitoring
+
+## Testing
+
+### Run local test scripts (no extra dependencies)
+
+```bash
+[your path to python]/python scripts/tests/run_all_tests.py
+```
+
+This executes:
+- `scripts/tests/test_neuron_computation.py`
+- `scripts/tests/test_parser_logic.py`
+- `scripts/tests/test_network_creation.py`
+
+### Optional: run with `pytest`
+
+If you prefer `pytest` output and test selection:
+
+```bash
+[your path to python]/python -m pip install pytest
+[your path to python]/python -m pytest scripts/tests -q
+```
+
+Useful examples:
+
+```bash
+# Verbose output
+[your path to python]/python -m pytest scripts/tests -v
+
+# Run only one test script
+[your path to python]/python -m pytest scripts/tests/test_network_creation.py -q
+
+# Run one specific test function
+[your path to python]/python -m pytest scripts/tests/test_neuron_computation.py::test_recurrent_diagonal_mask_and_offdiag_propagation -q
+```

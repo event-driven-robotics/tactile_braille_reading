@@ -44,6 +44,22 @@ from .validate_snn import compute_classification_accuracy
 logger = logging.getLogger('braille_training')
 
 
+def _normalize_eprop_mode(mode: str) -> str:
+    alias_map = {
+        'experimental': 'frenkel',
+        'frenkel': 'frenkel',
+        'traditional': 'bellec',
+        'bellec': 'bellec',
+    }
+    normalized = alias_map.get(str(mode).lower())
+    if normalized is None:
+        raise ValueError(
+            f"Unknown eprop_mode '{mode}'. Expected one of: "
+            "frenkel, bellec (aliases: experimental, traditional)."
+        )
+    return normalized
+
+
 def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDataset,
                     resume_weights: dict[str, np.ndarray] | None = None) -> tuple:
     """
@@ -217,6 +233,10 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
         beta_rec = float(np.exp(-params["time_step"]/params['tau_mem_rec'])
                          )
 
+    # Expose decay factors so traditional e-prop can mirror neuron/readout dynamics.
+    params['beta_mem'] = beta
+    params['beta_mem_rec'] = beta_rec
+
     if params["eprop"]:
         params['beta_trace'] = float(
             np.exp(-params["time_step"]/params['tau_trace']))
@@ -227,6 +247,11 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
         params['beta_trace'] = None
         params['beta_trace_out'] = None
         vars_eprop = [None, None]
+
+    lr_layer = params.get('eprop_lr_layer', (1.0, 1.0, 1.0))
+    if len(lr_layer) != 3:
+        raise ValueError("eprop_lr_layer must contain exactly 3 values: (in, rec, out).")
+    params['eprop_lr_layer'] = tuple(float(v) for v in lr_layer)
 
     fwd_weight_scale = params['fwd_weight_scale']
     rec_weight_scale = fwd_weight_scale*params['weight_scale_factor']
@@ -279,6 +304,21 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     if resume_weights is not None:
         apply_resume_weights(layers, resume_weights, params)
         logger.info("Resume weights applied to initialized layers.")
+
+    train_rec_ff = bool(params.get("train_rec_ff", True))
+    train_rec_rec = bool(params.get("train_rec_rec", True))
+    train_out_ff = bool(params.get("train_out_ff", True))
+
+    rec_layer.ff_weights.requires_grad_(train_rec_ff)
+    rec_layer.rec_weights.requires_grad_(train_rec_rec)
+    ff_layer.ff_weights.requires_grad_(train_out_ff)
+
+    logger.info(
+        "Trainable weights: rec_ff=%s, rec_rec=%s, out_ff=%s",
+        train_rec_ff,
+        train_rec_rec,
+        train_out_ff,
+    )
 
     # Save initial weights before training
     initial_weights = save_weights(layers)
@@ -484,8 +524,18 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
     if dataset_test is None:
         raise ValueError("dataset_test must be provided.")
 
-    weights = [layers[0].ff_weights,
-               layers[0].rec_weights, layers[1].ff_weights]
+    all_weights = [
+        ("rec_ff_weights", layers[0].ff_weights),
+        ("rec_rec_weights", layers[0].rec_weights),
+        ("out_weights", layers[1].ff_weights),
+    ]
+    weights = [weight for _, weight in all_weights if weight.requires_grad]
+    if len(weights) == 0:
+        frozen = ", ".join(name for name, _ in all_weights)
+        raise ValueError(
+            f"No trainable weights found (all frozen): {frozen}. "
+            "Enable requires_grad on at least one weight matrix."
+        )
     # The log softmax function across output units
     log_softmax_fn = nn.LogSoftmax(dim=1)
     loss_fn = nn.NLLLoss()  # The negative log likelihood loss function
@@ -501,11 +551,11 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
 
     pbar_training = tqdm(
         range(params['epochs']), position=1, total=params['epochs'], leave=False)
+    optimizer = torch.optim.Adamax(
+        weights, lr=params["learning_rate"], betas=(0.9, 0.995))
     count_epoch = 0
     for _ in pbar_training:
         # learning rate decreases over epochs
-        optimizer = torch.optim.Adamax(
-            weights, lr=params["learning_rate"], betas=(0.9, 0.995))
         # if e > nb_epochs/2:
         #     lr = lr * 0.9
         loss_hist_batches = []
@@ -529,27 +579,26 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
 
             _, spk_rec_hidden, _ = recs
 
-            # Use all timesteps for BPTT, optionally use delayed_output window for e-prop
-            if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-                summed_spikes, neuron_idc = compute_winning_neuron(
-                    spk_rec_readout[:, -params["delayed_output"]:, :], params=params)
-            else:
-                summed_spikes, neuron_idc = compute_winning_neuron(
-                    spk_rec_readout=spk_rec_readout, params=params)
-
             # Compute gradients based on selected learning algorithm
             if params["eprop"]:
+                eprop_mode = _normalize_eprop_mode(
+                    params.get("eprop_mode", "frenkel")
+                )
                 one_hot_encoded = torch.nn.functional.one_hot(
                     y_local, num_classes=len(params['letters']))
                 # E-prop: manual gradient computation via eligibility traces
-                # Create one-hot encoded predictions from selected winners
-                yo = torch.nn.functional.one_hot(
-                    neuron_idc, num_classes=len(params['letters']))
-                # Expand to match temporal dimension for e-prop
-                yo = yo.unsqueeze(1).expand(-1, spk_rec_readout.shape[1], -1)
+                mem_rec_hidden, spk_rec_hidden, mem_rec_readout = recs
+                # For classification, use time-resolved class probabilities
+                # derived from the readout membrane state.
+                yo = torch.softmax(mem_rec_readout, dim=2)
 
-                # Compute e-prop gradients
-                mem_rec_hidden, spk_rec_hidden, _ = recs
+                if params["delayed_output"] is not None and params["delayed_output"] > 0:
+                    summed_scores, neuron_idc = compute_winning_neuron(
+                        yo[:, -params["delayed_output"]:, :], params=params)
+                else:
+                    summed_scores, neuron_idc = compute_winning_neuron(
+                        spk_rec_readout=yo, params=params)
+                debug_scores = summed_scores
 
                 w_in_math: torch.Tensor
                 w_rec_math: torch.Tensor
@@ -588,9 +637,18 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
                             grad_targets=grad_targets)
 
                 # Compute loss for tracking purposes (not used for gradients in e-prop)
-                log_p_y = log_softmax_fn(summed_spikes)
+                log_p_y = log_softmax_fn(summed_scores)
                 loss_val = loss_fn(log_p_y, y_local)
             else:
+                # Use all timesteps for BPTT predictions
+                if params["delayed_output"] is not None and params["delayed_output"] > 0:
+                    summed_spikes, neuron_idc = compute_winning_neuron(
+                        spk_rec_readout[:, -params["delayed_output"]:, :], params=params)
+                else:
+                    summed_spikes, neuron_idc = compute_winning_neuron(
+                        spk_rec_readout=spk_rec_readout, params=params)
+                debug_scores = summed_spikes
+
                 log_p_y = log_softmax_fn(summed_spikes)
 
                 # Here we can set up our regularizer loss
@@ -629,7 +687,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
                 logger.debug(
                     f"  Predictions (neuron_idc): {neuron_idc[:min(10, len(y_local))].cpu().numpy()}")
                 logger.debug(
-                    f"  Spike counts (summed_spikes): {summed_spikes[:min(10, len(y_local))].detach().cpu().numpy()}")
+                    f"  Readout scores (summed over time): {debug_scores[:min(10, len(y_local))].detach().cpu().numpy()}")
                 logger.debug(
                     f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
                 logger.debug(
@@ -904,79 +962,120 @@ def grads_batch(x: torch.Tensor, yo: torch.Tensor, yt: torch.Tensor, thr: int, v
         grad_w_rec.grad = torch.zeros_like(grad_w_rec)
     if grad_w_out.grad is None:
         grad_w_out.grad = torch.zeros_like(grad_w_out)
-    # Surrogate derivatives
-    h = params['gamma'] * \
-        torch.max(torch.zeros_like(v), 1 - torch.abs((v - thr) / thr))
 
-    # Crea una variabile di errore vuota con le stesse dimensioni di yo
-    err = torch.zeros_like(yo)
+    if _normalize_eprop_mode(params.get("eprop_mode", "frenkel")) == "bellec":
+        nb_hidden = int(params['nb_hidden'])
+        batch_size = x.shape[1]
+        dtype = params['dtype_torch']
+        device = params['device']
+        beta_trace = float(params.get('beta_mem_rec', params['beta_trace']))
+        beta_out = float(params.get('beta_mem', params['beta_trace_out']))
+        lr_in, lr_rec, lr_out = params.get('eprop_lr_layer', (1.0, 1.0, 1.0))
+        thr_value = float(thr)
 
-    # Eligibility traces convolution
-    beta_conv = torch.tensor([params['beta_trace_out'] ** (params['data_steps'] - i - 1)
-                             for i in range(params['data_steps'])], dtype=params['dtype_torch']).view(1, 1, -1).to(params['device'])
-    beta_rec_conv = torch.tensor([params['beta_trace'] ** (params['data_steps'] - i - 1)
-                                 for i in range(params['data_steps'])], dtype=params['dtype_torch']).view(1, 1, -1).to(params['device'])
+        # Bellec et al. e-prop (online recursion):
+        # epsilon_t = d h_t / d h_{t-1} * epsilon_{t-1} + d h_t / dW
+        # e_t = d z_t / d h_t * epsilon_t
+        # gradient = sum_t L_t * \bar{e}_t, with \bar{e}_t low-pass filtered by output leak.
+        pre_in = torch.zeros((batch_size, nb_inputs), device=device, dtype=dtype)
+        pre_rec = torch.zeros((batch_size, nb_hidden), device=device, dtype=dtype)
+        z_prev = torch.zeros((batch_size, nb_hidden), device=device, dtype=dtype)
 
-    # Convoluzione Input eligibility traces
-    trace_in = F.conv1d(x.permute(1, 2, 0), beta_rec_conv.expand(
-        nb_inputs, -1, -1), padding=params['data_steps'], groups=nb_inputs)[:, :, 1:params['data_steps']+1]
-    trace_in = trace_in.unsqueeze(1).expand(-1, params['nb_hidden'], -1, -1)
-    trace_in = torch.einsum('tbr,brit->brit', h, trace_in)
+        bar_e_in = torch.zeros((batch_size, nb_hidden, nb_inputs), device=device, dtype=dtype)
+        bar_e_rec = torch.zeros((batch_size, nb_hidden, nb_hidden), device=device, dtype=dtype)
+        bar_z = torch.zeros((batch_size, nb_hidden), device=device, dtype=dtype)
 
-    # Convoluzione Recurrent eligibility traces
-    trace_rec = F.conv1d(z.permute(1, 2, 0), beta_rec_conv.expand(
-        params['nb_hidden'], -1, -1), padding=params['data_steps'], groups=params['nb_hidden'])[:, :, :params['data_steps']]
-    trace_rec = trace_rec.unsqueeze(1).expand(-1, params['nb_hidden'], -1, -1)
-    trace_rec = torch.einsum('tbr,brit->brit', h, trace_rec)
+        start_idx = 0
+        if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
+            start_idx = max(0, x.shape[0] - int(params["delayed_output"]))
 
-    # Free h as it's no longer needed
-    # del h
+        yt_float = yt.to(dtype)
 
-    # Output eligibility vector
-    trace_out = F.conv1d(z.permute(1, 2, 0), beta_conv.expand(
-        params['nb_hidden'], -1, -1), padding=params['data_steps'], groups=params['nb_hidden'])[:, :, 1:params['data_steps']+1]
+        for t in range(x.shape[0]):
+            x_t = x[t]
+            z_t = z[t]
+            v_t = v[t]
 
-    # Ottimizzazione convoluzioni batch-wise
-    trace_in = F.conv1d(trace_in.reshape(x.shape[1], nb_inputs * params['nb_hidden'], params['data_steps']),
-                        beta_conv.expand(
-                            nb_inputs * params['nb_hidden'], -1, -1),
-                        padding=params['data_steps'], groups=nb_inputs * params['nb_hidden'])[:, :, 1:params['data_steps']+1]
-    trace_in = trace_in.reshape(
-        x.shape[1], params['nb_hidden'], nb_inputs, params['data_steps'])
+            pre_in = beta_trace * pre_in + x_t
+            pre_rec = beta_trace * pre_rec + z_prev
 
-    trace_rec = F.conv1d(trace_rec.reshape(x.shape[1], params['nb_hidden'] * params['nb_hidden'], params['data_steps']),
-                         beta_conv.expand(
-                             params['nb_hidden'] * params['nb_hidden'], -1, -1),
-                         padding=params['data_steps'], groups=params['nb_hidden'] * params['nb_hidden'])[:, :, 1:params['data_steps']+1]
-    trace_rec = trace_rec.reshape(
-        x.shape[1], params['nb_hidden'], params['nb_hidden'], params['data_steps'])
+            psi = params['gamma'] * torch.clamp(
+                1 - torch.abs((v_t - thr_value) / thr_value), min=0.0
+            )
 
-    for i in range(yo.shape[0]):
-        err[i, :, :] = yo[i, :, :] - yt
-    err = err.to(params['dtype_torch'])
+            e_in = psi.unsqueeze(-1) * pre_in.unsqueeze(1)
+            e_rec = psi.unsqueeze(-1) * pre_rec.unsqueeze(1)
 
-    L = torch.einsum('tbo,or->brt', err, w_out)
+            bar_e_in = beta_out * bar_e_in + e_in
+            bar_e_rec = beta_out * bar_e_rec + e_rec
+            bar_z = beta_out * bar_z + z_t
 
+            if t >= start_idx:
+                err_t = yo[t].to(dtype) - yt_float
+                learning_t = torch.einsum('bo,or->br', err_t, w_out)
+
+                grad_w_in.grad += float(lr_in) * torch.einsum('br,bri->ri', learning_t, bar_e_in)
+                grad_w_rec.grad += float(lr_rec) * torch.einsum('br,brj->rj', learning_t, bar_e_rec)
+                grad_w_out.grad += float(lr_out) * torch.einsum('bo,br->or', err_t, bar_z)
+
+            z_prev = z_t
+
+        return
+
+    # Experimental mode (ReckOn-inspired):
+    # decoupled pre-synaptic traces and post-synaptic factors (LS * STE),
+    # with neuron-scaled ET storage instead of synapse-sized ET tensors.
+    dtype = params['dtype_torch']
+    device = params['device']
+    nb_hidden = int(params['nb_hidden'])
+    batch_size = x.shape[1]
+    thr_value = float(thr)
+    lr_in, lr_rec, lr_out = params.get('eprop_lr_layer', (1.0, 1.0, 1.0))
+
+    decay_out_raw = params.get('beta_mem', params.get('beta_trace_out'))
+    decay_rec_raw = params.get('beta_mem_rec', params.get('beta_trace'))
+    if decay_out_raw is None or decay_rec_raw is None:
+        raise ValueError(
+            "Missing decay constants for experimental e-prop: "
+            "expected beta_mem/beta_mem_rec (or beta_trace_out/beta_trace fallback)."
+        )
+    decay_out = float(decay_out_raw)
+    decay_rec = float(decay_rec_raw)
+
+    pre_in_trace = torch.zeros((batch_size, nb_inputs), device=device, dtype=dtype)
+    pre_rec_trace = torch.zeros((batch_size, nb_hidden), device=device, dtype=dtype)
+    output_trace = torch.zeros((batch_size, nb_hidden), device=device, dtype=dtype)
+    z_prev = torch.zeros((batch_size, nb_hidden), device=device, dtype=dtype)
+
+    start_idx = 0
     if params["eprop"] and params["delayed_output"] is not None and params["delayed_output"] > 0:
-        L = L[:, :, -params["delayed_output"]:]
-        err = err[-params["delayed_output"]:, :, :]
-        trace_in = trace_in[:, :, :, -params["delayed_output"]:]
-        trace_rec = trace_rec[:, :, :, -params["delayed_output"]:]
-        trace_out = trace_out[:, :, -params["delayed_output"]:]
+        start_idx = max(0, x.shape[0] - int(params["delayed_output"]))
 
-    # Weight gradient updates
-    grad_w_in.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                                nb_inputs, -1) * trace_in, dim=(0, 3))
+    yt_float = yt.to(dtype)
 
-    # Free trace_in immediately after use
-    # del trace_in
+    for t in range(x.shape[0]):
+        x_t = x[t].to(dtype)
+        z_t = z[t].to(dtype)
+        v_t = v[t].to(dtype)
 
-    grad_w_rec.grad += torch.sum(L.unsqueeze(2).expand(-1, -1,
-                                 params['nb_hidden'], -1) * trace_rec, dim=(0, 3))
+        pre_in_trace = decay_rec * pre_in_trace + x_t
+        pre_rec_trace = decay_rec * pre_rec_trace + z_prev
+        output_trace = decay_out * output_trace + z_t
 
-    # Free trace_rec immediately after use
-    # del trace_rec
-    grad_w_out.grad += torch.einsum('tbo,brt->or', err, trace_out)
+        ste_t = params['gamma'] * torch.clamp(
+            1 - torch.abs((v_t - thr_value) / thr_value), min=0.0
+        )
+
+        err_t = yo[t].to(dtype) - yt_float
+        ls_t = torch.einsum('bo,or->br', err_t, w_out)
+        post_factor = ste_t * ls_t
+
+        if t >= start_idx:
+            grad_w_in.grad += float(lr_in) * torch.einsum('br,bi->ri', post_factor, pre_in_trace)
+            grad_w_rec.grad += float(lr_rec) * torch.einsum('br,bj->rj', post_factor, pre_rec_trace)
+            grad_w_out.grad += float(lr_out) * torch.einsum('bo,br->or', err_t, output_trace)
+
+        z_prev = z_t
 
     # Free remaining large tensors
     # del trace_out, L, err

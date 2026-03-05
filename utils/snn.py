@@ -167,8 +167,26 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
     # Readout layer
     h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, out_ff_weights.t()))
 
-    spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
-        h2, params['data_steps'], params["lower_bound"])
+    if params.get("eprop", False):
+        beta_out = float(params.get("beta_mem", ff_layer.beta))
+        readout_bias = float(params.get("readout_bias", 0.0))
+
+        mem = torch.zeros(
+            (h2.shape[0], h2.shape[2]),
+            device=h2.device,
+            dtype=h2.dtype,
+        )
+        mem_rec = []
+        for t in range(params['data_steps']):
+            mem = beta_out * mem + h2[:, t, :] + readout_bias
+            mem_rec.append(mem)
+
+        mem_rec_readout = torch.stack(mem_rec, dim=1)
+        # Keep first return value compatible with downstream code paths.
+        spk_rec_readout = torch.softmax(mem_rec_readout, dim=2)
+    else:
+        spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
+            h2, params['data_steps'], params["lower_bound"])
 
     other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
 

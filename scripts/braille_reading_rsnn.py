@@ -65,6 +65,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.utils.data import TensorDataset
 
 # Add parent directory to path to import from utils
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -83,6 +84,22 @@ os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
 # Clear any cached GPU memory from previous runs
 torch.cuda.empty_cache()
+
+
+def _normalize_eprop_mode(mode: str) -> str:
+    alias_map = {
+        'experimental': 'frenkel',
+        'frenkel': 'frenkel',
+        'traditional': 'bellec',
+        'bellec': 'bellec',
+    }
+    normalized = alias_map.get(str(mode).lower())
+    if normalized is None:
+        raise ValueError(
+            f"Unknown eprop_mode '{mode}'. Expected one of: "
+            "frenkel, bellec (aliases: experimental, traditional)."
+        )
+    return normalized
 
 
 def parse_arguments():
@@ -183,6 +200,12 @@ def parse_arguments():
                         help='Forward weight initialization scale')
     parser.add_argument('--weight_scale_factor', type=float, default=0.02,
                         help='Recurrent weight scale factor')
+    parser.add_argument('--train_rec_ff', type=_str2bool, default=True,
+                        help='Whether recurrent layer input weights are trainable')
+    parser.add_argument('--train_rec_rec', type=_str2bool, default=True,
+                        help='Whether recurrent layer recurrent weights are trainable')
+    parser.add_argument('--train_out_ff', type=_str2bool, default=True,
+                        help='Whether readout layer weights are trainable')
 
     # Regularization
     parser.add_argument('--reg_spikes', type=float, default=0.0015,
@@ -193,6 +216,10 @@ def parse_arguments():
     # Learning algorithm
     parser.add_argument('--eprop', action='store_true', default=False,
                         help='Use e-prop instead of BPTT')
+    parser.add_argument('--eprop_mode', type=str, default='frenkel',
+                        choices=['frenkel', 'bellec', 'experimental', 'traditional'],
+                        help='E-prop update variant: frenkel (ReckOn-style decoupled update) or bellec (online recursion). '
+                             'Legacy aliases accepted: experimental=frenkel, traditional=bellec')
     parser.add_argument('--gamma', type=float, default=15.0,
                         help='Surrogate gradient scale factor')
     parser.add_argument('--spike_threshold', type=float, default=1.0,
@@ -237,6 +264,10 @@ def parse_arguments():
     parser.add_argument('--inference-only', '--inference_only',
                         dest='inference_only', nargs='?', const=True, default=False, type=_str2bool,
                         help='Skip training and only run evaluation/plots using a resumed model (requires --resume-run-id). Supports forms like --inference-only, --inference_only=true, --inference_only=false')
+    parser.add_argument('--save_artifacts_for', type=str, default='best',
+                        choices=['all', 'best', 'none'],
+                        help='Control saving of model-weight and trace artifacts: '
+                             'all=save per repetition, best=save only globally best repetition, none=save neither')
 
     args = parser.parse_args()
 
@@ -266,6 +297,7 @@ def parse_arguments():
 
     # Convert to dict for backward compatibility
     args_dict = vars(args)
+    args_dict['eprop_mode'] = _normalize_eprop_mode(args_dict['eprop_mode'])
     args_dict["_explicit_cli_dests"] = sorted(explicit_cli_dests)
     return args_dict
 
@@ -495,6 +527,9 @@ if params.get("resume_run_id"):
                 merged_params[current_key] = merged_params[legacy_key]
 
     params = merged_params
+    params["eprop_mode"] = _normalize_eprop_mode(
+        params.get("eprop_mode", cli_params.get("eprop_mode", "frenkel"))
+    )
     params["resume_from"] = resume_from
     params["resume_params"] = resume_params_path
 
@@ -512,6 +547,8 @@ if params.get("resume_run_id"):
             if key not in cli_params:
                 continue
             params[key] = cli_params[key]
+            if key == "eprop_mode":
+                params[key] = _normalize_eprop_mode(params[key])
             print(f"  - {key}: {params[key]}")
 
 if params.get('inference_only', False) and not params.get("resume_run_id"):
@@ -736,6 +773,9 @@ if __name__ == '__main__':
     logger.info(f"\n{'='*60}")
     logger.info(
         f"Training with: {'e-prop' if params['eprop'] else 'BPTT (Backpropagation Through Time)'}")
+    if params['eprop']:
+        logger.info(f"E-prop mode: {params.get('eprop_mode', 'frenkel')}")
+    logger.info(f"Artifact saving mode (weights + traces): {params.get('save_artifacts_for', 'best')}")
     logger.info(f"{'='*60}\n")
 
     # Generate descriptive string for output files based on letter set
@@ -749,6 +789,164 @@ if __name__ == '__main__':
     loss_hist_repetition = []
     accs_hist_repetition = []
     eval_acc_repetition = []
+    best_eval_acc: float | None = None
+    best_repetition: int | None = None
+    best_layers_for_traces: list | None = None
+    best_ds_train: TensorDataset | None = None
+    best_ds_test: TensorDataset | None = None
+    best_initial_weights: dict[str, np.ndarray] | None = None
+    best_acc_train_hist: np.ndarray | None = None
+    best_acc_test_hist: np.ndarray | None = None
+    best_loss_train_hist: np.ndarray | None = None
+
+    save_artifacts_mode = params.get('save_artifacts_for', 'best')
+
+    def _save_weight_artifacts(
+        rep: int,
+        layers_to_save: list,
+        initial_weights_to_save: dict[str, np.ndarray] | None,
+    ) -> None:
+        if params.get('inference_only', False):
+            return
+
+        try:
+            if initial_weights_to_save is None:
+                raise ValueError("initial_weights are missing after training.")
+            np.savez(
+                os.path.join(
+                    models_dir,
+                    f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{rep}.npz'),
+                **initial_weights_to_save,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save initial weights (rep {rep}): {str(e)}")
+
+        try:
+            torch.save(
+                layers_to_save,
+                os.path.join(
+                    models_dir,
+                    f'best_model_{nb_hidden}_neurons_{str_letters}_rep_{rep}.pt'))
+        except Exception as e:
+            logger.error(f"Failed to save trained model (rep {rep}): {str(e)}")
+
+        try:
+            from utils.train_snn import save_weights
+            best_model_weights = save_weights(
+                layers_to_save,
+                possible_weights=params.get('possible_weights'))
+            np.savez(
+                os.path.join(
+                    models_dir,
+                    f'best_model_weights_{nb_hidden}_neurons_{str_letters}_rep_{rep}.npz'),
+                **best_model_weights,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save best-model weights (rep {rep}): {str(e)}")
+
+    def _save_trace_artifacts(
+        rep: int,
+        eval_acc_value: float,
+        layers_to_save: list,
+        ds_train_local: TensorDataset,
+        ds_test_local: TensorDataset,
+        acc_train_hist_local: np.ndarray | None,
+        acc_test_hist_local: np.ndarray | None,
+        loss_train_hist_local: np.ndarray | None,
+    ) -> None:
+        try:
+            train_acc_local, trues_train, preds_train = compute_classification_accuracy(
+                dataset=ds_train_local, layers=layers_to_save, params=params)
+            test_acc_local, trues_test, preds_test = compute_classification_accuracy(
+                dataset=ds_test_local, layers=layers_to_save, params=params)
+
+            spk_rec_readout_train_array, spk_rec_hidden_train_array = get_network_activity(
+                dataset=ds_train_local, layers=layers_to_save, params=params)
+            spk_rec_readout_test_array, spk_rec_hidden_test_array = get_network_activity(
+                dataset=ds_test_local, layers=layers_to_save, params=params)
+
+            spk_rec_readout_train = np.concatenate(
+                spk_rec_readout_train_array, axis=0)
+            spk_rec_hidden_train = np.concatenate(spk_rec_hidden_train_array, axis=0)
+            spk_rec_readout_test = np.concatenate(
+                spk_rec_readout_test_array, axis=0)
+            spk_rec_hidden_test = np.concatenate(spk_rec_hidden_test_array, axis=0)
+
+            trues_train_array = np.concatenate(trues_train, axis=0)
+            preds_train_array = np.concatenate(preds_train, axis=0)
+            trues_test_array = np.concatenate(trues_test, axis=0)
+            preds_test_array = np.concatenate(preds_test, axis=0)
+
+            results_trace_file = os.path.join(
+                results_dir,
+                f"best_model_traces_{nb_hidden}_neurons_{str_letters}_rep_{rep}.npz")
+
+            np.savez_compressed(
+                results_trace_file,
+                run_id=run_id,
+                record_mode=save_artifacts_mode,
+                repetition=rep,
+                eval_acc=float(eval_acc_value),
+                train_acc=float(train_acc_local),
+                test_acc=float(test_acc_local),
+                trues_train=trues_train_array,
+                preds_train=preds_train_array,
+                trues_test=trues_test_array,
+                preds_test=preds_test_array,
+                train_network_input=ds_train_local.tensors[0].detach().cpu().numpy(),
+                train_network_input_labels=ds_train_local.tensors[1].detach().cpu().numpy(),
+                test_network_input=ds_test_local.tensors[0].detach().cpu().numpy(),
+                test_network_input_labels=ds_test_local.tensors[1].detach().cpu().numpy(),
+                spk_rec_hidden_train=spk_rec_hidden_train,
+                spk_rec_readout_train=spk_rec_readout_train,
+                spk_rec_hidden_test=spk_rec_hidden_test,
+                spk_rec_readout_test=spk_rec_readout_test,
+                acc_train=acc_train_hist_local if acc_train_hist_local is not None else np.array([]),
+                acc_test=acc_test_hist_local if acc_test_hist_local is not None else np.array([]),
+                loss_train=loss_train_hist_local if loss_train_hist_local is not None else np.array([]),
+            )
+
+            logger.info(
+                f"Saved train/test traces for repetition {rep} to {results_trace_file} "
+                f"[train_hidden={spk_rec_hidden_train.shape}, test_hidden={spk_rec_hidden_test.shape}]")
+
+            layer_names = ["Hidden layer", "Readout layer"]
+            for split_name, spk_rec_readout_array, spk_rec_hidden_array in [
+                ("train", spk_rec_readout_train_array, spk_rec_hidden_train_array),
+                ("test", spk_rec_readout_test_array, spk_rec_hidden_test_array),
+            ]:
+                total_nb_batches = len(spk_rec_readout_array)
+                if NB_BATCHES_TO_PLOT > total_nb_batches:
+                    batch_selection = range(total_nb_batches)
+                else:
+                    batch_selection = np.random.choice(
+                        total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
+
+                for batch_idx in batch_selection:
+                    spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
+                    spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
+                    total_nb_trials = len(spk_rec_readout_batch)
+
+                    if NB_TRIALS_TO_PLOT > total_nb_trials:
+                        trial_selection = range(total_nb_trials)
+                    else:
+                        trial_selection = np.random.choice(
+                            total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
+
+                    for trial_idx in trial_selection:
+                        spr_recs = [spk_rec_hidden_batch[trial_idx],
+                                    spk_rec_readout_batch[trial_idx]]
+                        plot_network_activity(
+                            spr_recs=spr_recs,
+                            layer_names=layer_names,
+                            params=params,
+                            figname=os.path.join(
+                                figures_dir,
+                                f"best_model_{nb_hidden}_neurons_{str_letters}_network_activity_{split_name}_batch_{batch_idx}_trial_{trial_idx}_rep_{rep}"),
+                        )
+        except Exception as e:
+            logger.error(
+                f"Failed to save detailed traces for repetition {rep}: {str(e)}")
 
     resume_weights = None
     inference_layers = None
@@ -928,6 +1126,22 @@ if __name__ == '__main__':
                 dataset=ds_test, layers=best_layers, params=params)
         eval_acc_repetition.append(val_acc)
 
+        if best_eval_acc is None or val_acc > best_eval_acc:
+            best_eval_acc = float(val_acc)
+            best_repetition = int(repetition + 1)
+            best_layers_for_traces = best_layers
+            best_ds_train = ds_train
+            best_ds_test = ds_test
+            best_initial_weights = {
+                key: np.array(value, copy=True)
+                for key, value in (initial_weights.items() if initial_weights is not None else [])
+            } if not params.get('inference_only', False) else None
+            best_acc_train_hist = np.array(accs_hist[0], copy=True)
+            best_acc_test_hist = np.array(accs_hist[1], copy=True)
+            best_loss_train_hist = np.array(loss_hist_epochs, copy=True)
+            logger.info(
+                f"New best repetition so far: rep {repetition + 1} with eval accuracy {val_acc*100:.2f}%")
+
         # Warn if final accuracy is low
         num_classes = len(params['letters'])
         chance_level = 1.0 / num_classes
@@ -943,40 +1157,12 @@ if __name__ == '__main__':
         # SAVE RESULTS
         ##########################################################################
 
-        if not params.get('inference_only', False):
-            # Save initial weights (at initialization, before training)
-            try:
-                if initial_weights is None:
-                    raise ValueError(
-                        "initial_weights are missing after training.")
-                np.savez(
-                    os.path.join(
-                        models_dir, f'initial_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                    **initial_weights,
-                )
-            except Exception as e:
-                logger.error(f"Failed to save initial weights: {str(e)}")
-
-            # Save trained model weights (full layer objects for evaluation)
-            try:
-                torch.save(
-                    best_layers,
-                    os.path.join(
-                        models_dir,
-                        f'best_model_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.pt'))
-            except Exception as e:
-                logger.error(f"Failed to save trained model: {str(e)}")
-
-            # Save best-model weights as numpy arrays for easy analysis
-            try:
-                from utils.train_snn import save_weights
-                best_model_weights = save_weights(
-                    best_layers,
-                    possible_weights=params.get('possible_weights'))
-                np.savez(os.path.join(models_dir, f'best_model_weights_{nb_hidden}_neurons_{str_letters}_rep_{repetition+1}.npz'),
-                         **best_model_weights)
-            except Exception as e:
-                logger.error(f"Failed to save best-model weights: {str(e)}")
+        if save_artifacts_mode == 'all':
+            _save_weight_artifacts(
+                rep=repetition + 1,
+                layers_to_save=best_layers,
+                initial_weights_to_save=initial_weights,
+            )
 
         # Results path for this repetition
         results_file = os.path.join(
@@ -1008,15 +1194,9 @@ if __name__ == '__main__':
         # NETWORK ACTIVITY VISUALIZATION (Raster Plots)
         ##########################################################################
 
-        # Extract spike activity from hidden and readout layers
-        spk_rec_readout_array, spk_rec_hidden_array = get_network_activity(
-            dataset=ds_test, layers=best_layers, params=params)
-
-        # Save training metrics, hyperparameters, and full spike recordings
-        # Concatenate per-batch arrays to avoid object arrays and keep load path simple.
+        # Save per-repetition metrics and predictions.
+        # Detailed train/test trace recordings are exported once, for the best repetition only.
         try:
-            spk_rec_readout = np.concatenate(spk_rec_readout_array, axis=0)
-            spk_rec_hidden = np.concatenate(spk_rec_hidden_array, axis=0)
             trues_array = np.concatenate(trues, axis=0)
             preds_array = np.concatenate(preds, axis=0)
             network_input = ds_test.tensors[0].detach().cpu().numpy()
@@ -1036,49 +1216,28 @@ if __name__ == '__main__':
                                 batch_size=params['batch_size'],
                                 letters=str_letters,
                                 eprop=params['eprop'],
+                                eprop_mode=params.get('eprop_mode', 'frenkel'),
                                 run_id=run_id,
                                 network_input=network_input,
-                                network_input_labels=network_input_labels,
-                                spk_rec_hidden=spk_rec_hidden,
-                                spk_rec_readout=spk_rec_readout)
+                                network_input_labels=network_input_labels)
 
             logger.info(
-                f"Results (including spike recordings) saved to {results_file} "
-                f"[input={network_input.shape}, hidden={spk_rec_hidden.shape}, readout={spk_rec_readout.shape}]")
+                f"Per-repetition results saved to {results_file} "
+                f"[input={network_input.shape}]")
         except Exception as e:
             logger.error(f"Failed to save results to {results_file}: {str(e)}")
 
-        # Generate raster plots showing spike timing patterns
-        layer_names = ["Hidden layer", "Readout layer"]
-        total_nb_batches = len(spk_rec_readout_array)
-
-        # Randomly select batches to visualize (or use all if fewer than requested)
-        if NB_BATCHES_TO_PLOT > total_nb_batches:
-            batch_selection = range(total_nb_batches)
-        else:
-            batch_selection = np.random.choice(
-                total_nb_batches, NB_BATCHES_TO_PLOT, replace=False)
-
-        # Generate raster plots for selected batches and trials
-        for batch_idx in batch_selection:
-            spk_rec_readout_batch = spk_rec_readout_array[batch_idx]
-            spk_rec_hidden_batch = spk_rec_hidden_array[batch_idx]
-
-            total_nb_trials = len(spk_rec_readout_batch)
-
-            # Randomly select trials to visualize within each batch
-            if NB_TRIALS_TO_PLOT > total_nb_trials:
-                trial_selection = range(total_nb_trials)
-            else:
-                trial_selection = np.random.choice(
-                    total_nb_trials, NB_TRIALS_TO_PLOT, replace=False)
-
-            # Create raster plot for each selected trial
-            for trial_idx in trial_selection:
-                spr_recs = [spk_rec_hidden_batch[trial_idx],
-                            spk_rec_readout_batch[trial_idx]]
-                plot_network_activity(spr_recs=spr_recs, layer_names=layer_names, params=params,
-                                      figname=os.path.join(figures_dir, f"best_model_{nb_hidden}_neurons_{str_letters}_network_activity_batch_{batch_idx}_trial_{trial_idx}_rep_{repetition+1}"))
+        if save_artifacts_mode == 'all':
+            _save_trace_artifacts(
+                rep=repetition + 1,
+                eval_acc_value=float(val_acc),
+                layers_to_save=best_layers,
+                ds_train_local=ds_train,
+                ds_test_local=ds_test,
+                acc_train_hist_local=np.array(accs_hist[0], copy=True),
+                acc_test_hist_local=np.array(accs_hist[1], copy=True),
+                loss_train_hist_local=np.array(loss_hist_epochs, copy=True),
+            )
 
         ##########################################################################
         # CLEANUP AND COMPLETION
@@ -1091,6 +1250,35 @@ if __name__ == '__main__':
         logger.info(
             f"Repetition {repetition + 1}/{params['repetitions']} complete! Results saved to {results_file}")
         logger.info(f"{'='*60}")
+
+    if save_artifacts_mode == 'best':
+        if (
+            best_layers_for_traces is not None
+            and best_ds_train is not None
+            and best_ds_test is not None
+            and best_repetition is not None
+            and best_eval_acc is not None
+        ):
+            if not params.get('inference_only', False):
+                _save_weight_artifacts(
+                    rep=best_repetition,
+                    layers_to_save=best_layers_for_traces,
+                    initial_weights_to_save=best_initial_weights,
+                )
+
+            _save_trace_artifacts(
+                rep=best_repetition,
+                eval_acc_value=best_eval_acc,
+                layers_to_save=best_layers_for_traces,
+                ds_train_local=best_ds_train,
+                ds_test_local=best_ds_test,
+                acc_train_hist_local=best_acc_train_hist,
+                acc_test_hist_local=best_acc_test_hist,
+                loss_train_hist_local=best_loss_train_hist,
+            )
+        else:
+            logger.warning(
+                "No best repetition available for artifact saving mode 'best'.")
 
     # Plot training curves (loss and accuracy over epochs)
     if not params.get('inference_only', False):
@@ -1118,6 +1306,8 @@ if __name__ == '__main__':
     logger.info(f"  Run ID: {run_id}")
     logger.info(
         f"  Learning Algorithm: {'e-prop' if params['eprop'] else 'BPTT'}")
+    if params['eprop']:
+        logger.info(f"  E-prop Mode: {params.get('eprop_mode', 'frenkel')}")
     logger.info(f"  Letters: {str_letters} ({len(params['letters'])} classes)")
     logger.info(f"  Hidden Neurons: {nb_hidden}")
     logger.info(f"  Training Epochs: {params['epochs']}")

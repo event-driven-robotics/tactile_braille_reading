@@ -1,5 +1,16 @@
 """Run the test suite in a single command using pytest.
 
+Purpose
+-------
+Provides a stable, repository-local entry point for executing the full pytest
+suite, independent of whether `pytest` is available on PATH.
+
+How it works
+------------
+- Uses the current Python interpreter (`sys.executable`).
+- Runs `python -m pytest scripts/tests` from repository root.
+- Propagates pytest exit code for CI/local automation compatibility.
+
 Usage:
     /home/smullercleve/.virtualenvs/pytorch/bin/python scripts/tests/run_all_tests.py
 """

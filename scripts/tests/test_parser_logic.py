@@ -1,4 +1,19 @@
-"""Checks parser normalization and resume-path helper behavior."""
+"""Checks parser normalization and resume-path helper behavior.
+
+What this file tests
+--------------------
+1) CLI alias normalization (`experimental`/`traditional` -> canonical names).
+2) Boolean parsing paths for inference mode and artifact mode parsing.
+3) Resume path resolution helper for selecting model and params files.
+
+How it works
+------------
+- Imports the training script with isolated temporary output paths so tests do
+    not write into real workspace result/model/log folders.
+- Temporarily overrides `sys.argv` to exercise `parse_arguments()` exactly as a
+    CLI invocation would.
+- Uses temporary directory trees to validate resume-path helper behavior.
+"""
 
 from __future__ import annotations
 
@@ -45,6 +60,7 @@ def _parse_with_argv(br, argv: list[str]) -> dict:
 
 @pytest.mark.smoke
 def test_mode_alias_normalization(br_module) -> None:
+    """Ensure legacy e-prop mode aliases map to canonical internal values."""
     args_exp = _parse_with_argv(br_module, ["--eprop_mode", "experimental"])
     args_trad = _parse_with_argv(br_module, ["--eprop_mode", "traditional"])
     assert args_exp["eprop_mode"] == "frenkel"
@@ -52,6 +68,7 @@ def test_mode_alias_normalization(br_module) -> None:
 
 
 def test_inference_bool_and_record_mode_parse(br_module) -> None:
+    """Verify inference flag booleans and `save_artifacts_for` parse as intended."""
     args_true = _parse_with_argv(br_module, ["--inference-only"])
     args_false = _parse_with_argv(br_module, ["--inference_only=false", "--save_artifacts_for", "none"])
 
@@ -61,6 +78,7 @@ def test_inference_bool_and_record_mode_parse(br_module) -> None:
 
 
 def test_resolve_resume_paths(br_module, tmp_path: Path) -> None:
+    """Validate resume helper finds best-model file and parameters JSON path."""
     run_id = "run_x"
     model_dir = tmp_path / "model" / run_id
     results_dir = tmp_path / "results" / run_id

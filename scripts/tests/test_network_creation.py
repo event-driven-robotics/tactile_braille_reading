@@ -1,4 +1,19 @@
-"""Network construction and forward-pass smoke checks."""
+"""Network construction and forward-pass smoke checks.
+
+What this file tests
+--------------------
+1) Layer construction for recurrent + readout network on CPU.
+2) BPTT forward-path tensor shapes and finite outputs.
+3) E-prop forward-path tensor shapes through quantized-weight execution.
+4) Readout softmax normalization in e-prop path (probabilities sum to 1).
+
+How it works
+------------
+- Builds tiny synthetic networks directly from layer classes.
+- Generates random synthetic input tensors (no dataset dependency).
+- Runs `utils.snn.run_snn` with minimal parameter dicts for BPTT and e-prop.
+- Asserts structural invariants (shapes/finiteness/probability constraints).
+"""
 
 from __future__ import annotations
 
@@ -57,6 +72,7 @@ def _assert_finite(t: torch.Tensor, name: str) -> None:
 
 @pytest.mark.smoke
 def test_bptt_forward_shapes() -> None:
+    """Smoke-check BPTT forward pass for expected tensor shapes and finite outputs."""
     batch_size, steps, input_dim, hidden_dim, output_dim = 3, 6, 4, 5, 2
     layers = _build_layers(batch_size, input_dim, hidden_dim, output_dim, eprop=False)
 
@@ -82,6 +98,7 @@ def test_bptt_forward_shapes() -> None:
 
 
 def test_eprop_quantized_forward_shapes() -> None:
+    """Validate e-prop forward path with quantization and softmax readout semantics."""
     batch_size, steps, input_dim, hidden_dim, output_dim = 2, 5, 3, 4, 2
     layers = _build_layers(batch_size, input_dim, hidden_dim, output_dim, eprop=True)
 

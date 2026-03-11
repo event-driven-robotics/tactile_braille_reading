@@ -350,7 +350,7 @@ class feedforward_layer:
         torch.nn.init.normal_(self.ff_weights, mean=0.0,
                               std=self.fwd_weight_scale / (self.nb_inputs ** 0.5))
 
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None):
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None, return_syn=False):
         """
         Compute spiking activity of feedforward layer over time.
 
@@ -404,6 +404,7 @@ class feedforward_layer:
 
         mem_rec = []
         spk_rec = []
+        syn_rec = []
 
         # Compute feedforward layer activity
         for t in range(nb_steps):
@@ -458,6 +459,7 @@ class feedforward_layer:
 
             mem_rec.append(mem)
             spk_rec.append(out)
+            syn_rec.append(syn_drive)
 
             mem = new_mem
             if self.use_synapse:
@@ -466,6 +468,9 @@ class feedforward_layer:
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)
         spk_rec = torch.stack(spk_rec, dim=1)
+        syn_rec = torch.stack(syn_rec, dim=1)
+        if return_syn:
+            return spk_rec, mem_rec, syn_rec
         return spk_rec, mem_rec
 
 
@@ -655,7 +660,7 @@ class recurrent_layer:
         torch.nn.init.normal_(self.rec_weights, mean=0.0,
                               std=self.rec_weight_scale / (self.nb_neurons ** 0.5))
 
-    def compute_activity(self, input_activity, nb_steps, lower_bound=None, rec_weights=None):
+    def compute_activity(self, input_activity, nb_steps, lower_bound=None, rec_weights=None, return_syn=False):
         """
         Compute spiking activity of recurrent layer over time.
 
@@ -714,6 +719,7 @@ class recurrent_layer:
 
         mem_rec = []
         spk_rec = []
+        syn_rec = []
 
         recurrent_weights = self.rec_weights if rec_weights is None else rec_weights
         rec_mask = 1.0 - torch.eye(
@@ -779,6 +785,7 @@ class recurrent_layer:
 
             mem_rec.append(mem)
             spk_rec.append(out)
+            syn_rec.append(syn_drive)
 
             mem = new_mem
             if self.use_synapse:
@@ -787,6 +794,9 @@ class recurrent_layer:
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)
         spk_rec = torch.stack(spk_rec, dim=1)
+        syn_rec = torch.stack(syn_rec, dim=1)
+        if return_syn:
+            return spk_rec, mem_rec, syn_rec
         return spk_rec, mem_rec
 
 

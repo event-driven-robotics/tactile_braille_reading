@@ -528,7 +528,8 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
     Returns
     -------
     tuple
-        (spk_rec_readout_list, spk_rec_hidden_list) where:
+        (spk_rec_readout_list, spk_rec_hidden_list, mem_rec_hidden_list,
+         mem_rec_readout_list, syn_rec_hidden_list, syn_rec_readout_list) where:
 
         - spk_rec_readout_list : list of numpy.ndarray
             Output layer spike trains, one array per batch
@@ -595,19 +596,41 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
 
     spk_rec_readout_list = []
     spk_rec_hidden_list = []
+    mem_rec_hidden_list = []
+    mem_rec_readout_list = []
+    syn_rec_hidden_list = []
+    syn_rec_readout_list = []
     for x_local, y_local in generator:
         x_local, y_local = x_local.to(
             params['device']), y_local.to(params['device'])
+        activity_params = dict(params)
+        activity_params['return_extended_recs'] = True
         with torch.no_grad():
             spk_rec_readout, recs = run_snn(
-                inputs=x_local, layers=layers, params=params)
+                inputs=x_local, layers=layers, params=activity_params)
 
-        _, spk_rec_hidden, _ = recs
+        if len(recs) >= 5:
+            mem_rec_hidden, spk_rec_hidden, mem_rec_readout, syn_rec_hidden, syn_rec_readout = recs[:5]
+        else:
+            mem_rec_hidden, spk_rec_hidden, mem_rec_readout = recs
+            syn_rec_hidden = torch.zeros_like(mem_rec_hidden)
+            syn_rec_readout = torch.zeros_like(mem_rec_readout)
 
         spk_rec_readout_list.append(spk_rec_readout.detach().cpu().numpy())
         spk_rec_hidden_list.append(spk_rec_hidden.detach().cpu().numpy())
+        mem_rec_hidden_list.append(mem_rec_hidden.detach().cpu().numpy())
+        mem_rec_readout_list.append(mem_rec_readout.detach().cpu().numpy())
+        syn_rec_hidden_list.append(syn_rec_hidden.detach().cpu().numpy())
+        syn_rec_readout_list.append(syn_rec_readout.detach().cpu().numpy())
 
-    return spk_rec_readout_list, spk_rec_hidden_list
+    return (
+        spk_rec_readout_list,
+        spk_rec_hidden_list,
+        mem_rec_hidden_list,
+        mem_rec_readout_list,
+        syn_rec_hidden_list,
+        syn_rec_readout_list,
+    )
 
 
 def plot_network_activity(spr_recs: list, layer_names: list, params: dict, figname: str = './figures') -> None:

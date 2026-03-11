@@ -63,6 +63,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset
@@ -465,6 +466,156 @@ def setup_logger(log_dir, run_id, log_level='INFO'):
     return logger
 
 
+def _find_spiking_neuron(spike_traces: np.ndarray) -> tuple[int, int] | None:
+    """Find one sample/neuron pair with at least one spike."""
+    # spike_traces shape: [samples, timesteps, neurons]
+    if spike_traces.size == 0:
+        return None
+    sample_spike_counts = np.sum(spike_traces, axis=(1, 2))
+    sample_indices = np.where(sample_spike_counts > 0)[0]
+    if sample_indices.size == 0:
+        return None
+    sample_idx = int(sample_indices[0])
+    neuron_counts = np.sum(spike_traces[sample_idx], axis=0)
+    neuron_idx = int(np.argmax(neuron_counts))
+    if neuron_counts[neuron_idx] <= 0:
+        return None
+    return sample_idx, neuron_idx
+
+
+def _plot_neuron_debug_diagnostic(
+    *,
+    layer_name: str,
+    rep: int,
+    sample_idx: int,
+    neuron_idx: int,
+    input_spikes: np.ndarray,
+    syn_current: np.ndarray,
+    membrane: np.ndarray,
+    output_spikes: np.ndarray,
+    params: dict,
+    figname: str,
+    max_input_channels: int = 24,
+) -> None:
+    """Plot single-neuron diagnostics using pre-recorded traces only."""
+    timesteps = input_spikes.shape[0]
+    dt_sec = float(params['time_bin_size']) * 0.001
+    time_axis = np.arange(timesteps) * dt_sec
+
+    channel_activity = np.sum(input_spikes, axis=0)
+    active_channels = np.where(channel_activity > 0)[0]
+    if active_channels.size == 0:
+        selected_channels = np.array([0])
+    elif active_channels.size <= max_input_channels:
+        selected_channels = active_channels
+    else:
+        order = np.argsort(channel_activity[active_channels])[::-1]
+        selected_channels = active_channels[order[:max_input_channels]]
+
+    input_subset = input_spikes[:, selected_channels]
+    spike_t, spike_ch = np.where(input_subset > 0)
+
+    fig, axes = plt.subplots(4, 1, figsize=(11, 9), sharex=True)
+
+    axes[0].scatter(time_axis[spike_t], spike_ch + 1,
+                    marker='|', s=18, c='k', linewidths=0.8)
+    axes[0].set_ylabel('Input ID')
+    axes[0].set_title(
+        f'{layer_name} | rep {rep} | sample {sample_idx} | neuron {neuron_idx}')
+    axes[0].set_ylim(0.5, max(1.5, len(selected_channels) + 0.5))
+
+    if params.get('synapse', False):
+        axes[1].plot(time_axis, syn_current, color='tab:orange', linewidth=1.0)
+        axes[1].set_title('Synaptic current')
+    else:
+        axes[1].plot(time_axis, np.zeros_like(time_axis),
+                     color='tab:gray', linewidth=0.8)
+        axes[1].set_title('Synaptic current (synapse disabled)')
+    axes[1].set_ylabel('Current')
+
+    axes[2].plot(time_axis, membrane, color='tab:blue', linewidth=1.0)
+    axes[2].axhline(float(params.get('spike_threshold', 1.0)),
+                    color='tab:red', linestyle='--', linewidth=0.8)
+    axes[2].set_ylabel('Mem')
+    axes[2].set_title('Membrane potential')
+
+    out_spike_indices = np.where(output_spikes > 0)[0]
+    if out_spike_indices.size > 0:
+        axes[3].vlines(time_axis[out_spike_indices], 0.0, 1.0,
+                       color='k', linewidth=0.9)
+    axes[3].set_ylim(-0.05, 1.05)
+    axes[3].set_ylabel('Spikes')
+    axes[3].set_title('Output spikes')
+    axes[3].set_xlabel('Time [s]')
+
+    fig.tight_layout()
+    fig.savefig(f'{figname}.pdf')
+    plt.close(fig)
+
+
+def _save_debug_neuron_level_plots(
+    *,
+    rep: int,
+    split_name: str,
+    network_input: np.ndarray,
+    spk_rec_hidden: np.ndarray,
+    spk_rec_readout: np.ndarray,
+    mem_rec_hidden: np.ndarray,
+    mem_rec_readout: np.ndarray,
+    syn_rec_hidden: np.ndarray,
+    syn_rec_readout: np.ndarray,
+    params: dict,
+    figures_dir: str,
+    logger: logging.Logger,
+) -> None:
+    """Create debug neuron plots from already-captured traces (no extra forward pass)."""
+    hidden_pick = _find_spiking_neuron(spk_rec_hidden)
+    if hidden_pick is not None:
+        sample_idx, neuron_idx = hidden_pick
+        _plot_neuron_debug_diagnostic(
+            layer_name='Hidden layer',
+            rep=rep,
+            sample_idx=sample_idx,
+            neuron_idx=neuron_idx,
+            input_spikes=network_input[sample_idx],
+            syn_current=syn_rec_hidden[sample_idx, :, neuron_idx],
+            membrane=mem_rec_hidden[sample_idx, :, neuron_idx],
+            output_spikes=spk_rec_hidden[sample_idx, :, neuron_idx],
+            params=params,
+            figname=os.path.join(
+                figures_dir,
+                f'debug_hidden_neuron_{split_name}_rep_{rep}_sample_{sample_idx}_n_{neuron_idx}',
+            ),
+        )
+    else:
+        logger.debug('No spiking hidden neuron found for debug neuron-level plot.')
+
+    if params.get('eprop', False):
+        logger.debug('Readout neuron-level spike plot skipped in e-prop mode (readout is membrane-softmax).')
+        return
+
+    readout_pick = _find_spiking_neuron(spk_rec_readout)
+    if readout_pick is not None:
+        sample_idx, neuron_idx = readout_pick
+        _plot_neuron_debug_diagnostic(
+            layer_name='Readout layer',
+            rep=rep,
+            sample_idx=sample_idx,
+            neuron_idx=neuron_idx,
+            input_spikes=spk_rec_hidden[sample_idx],
+            syn_current=syn_rec_readout[sample_idx, :, neuron_idx],
+            membrane=mem_rec_readout[sample_idx, :, neuron_idx],
+            output_spikes=spk_rec_readout[sample_idx, :, neuron_idx],
+            params=params,
+            figname=os.path.join(
+                figures_dir,
+                f'debug_readout_neuron_{split_name}_rep_{rep}_sample_{sample_idx}_n_{neuron_idx}',
+            ),
+        )
+    else:
+        logger.debug('No spiking readout neuron found for debug neuron-level plot.')
+
+
 ##############################################################################
 # CONFIGURATION SETUP
 ##############################################################################
@@ -860,17 +1011,37 @@ if __name__ == '__main__':
             test_acc_local, trues_test, preds_test = compute_classification_accuracy(
                 dataset=ds_test_local, layers=layers_to_save, params=params)
 
-            spk_rec_readout_train_array, spk_rec_hidden_train_array = get_network_activity(
-                dataset=ds_train_local, layers=layers_to_save, params=params)
-            spk_rec_readout_test_array, spk_rec_hidden_test_array = get_network_activity(
-                dataset=ds_test_local, layers=layers_to_save, params=params)
+            (
+                spk_rec_readout_train_array,
+                spk_rec_hidden_train_array,
+                mem_rec_hidden_train_array,
+                mem_rec_readout_train_array,
+                syn_rec_hidden_train_array,
+                syn_rec_readout_train_array,
+            ) = get_network_activity(dataset=ds_train_local, layers=layers_to_save, params=params)
+            (
+                spk_rec_readout_test_array,
+                spk_rec_hidden_test_array,
+                mem_rec_hidden_test_array,
+                mem_rec_readout_test_array,
+                syn_rec_hidden_test_array,
+                syn_rec_readout_test_array,
+            ) = get_network_activity(dataset=ds_test_local, layers=layers_to_save, params=params)
 
             spk_rec_readout_train = np.concatenate(
                 spk_rec_readout_train_array, axis=0)
             spk_rec_hidden_train = np.concatenate(spk_rec_hidden_train_array, axis=0)
+            mem_rec_hidden_train = np.concatenate(mem_rec_hidden_train_array, axis=0)
+            mem_rec_readout_train = np.concatenate(mem_rec_readout_train_array, axis=0)
+            syn_rec_hidden_train = np.concatenate(syn_rec_hidden_train_array, axis=0)
+            syn_rec_readout_train = np.concatenate(syn_rec_readout_train_array, axis=0)
             spk_rec_readout_test = np.concatenate(
                 spk_rec_readout_test_array, axis=0)
             spk_rec_hidden_test = np.concatenate(spk_rec_hidden_test_array, axis=0)
+            mem_rec_hidden_test = np.concatenate(mem_rec_hidden_test_array, axis=0)
+            mem_rec_readout_test = np.concatenate(mem_rec_readout_test_array, axis=0)
+            syn_rec_hidden_test = np.concatenate(syn_rec_hidden_test_array, axis=0)
+            syn_rec_readout_test = np.concatenate(syn_rec_readout_test_array, axis=0)
 
             trues_train_array = np.concatenate(trues_train, axis=0)
             preds_train_array = np.concatenate(preds_train, axis=0)
@@ -899,8 +1070,16 @@ if __name__ == '__main__':
                 test_network_input_labels=ds_test_local.tensors[1].detach().cpu().numpy(),
                 spk_rec_hidden_train=spk_rec_hidden_train,
                 spk_rec_readout_train=spk_rec_readout_train,
+                mem_rec_hidden_train=mem_rec_hidden_train,
+                mem_rec_readout_train=mem_rec_readout_train,
+                syn_rec_hidden_train=syn_rec_hidden_train,
+                syn_rec_readout_train=syn_rec_readout_train,
                 spk_rec_hidden_test=spk_rec_hidden_test,
                 spk_rec_readout_test=spk_rec_readout_test,
+                mem_rec_hidden_test=mem_rec_hidden_test,
+                mem_rec_readout_test=mem_rec_readout_test,
+                syn_rec_hidden_test=syn_rec_hidden_test,
+                syn_rec_readout_test=syn_rec_readout_test,
                 acc_train=acc_train_hist_local if acc_train_hist_local is not None else np.array([]),
                 acc_test=acc_test_hist_local if acc_test_hist_local is not None else np.array([]),
                 loss_train=loss_train_hist_local if loss_train_hist_local is not None else np.array([]),
@@ -944,6 +1123,22 @@ if __name__ == '__main__':
                                 figures_dir,
                                 f"best_model_{nb_hidden}_neurons_{str_letters}_network_activity_{split_name}_batch_{batch_idx}_trial_{trial_idx}_rep_{rep}"),
                         )
+
+            if params.get('debug', False):
+                _save_debug_neuron_level_plots(
+                    rep=rep,
+                    split_name='test',
+                    network_input=ds_test_local.tensors[0].detach().cpu().numpy(),
+                    spk_rec_hidden=spk_rec_hidden_test,
+                    spk_rec_readout=spk_rec_readout_test,
+                    mem_rec_hidden=mem_rec_hidden_test,
+                    mem_rec_readout=mem_rec_readout_test,
+                    syn_rec_hidden=syn_rec_hidden_test,
+                    syn_rec_readout=syn_rec_readout_test,
+                    params=params,
+                    figures_dir=figures_dir,
+                    logger=logger,
+                )
         except Exception as e:
             logger.error(
                 f"Failed to save detailed traces for repetition {rep}: {str(e)}")

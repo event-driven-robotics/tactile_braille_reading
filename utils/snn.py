@@ -161,8 +161,8 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
         h1 = torch.einsum(
             "abc,cd->abd", inputs, rec_ff_weights.t())
 
-    spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
-        h1, params['data_steps'], params["lower_bound"], rec_weights=rec_rec_weights)
+    spk_rec_hidden, mem_rec_hidden, syn_rec_hidden = rec_layer.compute_activity(
+        h1, params['data_steps'], params["lower_bound"], rec_weights=rec_rec_weights, return_syn=True)
 
     # Readout layer
     h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, out_ff_weights.t()))
@@ -184,10 +184,15 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
         mem_rec_readout = torch.stack(mem_rec, dim=1)
         # Keep first return value compatible with downstream code paths.
         spk_rec_readout = torch.softmax(mem_rec_readout, dim=2)
+        syn_rec_readout = h2
     else:
-        spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
-            h2, params['data_steps'], params["lower_bound"])
+        spk_rec_readout, mem_rec_readout, syn_rec_readout = ff_layer.compute_activity(
+            h2, params['data_steps'], params["lower_bound"], return_syn=True)
 
-    other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
+    if params.get("return_extended_recs", False):
+        other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout,
+                      syn_rec_hidden, syn_rec_readout]
+    else:
+        other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout]
 
     return spk_rec_readout, other_recs

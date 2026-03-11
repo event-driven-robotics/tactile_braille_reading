@@ -577,7 +577,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
             # average_spike_recurrent[count_epoch] = torch.mean(
             #     torch.sum(recs[1], 1))
 
-            _, spk_rec_hidden, _ = recs
+            spk_rec_hidden = recs[1]
 
             # Compute gradients based on selected learning algorithm
             if params["eprop"]:
@@ -587,7 +587,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
                 one_hot_encoded = torch.nn.functional.one_hot(
                     y_local, num_classes=len(params['letters']))
                 # E-prop: manual gradient computation via eligibility traces
-                mem_rec_hidden, spk_rec_hidden, mem_rec_readout = recs
+                mem_rec_hidden, spk_rec_hidden, mem_rec_readout = recs[:3]
                 # For classification, use time-resolved class probabilities
                 # derived from the readout membrane state.
                 yo = torch.softmax(mem_rec_readout, dim=2)

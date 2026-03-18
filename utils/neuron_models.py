@@ -226,7 +226,7 @@ class feedforward_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, weight_variance=None, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
         """
         Initialize feedforward spiking layer.
 
@@ -278,6 +278,8 @@ class feedforward_layer:
         self.gamma = gamma  # Scale factor for surrogate gradient
         self.spike_threshold = spike_threshold  # Spike threshold
         self.soft_reset = soft_reset  # If True: subtract threshold on spike; else hard reset to 0
+
+        self.weight_variance = self.spike_threshold*weight_variance/100 if weight_variance is not None else None
 
         # Device and dtype
         self.device = device
@@ -408,7 +410,11 @@ class feedforward_layer:
 
         # Compute feedforward layer activity
         for t in range(nb_steps):
-            mthr = mem - self.spike_threshold
+            if self.weight_variance is not None:
+                noisy_spike_threshold = torch.normal(mean=torch.tensor(self.spike_threshold), std=torch.tensor(self.weight_variance))
+                mthr = mem - noisy_spike_threshold
+            else:
+                mthr = mem - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
             if self.eprop:
                 # For e-prop, use hard threshold (no gradient needed through spikes)
@@ -524,7 +530,7 @@ class recurrent_layer:
     - Refractory period prevents neurons from spiking during cooldown
     """
 
-    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
+    def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, weight_variance=None, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
         """
         Initialize recurrent spiking layer.
 
@@ -579,6 +585,8 @@ class recurrent_layer:
         self.gamma = gamma  # Scale factor for surrogate gradient
         self.spike_threshold = spike_threshold  # Spike threshold
         self.soft_reset = soft_reset  # If True: subtract threshold on spike; else hard reset to 0
+
+        self.weight_variance = self.spike_threshold*weight_variance/100 if weight_variance is not None else None
 
         # Device and dtype
         self.device = device
@@ -734,7 +742,11 @@ class recurrent_layer:
             # input activity plus last step output activity
             h1 = input_activity[:, t] + \
                 torch.einsum("ab,bc->ac", (out, recurrent_weights.t()))
-            mthr = mem - self.spike_threshold
+            if self.weight_variance is not None:
+                noisy_spike_threshold = torch.normal(mean=torch.tensor(self.spike_threshold), std=torch.tensor(self.weight_variance))
+                mthr = mem - noisy_spike_threshold
+            else:
+                mthr = mem - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
             if self.eprop:
                 # For e-prop, use hard threshold (no gradient needed through spikes)

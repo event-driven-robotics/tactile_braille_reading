@@ -195,6 +195,8 @@ def parse_arguments():
                         help='[Deprecated] Refractory period in timesteps. If set, it overrides --ref_per_ms.')
     parser.add_argument('--lower_bound', type=float, default=-1.0,
                         help='Lower bound for membrane potential')
+    parser.add_argument('--weight_distribution', type=float, default=None,
+                        help='Standard deviation for normal distribution of per simulation step weight variance n %.')
 
     # Weight parameters
     parser.add_argument('--fwd_weight_scale', type=float, default=1.0,

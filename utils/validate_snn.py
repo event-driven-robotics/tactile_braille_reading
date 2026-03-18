@@ -23,6 +23,7 @@ Visualization Features:
 Author: Simon F. Muller-Cleve
 Date: January 15, 2026
 """
+import logging
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -609,9 +610,10 @@ def get_network_activity(dataset: TensorDataset, layers: list, params: dict) -> 
             spk_rec_readout, recs = run_snn(
                 inputs=x_local, layers=layers, params=activity_params)
 
-        if len(recs) >= 5:
-            mem_rec_hidden, spk_rec_hidden, mem_rec_readout, syn_rec_hidden, syn_rec_readout = recs[:5]
+        if len(recs) == 5:
+            mem_rec_hidden, spk_rec_hidden, mem_rec_readout, syn_rec_hidden, syn_rec_readout = recs
         else:
+            logging.warning("run_snn did not return synaptic recordings. Filling with zeros.")
             mem_rec_hidden, spk_rec_hidden, mem_rec_readout = recs
             syn_rec_hidden = torch.zeros_like(mem_rec_hidden)
             syn_rec_readout = torch.zeros_like(mem_rec_readout)

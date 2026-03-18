@@ -819,15 +819,12 @@ else:
 # Configure weight quantization for neuromorphic hardware deployment
 if params['quantize_weights']:
     logger.info("Using weight quantization.")
-    # Generate a symmetric signed quantization grid with exact zero.
-    # We intentionally use -127..127 (255 levels) so the range is symmetric
-    # and includes 0 exactly.
-    signed_levels = torch.arange(-127, 128, device=params['device'])
+    # Generate an asymmetric signed quantization grid matching hardware (8-bit, -127..128, 256 levels).
+    signed_levels = torch.arange(-127, 129, device=params['device'])
     q = 1 / 127
     possible_weights = signed_levels * q
 
     # Round to 3 decimal places for hardware precision using proper rounding
-    # (instead of floor truncation, which introduces a one-sided bias).
     factor = 10 ** 3
     params['possible_weights'] = torch.round(
         possible_weights * factor) / factor
@@ -835,7 +832,7 @@ if params['quantize_weights']:
     quant_min = float(params['possible_weights'].min().item())
     quant_max = float(params['possible_weights'].max().item())
     logger.info(
-        "Quantization grid: symmetric signed with exact zero | "
+        "Quantization grid: asymmetric signed (-128..127, hardware-like) | "
         f"levels={params['possible_weights'].numel()} | "
         f"range=[{quant_min:.3f}, {quant_max:.3f}] | "
         f"step={quant_step:.3f}"

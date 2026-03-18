@@ -282,7 +282,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                 ref_per=params["ref_per_timesteps"],
                                 gamma=params["gamma"],
                                 spike_threshold=params["spike_threshold"],
-                                soft_reset=params.get("soft_reset", False))
+                                soft_reset=params["soft_reset"])
 
     # readout layer
     ff_layer = feedforward_layer(batch_size=params["batch_size"],
@@ -299,7 +299,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                  ref_per=params["ref_per_timesteps"],
                                  gamma=params["gamma"],
                                  spike_threshold=params["spike_threshold"],
-                                 soft_reset=params.get("soft_reset", False))
+                                 soft_reset=params["soft_reset"])
 
     layers = [rec_layer, ff_layer]
 

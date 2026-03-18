@@ -30,8 +30,8 @@ from pathlib import Path
 
 import numpy as np
 
-experiment_id = "20260115_0833_exploration/20260303_120143"
-results_file_name = "braille_reading_rsnn_5_neurons_A_B_rep_1.npz"
+experiment_id = "20260115_0833_exploration/20260318_161545"
+results_file_name = "best_model_traces_5_neurons_A_B_rep_1.npz"
 
 header_name = "Tactile Braille Reading"
 header_data = date.today().isoformat()
@@ -50,8 +50,8 @@ def load_spike_records(npz_path: Path) -> list[tuple[str, np.ndarray]]:
     Parameters
     ----------
     npz_path : Path
-        Path to a results archive that must contain `spk_rec_readout` and
-        `spk_rec_hidden` arrays.
+        Path to a results archive that must contain `spk_rec_readout_test` and
+        `spk_rec_hidden_test` arrays.
 
     Returns
     -------
@@ -68,13 +68,13 @@ def load_spike_records(npz_path: Path) -> list[tuple[str, np.ndarray]]:
         If any loaded spike array is not 3D.
     """
     with np.load(npz_path, allow_pickle=True) as data:
-        required = ["spk_rec_readout", "spk_rec_hidden"]
+        required = ["spk_rec_readout_test", "spk_rec_hidden_test"]
         for key in required:
             if key not in data.files:
                 raise KeyError(f"Missing '{key}' in {npz_path}")
 
-        readout = np.asarray(data["spk_rec_readout"])
-        hidden = np.asarray(data["spk_rec_hidden"])
+        readout = np.asarray(data["spk_rec_readout_test"])
+        hidden = np.asarray(data["spk_rec_hidden_test"])
 
     if readout.ndim != 3 or hidden.ndim != 3:
         raise ValueError(
@@ -328,7 +328,7 @@ def infer_weights_suffix_from_results_name(npz_name: str) -> str:
     Parameters
     ----------
     npz_name : str
-        Results filename, expected to start with `braille_reading_rsnn_`.
+        Results filename, expected to start with `best_model_traces_`.
 
     Returns
     -------
@@ -341,7 +341,7 @@ def infer_weights_suffix_from_results_name(npz_name: str) -> str:
         If the filename does not match expected format.
     """
     stem = Path(npz_name).stem
-    prefix = "braille_reading_rsnn_"
+    prefix = "best_model_traces_"
     if not stem.startswith(prefix):
         raise ValueError(f"Unexpected results filename format: {npz_name}")
     return stem[len(prefix):]

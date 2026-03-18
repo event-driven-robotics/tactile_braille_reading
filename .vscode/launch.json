@@ -41,9 +41,17 @@
             "console": "integratedTerminal",
             "args": [
                 "--debug",
-                "--epochs", "10",
-                "--nb_hidden", "50",
+                "--repetitions", "2",
+                "--epochs", "3",
+                "--nb_hidden", "5",
                 "--batch_size", "128",
+                "--resume-run-id", "20260115_0833_exploration/20260218_093035",
+                "--ref_per_ms", "3",
+                "--time_bin_size", "3",
+                "--weight_distribution", "10.0",
+                "--save_artifacts", "best",
+                "--random_tie_breaking",
+                "--quantize_weights",
                 "--seed"
             ],
             "justMyCode": false

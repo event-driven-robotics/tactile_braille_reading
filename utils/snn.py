@@ -137,6 +137,7 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
     - Readout layer is feedforward-only (no recurrence)
     - n_spike can be computed externally via torch.cumsum(spk_rec_readout, dim=1) when needed
     """
+    return_syn = params.get("return_extended_recs", False)
     rec_layer, ff_layer = layers
 
     # Standard STE quantization path:
@@ -161,9 +162,13 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
         h1 = torch.einsum(
             "abc,cd->abd", inputs, rec_ff_weights.t())
 
-    spk_rec_hidden, mem_rec_hidden, syn_rec_hidden = rec_layer.compute_activity(
-        h1, params['data_steps'], params["lower_bound"], rec_weights=rec_rec_weights, return_syn=True)
-
+    if return_syn:
+        spk_rec_hidden, mem_rec_hidden, syn_rec_hidden = rec_layer.compute_activity(
+            h1, params['data_steps'], params["lower_bound"], rec_weights=rec_rec_weights, return_syn=return_syn)
+    else:
+        spk_rec_hidden, mem_rec_hidden = rec_layer.compute_activity(
+            h1, params['data_steps'], params["lower_bound"], rec_weights=rec_rec_weights, return_syn=return_syn)
+    
     # Readout layer
     h2 = torch.einsum("abc,cd->abd", (spk_rec_hidden, out_ff_weights.t()))
 
@@ -186,10 +191,14 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
         spk_rec_readout = torch.softmax(mem_rec_readout, dim=2)
         syn_rec_readout = h2
     else:
-        spk_rec_readout, mem_rec_readout, syn_rec_readout = ff_layer.compute_activity(
-            h2, params['data_steps'], params["lower_bound"], return_syn=True)
+        if return_syn:
+            spk_rec_readout, mem_rec_readout, syn_rec_readout = ff_layer.compute_activity(
+                h2, params['data_steps'], params["lower_bound"], return_syn=return_syn)
+        else:
+            spk_rec_readout, mem_rec_readout = ff_layer.compute_activity(
+                h2, params['data_steps'], params["lower_bound"], return_syn=return_syn)
 
-    if params.get("return_extended_recs", False):
+    if return_syn:
         other_recs = [mem_rec_hidden, spk_rec_hidden, mem_rec_readout,
                       syn_rec_hidden, syn_rec_readout]
     else:

@@ -143,10 +143,10 @@ def parse_arguments():
     # Training parameters
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable debug mode: automatically sets log_level to DEBUG for detailed diagnostics')
-    parser.add_argument('--cuda', action='store_true', default=True,
-                        help='Use CUDA for GPU acceleration')
-    parser.add_argument('--seed', action='store_true', default=False,
-                        help='Use seed for reproducibility')
+    parser.add_argument('--cuda', action=argparse.BooleanOptionalAction, default=True,
+                        help='Use CUDA for GPU acceleration (enabled by default; use --no-cuda to disable if available)')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Set random seed for reproducibility (if not set, randomness is not fixed; if set, uses the provided integer as the seed value)')
     parser.add_argument('--validation', action='store_true', default=False,
                         help='Create validation set from training data')
     parser.add_argument('--epochs', type=int, default=50,
@@ -195,8 +195,8 @@ def parse_arguments():
                         help='[Deprecated] Refractory period in timesteps. If set, it overrides --ref_per_ms.')
     parser.add_argument('--lower_bound', type=float, default=-1.0,
                         help='Lower bound for membrane potential')
-    parser.add_argument('--weight_distribution', type=float, default=None,
-                        help='Standard deviation for normal distribution of per simulation step weight variance n %.')
+    parser.add_argument('--threshold_noise_std', type=float, default=0.0,
+                        help='Standard deviation of the random fluctuation added to the spiking threshold of all neurons at each simulation step, mimicking hardware clock-driven noise (set to 0 to disable).')
 
     # Weight parameters
     parser.add_argument('--fwd_weight_scale', type=float, default=1.0,
@@ -235,12 +235,12 @@ def parse_arguments():
                         default=['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
                                  'N', 'O', 'P', 'Q', 'R', 'S', 'Space', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'],
                         help='List of letters to use for classification')
+    parser.add_argument('--encoding_type', type=str, choices=['mechanoreceptor', 'sigma-delta'], default='mechanoreceptor',
+                        help='Input encoding type: "mechanoreceptor" (FA-I/SA-II) or "sigma-delta".')
     parser.add_argument('--threshold', type=int, default=2, choices=[1, 2, 5, 10],
-                        help='Threshold for data encoding')
+                        help='Threshold for event encoding (used only for sigma-delta encoding; ignored for mechanoreceptor encoding).')
     parser.add_argument('--time_bin_size', type=int, default=1,
                         help='Time bin size in milliseconds')
-    parser.add_argument('--mechanoreceptor_encoding', action='store_true', default=True,
-                        help='Use mechanoreceptor encoding for input (default: True, alternatives: sigma-delta encoding)')
 
     # Model options
     parser.add_argument('--synapse', action='store_true', default=False,
@@ -289,7 +289,7 @@ def parse_arguments():
             explicit_cli_dests.add(dest)
 
     # Compute derived parameters
-    if args.mechanoreceptor_encoding:
+    if args.encoding_type == 'mechanoreceptor':
         args.max_time = 3700
     else:
         args.max_time = 3501
@@ -302,6 +302,12 @@ def parse_arguments():
     args_dict = vars(args)
     args_dict['eprop_mode'] = _normalize_eprop_mode(args_dict['eprop_mode'])
     args_dict["_explicit_cli_dests"] = sorted(explicit_cli_dests)
+    # Backward compatibility for legacy param names
+    if 'weight_distribution' in args_dict:
+        args_dict['threshold_noise_std'] = args_dict.pop('weight_distribution')
+    # Warn if threshold is set with mechanoreceptor encoding
+    if args_dict['encoding_type'] == 'mechanoreceptor' and 'threshold' in explicit_cli_dests:
+        print("Warning: --threshold is ignored for mechanoreceptor encoding.")
     return args_dict
 
 
@@ -670,7 +676,12 @@ if params.get("resume_run_id"):
         "use_random_tie_breaking": "random_tie_breaking",
         "use_weight_quantization": "quantize_weights",
         "no_synapse": "synapse",
+        "weight_distribution": "threshold_noise_std",
     }
+    # Compatibility: map mechanoreceptor_encoding to encoding_type if needed
+    if "mechanoreceptor_encoding" in params and "encoding_type" not in params:
+        params["encoding_type"] = "mechanoreceptor" if params["mechanoreceptor_encoding"] else "sigma-delta"
+        print("[Compatibility] Mapped legacy 'mechanoreceptor_encoding' to 'encoding_type':", params["encoding_type"])
     for legacy_key, current_key in legacy_map.items():
         if legacy_key in merged_params and current_key not in merged_params:
             if legacy_key == "no_synapse":
@@ -843,15 +854,15 @@ if params['quantize_weights']:
 ##############################################################################
 
 # Set random seeds for reproducible experiments
-if params["seed"]:
-    seed = 42  # Answer to the Ultimate Question of Life, the Universe, and Everything
+if params["seed"] is not None:
+    seed = int(params["seed"])
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-    logger.info("Seed set to {}".format(seed))
+    logger.info(f"Seed set to {seed}")
 else:
     logger.info("Shuffle data randomly")
 
@@ -880,7 +891,7 @@ except Exception as e:
 
 # Determine which data file to load based on encoding method
 file_dir_data = params['input_data_path']
-if params["mechanoreceptor_encoding"]:
+if params["encoding_type"] == 'mechanoreceptor':
     file_name = file_dir_data + 'mechanoreceptor_encoded.pkl'
 else:
     # Use sigma-delta encoding with specified threshold

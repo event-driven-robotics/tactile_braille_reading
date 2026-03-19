@@ -274,7 +274,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                 rec_weight_scale=rec_weight_scale,
                                 alpha=alpha,
                                 beta=beta_rec,
-                                weight_variance = params["weight_distribution"],
+                                weight_variance = params["threshold_noise_std"],
                                 eprop=params["eprop"],
                                 linear_decay=params["linear_decay"],
                                 device=params["device"],
@@ -291,7 +291,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
                                  fwd_weight_scale=fwd_weight_scale,
                                  alpha=alpha,
                                  beta=beta,
-                                 weight_variance = params["weight_distribution"],
+                                 weight_variance = params["threshold_noise_std"],
                                  eprop=params["eprop"],
                                  linear_decay=params["linear_decay"],
                                  device=params["device"],
@@ -676,6 +676,39 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
                 loss_val.backward()
 
             optimizer.step()
+
+            # --- Granular DEBUG logging for gradients and optimizer ---
+            if params.get('debug', False):
+                for name, param in zip(["rec_ff_weights", "rec_rec_weights", "out_weights"], weights):
+                    if param.grad is not None:
+                        grad_norm = param.grad.norm().item()
+                        grad_nan = torch.isnan(param.grad).any().item()
+                        grad_inf = torch.isinf(param.grad).any().item()
+                        logger.debug(f"Gradient stats for {name}: norm={grad_norm:.6e}, has_nan={grad_nan}, has_inf={grad_inf}")
+                        if grad_nan or grad_inf:
+                            logger.warning(f"Gradient anomaly detected in {name}: nan={grad_nan}, inf={grad_inf}")
+                    else:
+                        logger.debug(f"No gradient for {name} (param.grad is None)")
+                # Optimizer state (Adamax: learning rate, step)
+                for i, group in enumerate(optimizer.param_groups):
+                    logger.debug(f"Optimizer group {i}: lr={group['lr']}, betas={group['betas']}, eps={group['eps']}")
+                for i, state in enumerate(optimizer.state.values()):
+                    if 'step' in state:
+                        logger.debug(f"Optimizer state {i}: step={state['step']}")
+                # Loss value anomaly check
+                if isinstance(loss_val, torch.Tensor):
+                    loss_nan = torch.isnan(loss_val).item()
+                    loss_inf = torch.isinf(loss_val).item()
+                    logger.debug(f"Loss value: {loss_val.item():.6e}, has_nan={loss_nan}, has_inf={loss_inf}")
+                    if loss_nan or loss_inf:
+                        logger.warning(f"Loss anomaly detected: nan={loss_nan}, inf={loss_inf}")
+                # Weight quantization check
+                if params.get('quantize_weights', False):
+                    possible_weights = params.get('possible_weights')
+                    if possible_weights is not None:
+                        for name, param in zip(["rec_ff_weights", "rec_rec_weights", "out_weights"], weights):
+                            unique_vals = torch.unique(param.data)
+                            logger.debug(f"Quantized weights for {name}: unique values = {unique_vals.cpu().numpy()}")
 
             loss_hist_batches.append(loss_val.item())
 

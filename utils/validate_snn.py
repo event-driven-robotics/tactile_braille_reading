@@ -121,42 +121,74 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, params
     plot_confusion_matrix : Visualize prediction errors
     get_network_activity : Record detailed spike activity
     """
+    logger = logging.getLogger('braille_training')
     generator = DataLoader(dataset=dataset, batch_size=params["batch_size"], pin_memory=True,
                            shuffle=False, num_workers=4)
     accs = []
     trues = []
     preds = []
+    batch_count = 0
     for x_local, y_local in generator:
-        x_local, y_local = x_local.to(
-            params['device']), y_local.to(params['device'])
-        with torch.no_grad():
-            readout_activity, recs = run_snn(
-                inputs=x_local, layers=layers, params=params)
+        batch_count += 1
+        if x_local.numel() == 0 or y_local.numel() == 0:
+            logger.warning(f"Empty batch encountered during evaluation (batch {batch_count}). Skipping.")
+            continue
+        try:
+            x_local, y_local = x_local.to(
+                params['device']), y_local.to(params['device'])
+            with torch.no_grad():
+                readout_activity, recs = run_snn(
+                    inputs=x_local, layers=layers, params=params)
 
-        if params["eprop"]:
-            _, _, mem_rec_readout = recs
-            yo = torch.softmax(mem_rec_readout, dim=2)
-            if params["delayed_output"] is not None and params["delayed_output"] > 0:
-                _, neuron_idc = compute_winning_neuron(
-                    yo[:, -params["delayed_output"]:, :], params=params)
+            if params["eprop"]:
+                _, _, mem_rec_readout = recs
+                yo = torch.softmax(mem_rec_readout, dim=2)
+                if params["delayed_output"] is not None and params["delayed_output"] > 0:
+                    _, neuron_idc = compute_winning_neuron(
+                        yo[:, -params["delayed_output"]:, :], params=params)
+                else:
+                    _, neuron_idc = compute_winning_neuron(yo, params=params)
             else:
-                _, neuron_idc = compute_winning_neuron(yo, params=params)
-        else:
-            # Use compute_winning_neuron with delayed_output handling for BPTT
-            if params["delayed_output"] is not None and params["delayed_output"] > 0:
-                _, neuron_idc = compute_winning_neuron(
-                    readout_activity[:, -params["delayed_output"]:, :], params=params)
-            else:
-                _, neuron_idc = compute_winning_neuron(
-                    readout_activity, params=params)
+                # Use compute_winning_neuron with delayed_output handling for BPTT
+                if params["delayed_output"] is not None and params["delayed_output"] > 0:
+                    _, neuron_idc = compute_winning_neuron(
+                        readout_activity[:, -params["delayed_output"]:, :], params=params)
+                else:
+                    _, neuron_idc = compute_winning_neuron(
+                        readout_activity, params=params)
 
-        # Compare to labels
-        mean_acc = np.mean((y_local == neuron_idc).detach().cpu().numpy())
-        accs.append(mean_acc)
-        trues.append(y_local.detach().cpu().numpy())
-        preds.append(neuron_idc.detach().cpu().numpy())
+            # Check for NaN/Inf in predictions or labels
+            if torch.isnan(y_local).any() or torch.isinf(y_local).any():
+                logger.warning(f"NaN or Inf detected in true labels (batch {batch_count}).")
+            if torch.isnan(neuron_idc).any() or torch.isinf(neuron_idc).any():
+                logger.warning(f"NaN or Inf detected in predictions (batch {batch_count}).")
 
+            # Check for mismatched batch sizes
+            if y_local.shape != neuron_idc.shape:
+                logger.warning(f"Batch size mismatch: y_local {y_local.shape}, predictions {neuron_idc.shape} (batch {batch_count})")
+
+            # Compare to labels
+            acc_arr = (y_local == neuron_idc).detach().cpu().numpy()
+            mean_acc = np.mean(acc_arr)
+            accs.append(mean_acc)
+            trues.append(y_local.detach().cpu().numpy())
+            preds.append(neuron_idc.detach().cpu().numpy())
+
+            # Log extreme accuracy values
+            if mean_acc == 0.0 or mean_acc == 1.0:
+                logger.debug(f"Extreme batch accuracy ({mean_acc*100:.1f}%) in batch {batch_count}.")
+        except Exception as e:
+            logger.error(f"Exception during evaluation in batch {batch_count}: {e}")
+            continue
+
+    if batch_count == 0:
+        logger.warning("No batches processed during evaluation. Dataset may be empty.")
+        return 0.0, [], []
+    if len(accs) == 0:
+        logger.warning("No valid accuracy values computed during evaluation.")
+        return 0.0, trues, preds
     mean_accs = np.mean(accs)
+    logger.debug(f"Evaluation complete: {batch_count} batches, mean accuracy {mean_accs*100:.2f}%.")
     return mean_accs, trues, preds
 
 
@@ -383,7 +415,7 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
             loss_train[best_trial], color='blue')
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
-    ax.set_ylim((0, None))
+    ax.set_ylim(bottom=0)
     ax.legend(
         ["Training std", r"$\overline{\mathrm{Training}}$", "Training loss @ best test"])
     ax.set_title("Training loss")
@@ -472,14 +504,13 @@ def plot_confusion_matrix(path: str, trues: list, preds: list, labels: list) -> 
     compute_classification_accuracy : Generate predictions for confusion matrix
     sklearn.metrics.confusion_matrix : Underlying function for matrix computation
     """
-    # Flatten lists if needed
-    if isinstance(trues, list):
-        trues = np.concatenate(trues)
-    if isinstance(preds, list):
-        preds = np.concatenate(preds)
 
-    accs = np.sum(trues == preds) / len(trues)
-    cm = confusion_matrix(trues, preds, normalize='true')
+    # Flatten lists if needed, but preserve type for function signature
+    trues_arr = np.concatenate(trues) if isinstance(trues, list) else trues
+    preds_arr = np.concatenate(preds) if isinstance(preds, list) else preds
+
+    accs = np.sum(trues_arr == preds_arr) / len(trues_arr)
+    cm = confusion_matrix(trues_arr, preds_arr, normalize='true')
     cm_df = pd.DataFrame(cm, index=[ii for ii in labels], columns=[
                          jj for jj in labels])
     plt.figure(figsize=(12, 9))

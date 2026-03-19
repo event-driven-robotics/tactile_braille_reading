@@ -173,100 +173,109 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     logger.debug(f"Selected channels/taxels: {params['selected_channels']}")
 
     # Extract data
+    import os
     data = []
     labels = []
-    if params['mechanoreceptor_encoding']:
-        with open(file_name, "rb") as f:
-            data_dict = pkl.load(f)
-        logger.debug(f"Loaded mechanoreceptor data with {len(data_dict['letter'])} samples")
-        nchan = len(data_dict['taxel_data'][0][0])
+    # Check file existence
+    if not os.path.isfile(file_name):
+        logger.error(f"Data file not found: {file_name}")
+        raise FileNotFoundError(f"Data file not found: {file_name}")
+    try:
+        if params['mechanoreceptor_encoding']:
+            with open(file_name, "rb") as f:
+                data_dict = pkl.load(f)
+            logger.debug(f"Loaded mechanoreceptor data with {len(data_dict['letter'])} samples")
+            nchan = len(data_dict['taxel_data'][0][0])
 
-        # Determine which channels to use
-        if params["selected_channels"] is not None:
-            # User specified specific taxels - use only those
-            selected_taxels = params["selected_channels"]
-            # Each taxel has FA and SA
-            selected_chans = 2 * len(params["selected_channels"])
-        else:
-            # Use all taxels
-            selected_taxels = list(range(nchan))
-            selected_chans = 2 * nchan
-
-        # Update params with actual number of input channels IMMEDIATELY
-        params["nb_inputs"] = selected_chans
-        logger.debug(f"Total input channels: {selected_chans} (taxels: {len(selected_taxels)}, 2 channels per taxel)")
-
-        # Total channels: FA channels for selected taxels + SA channels for selected taxels
-        for letter, fa_spikes, sa_spikes in zip(data_dict['letter'], data_dict['fa_spikes'], data_dict['sa_spikes']):
-            events_array = np.zeros(
-                [selected_chans, round((max_time/time_bin_size)+0.5)])
-
-            fa_spike_times, fa_spike_idc = (
-                fa_spikes[:, 0]*1000).astype(int), fa_spikes[:, 1].astype(int)-1
-            sa_spike_times, sa_spike_idc = (
-                sa_spikes[:, 0]*1000).astype(int), (sa_spikes[:, 1].astype(int)-1)
-
-            # Process only selected taxels
-            for local_idx, taxel in enumerate(selected_taxels):
-                # FA channel (first half of channels)
-                spike_times = fa_spike_times[fa_spike_idc == taxel]
-                if spike_times.size > 0:
-                    idc = np.array(
-                        (spike_times/time_bin_size).round(), dtype=int)
-                    idc = idc[idc < max_time//time_bin_size]
-                    events_array[local_idx, idc] = 1
-
-                # SA channel (second half of channels)
-                spike_times = sa_spike_times[sa_spike_idc == taxel]
-                if spike_times.size > 0:
-                    idc = np.array(
-                        (spike_times/time_bin_size).round(), dtype=int)
-                    idc = idc[idc < max_time//time_bin_size]
-                    events_array[local_idx + len(selected_taxels), idc] = 1
-
-            if letter in letter_written:
-                # Transpose to match expected shape [time, channels]
-                data.append(events_array.T)
-                labels.append(letter_written.index(letter))
-    else:
-        data_dict = pd.read_pickle(file_name)
-        # data_dict_2 = pd.read_pickle('./data/data_braille_letters_th_2.pkl')
-        data_dict = pd.DataFrame(data_dict)
-        bins = 1000  # ms conversion
-        nchan = len(data_dict['events'][1])  # number of channels per sensor
-
-        # Determine selected_chans early before the loop
-        if params["selected_channels"] is not None:
-            selected_chans = 2 * len(params["selected_channels"])
-        else:
-            selected_chans = 2 * nchan
-
-        # Update params with actual number of input channels IMMEDIATELY
-        params["nb_inputs"] = selected_chans
-
-        # loop over all trials
-        for i, sample in enumerate(data_dict['events']):
-            events_array = np.zeros(
-                [nchan, round((max_time/time_bin_size)+0.5), 2])
-            # loop over sensors (taxel)
-            for taxel in range(len(sample)):
-                # loop over On and Off channels
-                for event_type in range(len(sample[taxel])):
-                    if sample[taxel][event_type]:
-                        indx = bins*(np.array(sample[taxel][event_type]))
-                        indx = np.array(
-                            (indx/time_bin_size).round(), dtype=int)
-                        events_array[taxel, indx, event_type] = 1
+            # Determine which channels to use
             if params["selected_channels"] is not None:
-                events_array = np.reshape(np.transpose(events_array, (1, 0, 2))[
-                    :, params["selected_channels"], :], (events_array.shape[1], -1))
+                selected_taxels = params["selected_channels"]
+                selected_chans = 2 * len(params["selected_channels"])
             else:
-                events_array = np.reshape(np.transpose(
-                    events_array, (1, 0, 2)), (events_array.shape[1], -1))
+                selected_taxels = list(range(nchan))
+                selected_chans = 2 * nchan
 
-            if data_dict['letter'][i] in letter_written:
-                data.append(events_array)
-                labels.append(letter_written.index(data_dict['letter'][i]))
+            params["nb_inputs"] = selected_chans
+            logger.debug(f"Total input channels: {selected_chans} (taxels: {len(selected_taxels)}, 2 channels per taxel)")
+
+            filtered_out = 0
+            for letter, fa_spikes, sa_spikes in zip(data_dict['letter'], data_dict['fa_spikes'], data_dict['sa_spikes']):
+                events_array = np.zeros(
+                    [selected_chans, round((max_time/time_bin_size)+0.5)])
+
+                fa_spike_times, fa_spike_idc = (
+                    fa_spikes[:, 0]*1000).astype(int), fa_spikes[:, 1].astype(int)-1
+                sa_spike_times, sa_spike_idc = (
+                    sa_spikes[:, 0]*1000).astype(int), (sa_spikes[:, 1].astype(int)-1)
+
+                for local_idx, taxel in enumerate(selected_taxels):
+                    spike_times = fa_spike_times[fa_spike_idc == taxel]
+                    if spike_times.size > 0:
+                        idc = np.array(
+                            (spike_times/time_bin_size).round(), dtype=int)
+                        idc = idc[idc < max_time//time_bin_size]
+                        events_array[local_idx, idc] = 1
+
+                    spike_times = sa_spike_times[sa_spike_idc == taxel]
+                    if spike_times.size > 0:
+                        idc = np.array(
+                            (spike_times/time_bin_size).round(), dtype=int)
+                        idc = idc[idc < max_time//time_bin_size]
+                        events_array[local_idx + len(selected_taxels), idc] = 1
+
+                if letter in letter_written:
+                    data.append(events_array.T)
+                    try:
+                        labels.append(letter_written.index(letter))
+                    except ValueError:
+                        logger.debug(f"Letter '{letter}' not found in letter_written list. Skipping.")
+                        filtered_out += 1
+                else:
+                    filtered_out += 1
+            logger.debug(f"Filtered out {filtered_out} samples not in letter_written.")
+        else:
+            data_dict = pd.read_pickle(file_name)
+            data_dict = pd.DataFrame(data_dict)
+            bins = 1000  # ms conversion
+            nchan = len(data_dict['events'][1])
+            if params["selected_channels"] is not None:
+                selected_chans = 2 * len(params["selected_channels"])
+            else:
+                selected_chans = 2 * nchan
+            params["nb_inputs"] = selected_chans
+            filtered_out = 0
+            for i, sample in enumerate(data_dict['events']):
+                events_array = np.zeros(
+                    [nchan, round((max_time/time_bin_size)+0.5), 2])
+                for taxel in range(len(sample)):
+                    for event_type in range(len(sample[taxel])):
+                        if sample[taxel][event_type]:
+                            indx = bins*(np.array(sample[taxel][event_type]))
+                            indx = np.array(
+                                (indx/time_bin_size).round(), dtype=int)
+                            events_array[taxel, indx, event_type] = 1
+                if params["selected_channels"] is not None:
+                    events_array = np.reshape(np.transpose(events_array, (1, 0, 2))[
+                        :, params["selected_channels"], :], (events_array.shape[1], -1))
+                else:
+                    events_array = np.reshape(np.transpose(
+                        events_array, (1, 0, 2)), (events_array.shape[1], -1))
+
+                letter_val = data_dict['letter'][i]
+                if letter_val in letter_written:
+                    data.append(events_array)
+                    try:
+                        labels.append(letter_written.index(letter_val))
+                    except ValueError:
+                        logger.debug(f"Letter '{letter_val}' not found in letter_written list. Skipping.")
+                        filtered_out += 1
+                else:
+                    filtered_out += 1
+            logger.debug(f"Filtered out {filtered_out} samples not in letter_written.")
+    except Exception as e:
+        logger.error(f"Failed to load or process data from {file_name}: {e}")
+        logger.debug("Exception details:", exc_info=True)
+        raise
 
     # return data,labels
     data = np.array(data)
@@ -276,16 +285,16 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     labels = torch.tensor(labels, dtype=torch.long)
 
     if params['debug']:
-        print(f"\n=== Label Distribution Before Split ===")
+        logger.debug(f"\n=== Label Distribution Before Split ===")
         unique_labels, counts = np.unique(
             labels.cpu().numpy(), return_counts=True)
         total_samples = len(labels)
         for label_idx, count in zip(unique_labels, counts):
-            label_name = letter_written[label_idx]
+            label_name = letter_written[label_idx] if label_idx < len(letter_written) else f"Unknown({label_idx})"
             percentage = (count / total_samples) * 100
-            print(
+            logger.debug(
                 f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-        print(f"  Total: {total_samples} samples")
+        logger.debug(f"  Total: {total_samples} samples")
 
     if params['validation']:
         # create 70/20/10 train/test/validation split

@@ -229,6 +229,17 @@ class feedforward_layer:
     def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, alpha, beta, weight_variance=None, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
         """
         Initialize feedforward spiking layer.
+        # DEBUG: Log device and dtype
+        logger.debug(f"Initializing feedforward_layer: device={device}, dtype={dtype}")
+        # Warn for unusual parameters
+        if nb_neurons <= 0:
+            logger.warning(f"Feedforward layer initialized with non-positive number of neurons: {nb_neurons}")
+        if nb_inputs <= 0:
+            logger.warning(f"Feedforward layer initialized with non-positive number of inputs: {nb_inputs}")
+        if fwd_weight_scale <= 0:
+            logger.warning(f"Feedforward layer initialized with non-positive weight scale: {fwd_weight_scale}")
+        if batch_size <= 0:
+            logger.warning(f"Feedforward layer initialized with non-positive batch size: {batch_size}")
 
         Parameters
         ----------
@@ -291,6 +302,11 @@ class feedforward_layer:
             self.ref_per_tensor = torch.zeros(
                 (batch_size, nb_neurons), device=self.device, dtype=torch.int)
         self.create_layer()
+        # DEBUG: Check for NaN/Inf in weights
+        if torch.isnan(self.ff_weights).any() or torch.isinf(self.ff_weights).any():
+            logger.debug(f"Feedforward weights contain NaN or Inf after initialization!")
+        else:
+            logger.debug(f"Feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
 
     def reset_refractory_perdiod_counter(self):
         """
@@ -533,6 +549,19 @@ class recurrent_layer:
     def __init__(self, nb_inputs, nb_neurons, batch_size, fwd_weight_scale, rec_weight_scale, alpha, beta, weight_variance=None, eprop=False, linear_decay=False, device=torch.device("cuda:0"), dtype=torch.float64, ref_per=None, gamma=None, spike_threshold=1.0, soft_reset=False):
         """
         Initialize recurrent spiking layer.
+        # DEBUG: Log device and dtype
+        logger.debug(f"Initializing recurrent_layer: device={device}, dtype={dtype}")
+        # Warn for unusual parameters
+        if nb_neurons <= 0:
+            logger.warning(f"Recurrent layer initialized with non-positive number of neurons: {nb_neurons}")
+        if nb_inputs <= 0:
+            logger.warning(f"Recurrent layer initialized with non-positive number of inputs: {nb_inputs}")
+        if fwd_weight_scale <= 0:
+            logger.warning(f"Recurrent layer initialized with non-positive feedforward weight scale: {fwd_weight_scale}")
+        if rec_weight_scale <= 0:
+            logger.warning(f"Recurrent layer initialized with non-positive recurrent weight scale: {rec_weight_scale}")
+        if batch_size <= 0:
+            logger.warning(f"Recurrent layer initialized with non-positive batch size: {batch_size}")
 
         Parameters
         ----------
@@ -598,6 +627,15 @@ class recurrent_layer:
             self.ref_per_tensor = torch.zeros(
                 (batch_size, nb_neurons), device=self.device, dtype=torch.int)
         self.create_layer()
+        # DEBUG: Check for NaN/Inf in weights
+        if torch.isnan(self.ff_weights).any() or torch.isinf(self.ff_weights).any():
+            logger.debug(f"Recurrent layer feedforward weights contain NaN or Inf after initialization!")
+        else:
+            logger.debug(f"Recurrent layer feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
+        if torch.isnan(self.rec_weights).any() or torch.isinf(self.rec_weights).any():
+            logger.debug(f"Recurrent layer recurrent weights contain NaN or Inf after initialization!")
+        else:
+            logger.debug(f"Recurrent layer recurrent weights initialized: mean={self.rec_weights.mean().item():.6f}, std={self.rec_weights.std().item():.6f}")
 
     def reset_refractory_perdiod_counter(self):
         """

@@ -48,7 +48,7 @@
                 "--resume-run-id", "20260115_0833_exploration/20260218_093035",
                 "--ref_per_ms", "3",
                 "--time_bin_size", "3",
-                "--weight_distribution", "10.0",
+                "--threshold_noise_std", "10.0",
                 "--save_artifacts", "best",
                 "--random_tie_breaking",
                 "--quantize_weights",

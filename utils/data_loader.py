@@ -50,9 +50,9 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
             Maximum time duration in milliseconds
         - 'time_bin_size' : int
             Size of time bins in milliseconds
-        - 'mechanoreceptor_encoding' : bool
-            If True, uses mechanoreceptor encoding (FA/SA channels);
-            If False, uses sigma-delta encoding (ON/OFF channels)
+        - 'encoding_type' : str
+            If 'mechanoreceptor', uses mechanoreceptor encoding (FA/SA channels);
+            If 'sigma-delta', uses sigma-delta encoding (ON/OFF channels)
         - 'selected_channels' : list of int or None
             List of taxel indices to include (0-indexed). If None, all taxels are used.
         - 'dtype_torch' : torch.dtype
@@ -145,7 +145,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     >>> params = {
     ...     'max_time': 1000,
     ...     'time_bin_size': 10,
-    ...     'mechanoreceptor_encoding': True,
+    ...     'encoding_type': 'mechanoreceptor',
     ...     'selected_channels': [0, 1, 2],  # Use first 3 taxels
     ...     'dtype_torch': torch.float32,
     ...     'validation': True,
@@ -169,7 +169,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     
     logger.debug(f"Loading data from: {file_name}")
     logger.debug(f"Max time: {max_time}ms, Time bin size: {time_bin_size}ms, Data steps: {params['data_steps']}")
-    logger.debug(f"Encoding: {'Mechanoreceptor' if params['mechanoreceptor_encoding'] else 'Sigma-delta'}")
+    logger.debug(f"Encoding: {'Mechanoreceptor' if params['encoding_type'] == 'mechanoreceptor' else 'Sigma-delta'}")
     logger.debug(f"Selected channels/taxels: {params['selected_channels']}")
 
     # Extract data
@@ -181,7 +181,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
         logger.error(f"Data file not found: {file_name}")
         raise FileNotFoundError(f"Data file not found: {file_name}")
     try:
-        if params['mechanoreceptor_encoding']:
+        if params['encoding_type'] == 'mechanoreceptor':
             with open(file_name, "rb") as f:
                 data_dict = pkl.load(f)
             logger.debug(f"Loaded mechanoreceptor data with {len(data_dict['letter'])} samples")

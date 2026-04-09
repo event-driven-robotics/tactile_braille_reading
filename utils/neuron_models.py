@@ -15,7 +15,7 @@ network connectivity are also provided.
 Classes:
     - SurrGradSpike: Surrogate gradient spiking nonlinearity for PyTorch autograd.
     - LI, CuBaLI, LIF, CuBaLIF, RLIF, CuBaRLIF: Neuron layer models.
-    - FA_I_mechanoreceptor, SA_II_mechanoreceptor: Event-based mechanoreceptor models.
+    - RA_I_mechanoreceptor, SA_II_mechanoreceptor: Event-based mechanoreceptor models.
     - fascicle_response: Aggregates and processes events through neuron populations.
     - Utility functions for network visualization.
 
@@ -850,7 +850,7 @@ class recurrent_layer:
         return spk_rec, mem_rec
 
 
-class FA_I_mechanoreceptor():
+class RA_I_mechanoreceptor():
     """
     Models the fast-adapting (FA-I) mechanoreceptor response in tactile sensors.
 
@@ -864,7 +864,7 @@ class FA_I_mechanoreceptor():
 
     def __init__(self, taxel_values, fa_threshold, ref_period=0.003):
         """
-        Initialize the FA_I_mechanoreceptor.
+        Initialize the RA_I_mechanoreceptor.
 
         Args:
             channels (list of int): List of channel indices to monitor.
@@ -879,6 +879,7 @@ class FA_I_mechanoreceptor():
         self.last_taxel_value = np.array(taxel_values, copy=True)
         self.events = np.empty((0, 2), dtype=float)  # time, channel
         self.ref_period = ref_period
+        self.last_events = np.zeros_like(self.last_taxel_value, dtype=float)
 
     def reset(self):
         """
@@ -888,6 +889,7 @@ class FA_I_mechanoreceptor():
         """
 
         self.last_taxel_value.fill(0.0)
+        self.last_events.fill(0.0)
         self.events = np.empty((0, 2), dtype=float)
 
     def remove_old_events(self, t):
@@ -914,52 +916,48 @@ class FA_I_mechanoreceptor():
             last_time (float): Last update time.
         """
 
-        nb_events = np.floor(
+        # Strict threshold-crossing count per channel.
+        nb_events_req = np.floor(
             np.abs(taxel_values - self.last_taxel_value) / self.fa_threshold).astype(int)
-        # logger.debug(f"FA-I events detected: {nb_events}")
-        dt_fa_events = (current_time - last_time) / (nb_events + 1)
-        # TODO check if dt_fa_events at any point smaller ref_per and if so update that to ref_per and recalculate number of events
-        if np.min(dt_fa_events) < self.ref_period:
-            dt_smaller_ref_mask = dt_fa_events < self.ref_period
-            dt_fa_events[dt_smaller_ref_mask] = self.ref_period
-            nb_events[dt_smaller_ref_mask] = (
-                (current_time - last_time)/self.ref_period).astype(int)
-        # direction = np.sign(taxel_values - self.last_taxel_value)
 
-        # Find channels with events
-        active_channels = np.where(nb_events > 0)[0]
-        total_new_events = np.sum(nb_events)
+        active_channels = np.where(nb_events_req > 0)[0]
+        if active_channels.size == 0:
+            return np.empty((0, 2), dtype=float)
 
-        if total_new_events > 0:
-            # Preallocate arrays for all new events (maximum possible)
-            event_times = np.empty(total_new_events)
-            y_arr = np.empty(total_new_events)
+        eps = 1e-12
+        new_events = np.empty((0, 2), dtype=float)
+        for channel in active_channels:
+            requested = int(nb_events_req[channel])
 
-            idx = 0
-            for channel in active_channels:
-                dt = dt_fa_events[channel]
-                # ensure we do not create more spikes then possible with refractory period
-                n_events = nb_events[channel]
-                # Calculate times
-                times = last_time + np.arange(1, n_events + 1) * dt
-                event_times[idx:idx+len(times)] = times
-                # Channel indices start from 0
-                y_arr[idx:idx+len(times)] = channel
-                # Update last_taxel_value for this channel
-                # NOTE: now we have 'trailing' of event because value at last time is saved and not the possibly lower sample value
-                # self.last_taxel_value[channel] += direction[channel] * \
-                #     len(times) * self.fa_threshold
-                # hard reset, no trailing
-                # introduces a slight inprecision, because we should actually compare changes to the value present after the ref period
+            # Keep one-sided window policy: exclude last_time, allow current_time.
+            first_allowed = max(last_time + eps, self.last_events[channel] + self.ref_period)
+            if first_allowed > current_time:
                 self.last_taxel_value[channel] = taxel_values[channel]
-                idx += len(times)
+                continue
 
-            # Stack and append all new events at once
-            new_events = np.column_stack((event_times[:idx], y_arr[:idx]))
+            max_events = int(np.floor((current_time - first_allowed) / self.ref_period)) + 1
+            n_events = min(requested, max_events)
+            if n_events <= 0:
+                self.last_taxel_value[channel] = taxel_values[channel]
+                continue
+
+            if n_events == 1:
+                times = np.array([current_time], dtype=float)
+            else:
+                dt = (current_time - first_allowed) / (n_events - 1)
+                dt = max(dt, self.ref_period)
+                times = current_time - np.arange(n_events - 1, -1, -1, dtype=float) * dt
+
+            y_arr = np.full(times.shape, channel)
+            new_events = np.vstack((new_events, np.column_stack((times, y_arr))))
+
+            self.last_events[channel] = times[-1]
+            self.last_taxel_value[channel] = taxel_values[channel]
+
+        if new_events.size > 0:
             self.events = np.append(self.events, new_events, axis=0)
             return new_events[np.argsort(new_events[:, 0])]
-        else:
-            return np.empty((0, 2), dtype=float)
+        return np.empty((0, 2), dtype=float)
 
 
 class SA_II_mechanoreceptor():
@@ -976,7 +974,7 @@ class SA_II_mechanoreceptor():
         events (np.ndarray): Array of shape (N, 2) where each row is [time, channel].
     """
 
-    def __init__(self, channels, max_frequ):
+    def __init__(self, channels, max_frequ, ref_period=0.003):
         """
         Initialize the SA_II_mechanoreceptor object.
 
@@ -988,6 +986,7 @@ class SA_II_mechanoreceptor():
         self.slope = slope
         self.events = np.empty((0, 2), dtype=float)  # time, channel
         self.last_events = np.zeros(channels, dtype=float)
+        self.ref_period = ref_period
 
     def reset(self):
         """
@@ -997,6 +996,7 @@ class SA_II_mechanoreceptor():
         """
 
         self.events = np.empty((0, 2), dtype=float)
+        self.last_events.fill(0.0)
 
     def remove_old_events(self, t):
         """
@@ -1028,7 +1028,7 @@ class SA_II_mechanoreceptor():
             return np.empty((0, 2), dtype=float)
 
         local_frequ = taxel_values[active_channels] * self.slope  # Hz
-        dt_sa_events = 1 / local_frequ  # sec
+        dt_sa_events = np.maximum(1 / local_frequ, self.ref_period)  # sec
 
         # For each active channel, generate event times
         new_events = np.empty((0, 2), dtype=float)
@@ -1038,17 +1038,13 @@ class SA_II_mechanoreceptor():
             last_event_time = self.last_events[channel]
             # Generate event times within the window current_time and last_time taking into last_event_time
 
-            if last_event_time + dt > current_time:
-                # No new events if first event is after current time (no projection into the future)
+            eps = 1e-12
+            first_allowed = max(last_time + eps, last_event_time + dt)
+            if first_allowed > current_time:
                 continue
-            elif last_event_time + dt < last_time:
-                # set first event to last_time if last event + dt is before last_time (no projection into the past)
-                event_times = np.arange(
-                    last_time, current_time, dt)
-            else:
-                # set first event to last_event_time + dt (falls within the window and respects the correct frequency)
-                event_times = np.arange(
-                    last_event_time + dt, current_time, dt)
+
+            n_events = int(np.floor((current_time - first_allowed) / dt)) + 1
+            event_times = current_time - np.arange(n_events - 1, -1, -1, dtype=float) * dt
 
             if event_times.size > 0:
                 # Channel indices start from 0
@@ -1061,14 +1057,11 @@ class SA_II_mechanoreceptor():
             # Append all new events at once
             self.events = np.append(self.events, new_events, axis=0)
 
-            # Get the index of the last occurrence for each unique channel id
-            last_indices = np.r_[np.nonzero(np.diff(new_events[:, 1]))[
-                0], len(new_events[:, 1])-1]
-            unique_channels = new_events[last_indices, 1].astype(int) - 1
-            unique_times = new_events[last_indices, 0]
-
-            # Update last_events for each channel found in new_events
-            self.last_events[unique_channels] = unique_times
+            # Update per-channel last event time with the last event emitted in this step.
+            for channel in active_channels:
+                channel_events = new_events[new_events[:, 1] == channel]
+                if channel_events.size > 0:
+                    self.last_events[channel] = channel_events[-1, 0]
 
             return new_events[np.argsort(new_events[:, 0])]
         return np.empty((0, 2), dtype=float)

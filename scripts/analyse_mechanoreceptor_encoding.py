@@ -13,6 +13,7 @@ import pickle as pkl
 
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm
 
 data_path = "data/100Hz"
 file_name = "mechanoreceptor_encoded.pkl"
@@ -41,7 +42,7 @@ if __name__ == "__main__":
         selected_indices.extend(selected)
 
     # now we can visualize the selected letters
-    for idx in selected_indices:
+    for idx in tqdm(selected_indices):
         letter = letters_list[idx]
         taxel_data = taxel_data_list[idx]
         timestamps = timestamps_list[idx]
@@ -77,5 +78,6 @@ if __name__ == "__main__":
 
         plt.tight_layout()
         plt.savefig(f"figures/letter_{letter}_idx_{idx}.pdf")
+        plt.close()
         # plt.show()
     pass

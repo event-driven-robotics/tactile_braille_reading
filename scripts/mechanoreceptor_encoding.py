@@ -11,11 +11,18 @@ Date: January 12, 2026
 """
 
 import pickle as pkl
+import sys
+from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
 
-from utils.neuron_models import FA_I_mechanoreceptor, SA_II_mechanoreceptor
+# Ensure local package imports work when running this file directly.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.neuron_models import RA_I_mechanoreceptor, SA_II_mechanoreceptor
 
 print("Loading mechanoreceptor models...")
 
@@ -51,10 +58,10 @@ if __name__ == "__main__":
                 shortest_trial = timestamps[-1]
             fa_spikes = []
             sa_spikes = []
-            fa_encoding = FA_I_mechanoreceptor(
-                taxel_values=taxels[0], fa_threshold=1, ref_period=0.003)
+            fa_encoding = RA_I_mechanoreceptor(
+                taxel_values=taxels[0], fa_threshold=2, ref_period=0.003)
             sa_encoding = SA_II_mechanoreceptor(
-                channels=len(taxels[0]), max_frequ=100)
+                channels=len(taxels[0]), max_frequ=150, ref_period=0.003)
             last_time = timestamps[0]
             for t_idx in range(1, taxels.shape[0]):
                 current_time = timestamps[t_idx]

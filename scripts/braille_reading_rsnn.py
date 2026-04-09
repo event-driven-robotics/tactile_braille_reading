@@ -124,6 +124,18 @@ def parse_arguments():
             return False
         raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
 
+    def _str2float_or_none(value):
+        """Parse float or 'None' string to float or None."""
+        if value is None:
+            return None
+        value_str = str(value).strip().lower()
+        if value_str in {'none', 'null', 'na', 'n/a'}:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid float or None value: {value}")
+
     parser = argparse.ArgumentParser(
         description='Train RSNN for Braille letter classification',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -193,8 +205,8 @@ def parse_arguments():
                         help='Refractory period in milliseconds (converted to timesteps using time_bin_size)')
     parser.add_argument('--ref_per_timesteps', type=int, default=None,
                         help='[Deprecated] Refractory period in timesteps. If set, it overrides --ref_per_ms.')
-    parser.add_argument('--lower_bound', type=float, default=-1.0,
-                        help='Lower bound for membrane potential')
+    parser.add_argument('--lower_bound', type=_str2float_or_none, default=None,
+                        help='Lower bound for membrane potential (set to None to disable clamping; default: None)')
     parser.add_argument('--threshold_noise_std', type=float, default=0.0,
                         help='Standard deviation of the random fluctuation added to the spiking threshold of all neurons at each simulation step, mimicking hardware clock-driven noise (set to 0 to disable).')
 
@@ -1260,7 +1272,7 @@ if __name__ == '__main__':
                            "Results may not be statistically significant.")
         if not params["synapse"]:
             logger.info(f"No synaptic dynamics.")
-        if params["lower_bound"]:
+        if params["lower_bound"] is not None:
             logger.info(f"Clamp membrane voltage to: {params['lower_bound']}.")
         if params["linear_decay"]:
             logger.info(f"Use linear decay.")

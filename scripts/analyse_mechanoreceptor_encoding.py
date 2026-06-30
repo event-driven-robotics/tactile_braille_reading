@@ -49,35 +49,37 @@ if __name__ == "__main__":
         fa_spikes = fa_spikes_list[idx]
         sa_spikes = sa_spikes_list[idx]
 
-        plt.figure(figsize=(12, 6))
+        fig, (ax_sensor, ax_fa, ax_sa) = plt.subplots(
+            3,
+            1,
+            figsize=(12, 8),
+            gridspec_kw={"height_ratios": [2, 1, 1]},
+        )
 
-        plt.subplot(3, 1, 1)
-        plt.plot(timestamps, taxel_data)
-        plt.title(f"Taxel Data for Letter '{letter}'")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Taxel Value")
-        plt.xlim(timestamps[0], timestamps[-1])
+        ax_sensor.plot(timestamps, taxel_data)
+        ax_sensor.set_title(f"Taxel Data for Letter '{letter}'")
+        ax_sensor.set_xlabel("Time (s)")
+        ax_sensor.set_ylabel("Taxel Value")
+        ax_sensor.set_xlim(timestamps[0], timestamps[-1])
 
-        plt.subplot(3, 1, 2)
         if fa_spikes.shape[0] > 0:
-            plt.scatter(fa_spikes[:, 0], fa_spikes[:, 1], s=1)
-        plt.title(f"FA-I Mechanoreceptor Spikes for Letter '{letter}'")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Channel")
-        plt.xlim(timestamps[0], timestamps[-1])
-        plt.ylim(-1, 13)
+            ax_fa.scatter(fa_spikes[:, 0], fa_spikes[:, 1], s=1)
+        ax_fa.set_title(f"FA-I Mechanoreceptor Spikes for Letter '{letter}'")
+        ax_fa.set_xlabel("Time (s)")
+        ax_fa.set_ylabel("Channel")
+        ax_fa.set_xlim(timestamps[0], timestamps[-1])
+        ax_fa.set_ylim(-1, 13)
 
-        plt.subplot(3, 1, 3)
         if sa_spikes.shape[0] > 0:
-            plt.scatter(sa_spikes[:, 0], sa_spikes[:, 1], s=1, color='orange')
-        plt.title(f"SA-II Mechanoreceptor Spikes for Letter '{letter}'")
-        plt.xlabel("Time (s)")
-        plt.ylabel("Channel")
-        plt.xlim(timestamps[0], timestamps[-1])
-        plt.ylim(-1, 13)
+            ax_sa.scatter(sa_spikes[:, 0], sa_spikes[:, 1], s=1, color="orange")
+        ax_sa.set_title(f"SA-II Mechanoreceptor Spikes for Letter '{letter}'")
+        ax_sa.set_xlabel("Time (s)")
+        ax_sa.set_ylabel("Channel")
+        ax_sa.set_xlim(timestamps[0], timestamps[-1])
+        ax_sa.set_ylim(-1, 13)
 
-        plt.tight_layout()
-        plt.savefig(f"figures/letter_{letter}_idx_{idx}.pdf")
-        plt.close()
+        fig.tight_layout()
+        fig.savefig(f"figures/letter_{letter}_idx_{idx}.pdf")
+        plt.close(fig)
         # plt.show()
     pass

@@ -5,12 +5,109 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Current File",
-            "type": "python",
+            "name": "Python: Run Current File",
+            "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Train Default",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Train with e-prop",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--eprop",
+                "--epochs", "100",
+                "--nb_hidden", "100"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Train BPTT (debug mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--debug",
+                "--repetitions", "2",
+                "--epochs", "3",
+                "--nb_hidden", "5",
+                "--batch_size", "128",
+                "--resume-run-id", "20260115_0833_exploration/20260218_093035",
+                "--ref_per_ms", "3",
+                "--time_bin_size", "3",
+                "--threshold_noise_std", "10.0",
+                "--save_artifacts", "best",
+                "--random_tie_breaking",
+                "--quantize_weights",
+                "--seed"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Quick Test (10 epochs)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--epochs", "10",
+                "--nb_hidden", "5",
+                "--batch_size", "128",
+                "--learning_rate", "0.0001",
+                "--letters", "A", "B",
+                "--repetitions", "3",
+                "--random_tie_breaking",
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: DEBUG BPTT (10 epochs)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--epochs", "10",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.001",
+                "--letters", "A", "B",
+                "--repetitions", "3",
+                "--debug",
+                "--reg_spikes", "0.0",
+                "--reg_neurons", "0.0",
+                "--weight_quantization",
+                "--seed", 
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Hyperparameter Search",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/braille_reading_rsnn.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--epochs", "50",
+                "--nb_hidden", "200",
+                "--learning_rate", "0.001",
+                "--reg_spikes", "0.002",
+                "--random_tie_breaking"
+            ],
+            "justMyCode": false
         }
     ]
 }

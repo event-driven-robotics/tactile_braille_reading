@@ -12,15 +12,17 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 '''
 import os
-import numpy as np
-import matplotlib.pyplot as plt
 import pickle
-from scipy.signal import argrelextrema
+
+import matplotlib.pyplot as plt
+import numpy as np
 from scipy.interpolate import interp1d
+from scipy.signal import argrelextrema
 
 DEBUG = False
 DirOut = "../plots/"
 save_fig = False
+
 
 def sample_to_changes(sample, f, threshold, save):
     ''' Convert one sample time-based to event-based
@@ -40,11 +42,13 @@ def sample_to_changes(sample, f, threshold, save):
         txl = np.array(taxel, dtype=int)
         #   max
         ind_max = np.squeeze(np.array(argrelextrema(txl, np.greater_equal)))
-        d_ixtr = np.insert(np.diff(ind_max), 0, -1)    # Match dimensions of the index
+        # Match dimensions of the index
+        d_ixtr = np.insert(np.diff(ind_max), 0, -1)
         max_p = ind_max[d_ixtr != 1]
         #   min
         ind_min = np.squeeze(np.array(argrelextrema(txl, np.less_equal)))
-        d_ixtr = np.insert(np.diff(ind_min), 0, -1)  # Match dimensions of the index
+        # Match dimensions of the index
+        d_ixtr = np.insert(np.diff(ind_min), 0, -1)
         min_p = ind_min[d_ixtr != 1]
         #   add index with same values
         all_indx = np.append(max_p, min_p)
@@ -62,33 +66,41 @@ def sample_to_changes(sample, f, threshold, save):
         all_values = txl[all_t]
         # Find the events [ON, OFF]
         taxel_list = list()
-        on_events = np.array([]); off_events = np.array([])
+        on_events = np.array([])
+        off_events = np.array([])
         # Compare each pair of points and generate event times based on threshold
-        last_value = all_values[0]  # Last value storage controls when threshold is not reached
+        # Last value storage controls when threshold is not reached
+        last_value = all_values[0]
         for i in range(len(all_values) - 1):
             d_pair = all_values[i+1] - last_value
             if d_pair > 0:
                 start = last_value + threshold
                 stop = all_values[i+1] + 0.0001
-                spk_values = np.round(np.arange(start, stop, threshold), Precision)
+                spk_values = np.round(
+                    np.arange(start, stop, threshold), Precision)
                 # Interpolation with all the values of the pair
                 pts = all_t[i+1] - all_t[i] + 1
                 t_interp = np.linspace(all_t[i], all_t[i+1], pts, dtype=int)
                 vals_interp = txl[t_interp]
                 f = interp1d(vals_interp, t_interp.astype(float), 'linear')
-                on_events = np.append(on_events, np.apply_along_axis(f, 0, spk_values))
-                last_value = spk_values[-1] if spk_values.size > 0 else last_value   # Change value of sensor when spike
+                on_events = np.append(
+                    on_events, np.apply_along_axis(f, 0, spk_values))
+                # Change value of sensor when spike
+                last_value = spk_values[-1] if spk_values.size > 0 else last_value
             elif d_pair < 0:
                 start = last_value - threshold
-                stop = all_values[i+1] - 0.0001 # No Threshold
-                spk_values = np.round(np.arange(start, stop, -1*threshold), Precision)
+                stop = all_values[i+1] - 0.0001  # No Threshold
+                spk_values = np.round(
+                    np.arange(start, stop, -1*threshold), Precision)
                 # Interpolation with all the values of the pair
                 pts = all_t[i+1] - all_t[i] + 1
                 t_interp = np.linspace(all_t[i], all_t[i+1], pts, dtype=int)
                 vals_interp = txl[t_interp]
                 f = interp1d(vals_interp, t_interp, 'linear')
-                off_events = np.append(off_events, np.apply_along_axis(f, 0, spk_values))
-                last_value = spk_values[-1] if spk_values.size > 0 else last_value    # Change value of sensor when spike
+                off_events = np.append(
+                    off_events, np.apply_along_axis(f, 0, spk_values))
+                # Change value of sensor when spike
+                last_value = spk_values[-1] if spk_values.size > 0 else last_value
         # Assign events
         taxel_list.append((on_events * dt).tolist())
         taxel_list.append((off_events * dt).tolist())
@@ -105,23 +117,27 @@ def sample_to_changes(sample, f, threshold, save):
             if taxel_list[0]:
                 plt.eventplot(taxel_list[0], lineoffsets=0.15,
                               colors='green', linelength=0.25)
-            if  taxel_list[1]:
+            if taxel_list[1]:
                 plt.eventplot(taxel_list[1], lineoffsets=-0.15,
                               colors='red', linelength=0.25)
 
             axes.set_ylabel(r'$\vartheta = ${}'.format(str(threshold)))
             if save:
-                plt.savefig('{}encoding_TH{}_taxel_{}_events.png'.format(DirOut, str(threshold), str(nt)), dpi=200)
+                plt.savefig('{}encoding_TH{}_taxel_{}_events.png'.format(
+                    DirOut, str(threshold), str(nt)), dpi=200)
             f2 = plt.figure()
             axes = plt.axes()
             axes.set_xlim([0, ((scale * n) - 0.5) * dt])
-            plt.plot(np.arange(start=0, stop=(n - 0.5) * dt, step=dt), txl - txl[0], '-o')
+            plt.plot(np.arange(start=0, stop=(n - 0.5)
+                     * dt, step=dt), txl - txl[0], '-o')
             axes.set_ylabel("Sensor value")
             axes.set_xlabel('t(s)')
             if save:
-                plt.savefig('{}encoding_TH{}_taxel_{}_sample.png'.format(DirOut, str(threshold), str(nt)), dpi=200)
+                plt.savefig('{}encoding_TH{}_taxel_{}_sample.png'.format(
+                    DirOut, str(threshold), str(nt)), dpi=200)
 
     return sample_list
+
 
 def extract_data_icub_raw_integers(file_name):
     ''' Read the files and convert taxel data and labels
@@ -138,12 +154,15 @@ def extract_data_icub_raw_integers(file_name):
         labels.append(item['letter'])
     return data, labels
 
+
 def main():
     ''' Convert time-based data into event-based data '''
-    Spk_threshold = 1 # 1, 2, 5, 10 (default)
-    Events_filename_out = '../data/data_braille_letters_th{}'.format(str(Spk_threshold))
+    Spk_threshold = 1  # 1, 2, 5, 10 (default)
+    Events_filename_out = '../data/data_braille_letters_th{}'.format(
+        str(Spk_threshold))
     f = 40  # Hz
-    data_raw, labels_raw = extract_data_icub_raw_integers('../data/data_braille_letters_raw')
+    data_raw, labels_raw = extract_data_icub_raw_integers(
+        '../data/data_braille_letters_raw')
     samples = list()
     if save_fig:
         isExist = os.path.exists(DirOut)
@@ -152,7 +171,8 @@ def main():
     # Each sequence sample is parsed to events
     for sample_raw, label in zip(data_raw, labels_raw):
         data_dict_events = {}
-        events_per_samples = sample_to_changes(sample_raw, f, Spk_threshold, save=save_fig)
+        events_per_samples = sample_to_changes(
+            sample_raw, f, Spk_threshold, save=save_fig)
         # Dict of the sample
         data_dict_events['letter'] = label
         data_dict_events['events'] = events_per_samples
@@ -160,6 +180,7 @@ def main():
     print('Finished conversion')
     with open(Events_filename_out, 'wb') as outf:
         pickle.dump(samples, outf)
+
 
 if __name__ == "__main__":
     main()

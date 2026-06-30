@@ -1,0 +1,190 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run: Quick Test (A, B - 10 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--epochs", "10",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "1",
+                "--random_tie_breaking",
+                "--seed"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Run: Extensive Training (A, B - 500 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--epochs", "500",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "1",
+                "--random_tie_breaking",
+                "--seed"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true,
+                "clear": true
+            }
+        },
+        {
+            "label": "Run: Full Training 10 Times (All Letters - 50 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--epochs", "50",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--repetitions", "10",
+                "--random_tie_breaking"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
+        {
+            "label": "Run: Full Training 3 Times (Letters A and B - 50 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--epochs", "10",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "3",
+                "--random_tie_breaking"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
+        {
+            "label": "Run: Debug Mode (10 epochs with verbose output)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--epochs", "10",
+                "--nb_hidden", "50",
+                "--batch_size", "128",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "1",
+                "--random_tie_breaking",
+                "--seed",
+                "--weight_quantization",
+                "--debug"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
+        {
+            "label": "Run: E-prop Training (10 epochs)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--eprop",
+                "--epochs", "10",
+                "--nb_hidden", "50",
+                "--batch_size", "32",
+                "--learning_rate", "0.00005",
+                "--letters", "A", "B",
+                "--repetitions", "1",
+                "--random_tie_breaking",
+                "--weight_quantization",
+                "--seed"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
+        {
+            "label": "Run: Resume Training (50 epochs, ref_per_ms 3, time_bin_size 3)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--resume-run-id", "20260115_0833_exploration/20260218_093035",
+                "--epochs", "50",
+                "--ref_per_ms", "3",
+                "--time_bin_size", "3",
+                "--learning_rate", "0.00001",
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
+        {
+            "label": "Run: Resume Training (50 epochs, ref_per_ms 3, time_bin_size 3, learning_rate 0.00005, quantize_weights true)",
+            "type": "shell",
+            "command": "/home/smullercleve/.virtualenvs/pytorch/bin/python",
+            "args": [
+                "scripts/braille_reading_rsnn.py",
+                "--resume-run-id", "20260115_0833_exploration/20260218_093035",
+                "--epochs", "50",
+                "--ref_per_ms", "3",
+                "--time_bin_size", "3",
+                "--learning_rate", "0.00005",
+                "--repetitions", "5",
+                "--quantize_weights"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            }
+        },
+    ]
+}

@@ -1,10 +1,6 @@
 # Braille Letter Reading with RSNNs
 
-This repository contains spiking neural network pipelines for tactile braille
-letter classification. The main maintained workflow trains and evaluates a
-recurrent spiking neural network (RSNN) on encoded tactile recordings, with
-support for BPTT, e-prop, multiple input encodings, resume/inference modes,
-weight quantization, and detailed artifact export.
+You can find the Frontiers publication "Braille letter reading: A benchmark for spatio-temporal pattern recognition on neuromorphic hardware" [here](https://www.frontiersin.org/articles/10.3389/fnins.2022.951164/full).
 
 Primary entry point:
 

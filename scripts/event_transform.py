@@ -12,17 +12,13 @@ Date: January 12, 2026
 
 import pickle as pkl
 import sys
+import argparse
 from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
-import os
-import pickle
 import torch
-import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.signal import argrelextrema
 
 # Ensure local package imports work when running this file directly.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,10 +32,71 @@ ENCODING_TYPE = "neuron_model"
 NEURON_MODEL = "MN_neuron"  # Options: "AdExLIF_neuron", "CuBaLIF_neuron", "IZ_neuron", "LIF_neuron", "MN_neuron"
 UPSAMPLE_STRATEGY = "linear"  # Options: "linear", "hold"
 UPSAMPLE_DT_S = 0.001  # Fixed target delta t in seconds (1 ms)
+OUTPUT_PATH_OVERRIDE = None
 
 data_path = "data/100Hz"
 data_files = ["data_braille_letters_0.0.pkl",
               "data_braille_letters_0.000125.pkl"]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Encode tactile data with mechanoreceptor, sigma-delta, or neuron-model pipelines."
+    )
+    parser.add_argument(
+        "--encoding-type",
+        choices=["mechanoreceptor", "sigma_delta", "neuron_model"],
+        default=ENCODING_TYPE,
+        help="Encoding pipeline to run.",
+    )
+    parser.add_argument(
+        "--neuron-model",
+        choices=["AdExLIF_neuron", "CuBaLIF_neuron", "IZ_neuron", "LIF_neuron", "MN_neuron"],
+        default=NEURON_MODEL,
+        help="Neuron model used when --encoding-type neuron_model.",
+    )
+    parser.add_argument(
+        "--upsample-strategy",
+        choices=["linear", "hold"],
+        default=UPSAMPLE_STRATEGY,
+        help="Upsampling strategy for neuron-model encoding.",
+    )
+    parser.add_argument(
+        "--upsample-dt-s",
+        type=float,
+        default=UPSAMPLE_DT_S,
+        help="Target timestep in seconds for upsampling (e.g., 0.001 for 1 ms).",
+    )
+    parser.add_argument(
+        "--data-path",
+        default=data_path,
+        help="Input directory containing tactile data files.",
+    )
+    parser.add_argument(
+        "--data-files",
+        nargs="+",
+        default=data_files,
+        help="One or more input pickle filenames relative to --data-path.",
+    )
+    parser.add_argument(
+        "--output-path",
+        default=OUTPUT_PATH_OVERRIDE,
+        help="Optional explicit output file path. If unset, default naming is used.",
+    )
+    return parser.parse_args()
+
+
+def apply_args(args: argparse.Namespace) -> None:
+    global ENCODING_TYPE, NEURON_MODEL, UPSAMPLE_STRATEGY, UPSAMPLE_DT_S
+    global data_path, data_files, OUTPUT_PATH_OVERRIDE
+
+    ENCODING_TYPE = args.encoding_type
+    NEURON_MODEL = args.neuron_model
+    UPSAMPLE_STRATEGY = args.upsample_strategy
+    UPSAMPLE_DT_S = args.upsample_dt_s
+    data_path = args.data_path
+    data_files = args.data_files
+    OUTPUT_PATH_OVERRIDE = args.output_path
 
 
 def sort_output_dict_by_letter(out_dict: dict, letter_key: str = "letter") -> dict:
@@ -328,8 +385,9 @@ def main() -> None:
     print(f"Shortest trial duration: {shortest_trial} seconds")
 
     out_dict = sort_output_dict_by_letter(out_dict)
-    save_encoded_output(out_dict, out_path)
+    save_encoded_output(out_dict, OUTPUT_PATH_OVERRIDE or out_path)
 
 
 if __name__ == "__main__":
+    apply_args(parse_args())
     main()

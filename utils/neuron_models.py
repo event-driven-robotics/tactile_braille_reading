@@ -5,7 +5,7 @@ Spiking neuron models and mechanoreceptor implementations for event-based proces
 This module provides classes and functions for simulating various neuron and mechanoreceptor models,
 including Leaky Integrator (LI), Current-Based Leaky Integrator (CuBaLI), Leaky Integrate-and-Fire (LIF),
 Current-Based Leaky Integrate-and-Fire (CuBaLIF), and their recurrent variants. It also includes event-based
-mechanoreceptor models (FA-I and SA-II) and a fascicle response model for aggregating and processing
+mechanoreceptor models (RA-I and SA-II) and a fascicle response model for aggregating and processing
 spike events through configurable neuron populations.
 
 The models are implemented using PyTorch for efficient computation and support both feedforward and recurrent
@@ -23,15 +23,17 @@ Author: Simon F. Muller-Cleve
 Date: January 12, 2026
 """
 
+from collections import namedtuple
 import logging
 from typing import cast
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 
-# NOTE: one can use device=input.device, dtype=input.dtype to infer the device and dtype from the input tensor
+# NOTE: one can use device=self.device, dtype=input.dtype to infer the device and dtype from the input tensor
 
 
 class STEFunction(torch.autograd.Function):
@@ -39,7 +41,7 @@ class STEFunction(torch.autograd.Function):
     Here we define the Straight-Through Estimator (STE) function.
     This function allows us to ignore the non-differentiable part
     in our network, i.e. the discretization of the weights.
-    The function applys the discretization and the clamping.
+    The function applies the discretization and the clamping.
     """
     @staticmethod
     def forward(ctx, input, possible_weight_values):
@@ -80,9 +82,6 @@ class SurrGradSpike(torch.autograd.Function):
         a spike (output = 1.0).
     """
 
-    scale = 15.0
-    threshold = 1.0
-
     @staticmethod
     def forward(ctx, input, scale=None, threshold=None):
         """
@@ -111,13 +110,10 @@ class SurrGradSpike(torch.autograd.Function):
             same shape as input.
         """
         # Store scale for backward pass if provided
-        if scale is not None:
-            ctx.scale = scale
-        else:
-            ctx.scale = SurrGradSpike.scale
+        ctx.scale = scale
 
         # Use provided threshold or class default
-        thr = threshold if threshold is not None else SurrGradSpike.threshold
+        thr = threshold
 
         ctx.save_for_backward(input)
         out = torch.zeros_like(input)
@@ -155,7 +151,7 @@ class SurrGradSpike(torch.autograd.Function):
         return grad, None, None  # Return None for scale and threshold gradients
 
 
-def spike_fn(input, scale=None, threshold=None):
+def spike_fn(input, scale=15.0, threshold=1.0):
     """
     Apply SurrGradSpike function with optional scale and threshold parameters.
 
@@ -288,9 +284,11 @@ class feedforward_layer:
         # Surrogate gradient parameter
         self.gamma = gamma  # Scale factor for surrogate gradient
         self.spike_threshold = spike_threshold  # Spike threshold
-        self.soft_reset = soft_reset  # If True: subtract threshold on spike; else hard reset to 0
+        # If True: subtract threshold on spike; else hard reset to 0
+        self.soft_reset = soft_reset
 
-        self.weight_variance = self.spike_threshold*weight_variance/100 if weight_variance is not None else None
+        self.weight_variance = self.spike_threshold*weight_variance / \
+            100 if weight_variance is not None else None
 
         # Device and dtype
         self.device = device
@@ -304,9 +302,11 @@ class feedforward_layer:
         self.create_layer()
         # DEBUG: Check for NaN/Inf in weights
         if torch.isnan(self.ff_weights).any() or torch.isinf(self.ff_weights).any():
-            logger.debug(f"Feedforward weights contain NaN or Inf after initialization!")
+            logger.debug(
+                f"Feedforward weights contain NaN or Inf after initialization!")
         else:
-            logger.debug(f"Feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
+            logger.debug(
+                f"Feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
 
     def reset_refractory_perdiod_counter(self):
         """
@@ -337,7 +337,8 @@ class feedforward_layer:
         current_batch_size = spk.shape[0]
         current_neurons = spk.shape[1]
         if self.ref_per is None:
-            raise ValueError("ref_per must be set to update refractory period counter.")
+            raise ValueError(
+                "ref_per must be set to update refractory period counter.")
         ref_per_value = int(self.ref_per)
         # Only operate on the current batch slice
         batch_slice = self.ref_per_tensor[:current_batch_size,
@@ -427,7 +428,8 @@ class feedforward_layer:
         # Compute feedforward layer activity
         for t in range(nb_steps):
             if self.weight_variance is not None:
-                noisy_spike_threshold = torch.normal(mean=torch.tensor(self.spike_threshold), std=torch.tensor(self.weight_variance))
+                noisy_spike_threshold = torch.normal(mean=torch.tensor(
+                    self.spike_threshold), std=torch.tensor(self.weight_variance))
                 mthr = mem - noisy_spike_threshold
             else:
                 mthr = mem - self.spike_threshold
@@ -441,7 +443,8 @@ class feedforward_layer:
                 out = cast(torch.Tensor, spike_fn(
                     mthr, scale=self.gamma, threshold=0.0))
             if self.ref_per is not None and self.ref_per > 0:
-                refractory_mask = self.ref_per_tensor[:out.shape[0], :out.shape[1]] > 0
+                refractory_mask = self.ref_per_tensor[:out.shape[0],
+                                                      :out.shape[1]] > 0
                 out = out.masked_fill(refractory_mask, 0.0)
 
             rst = out.detach()
@@ -454,7 +457,7 @@ class feedforward_layer:
                 if self.use_synapse:
                     new_syn = self.alpha * syn
                     new_syn[mask] = (self.alpha*syn[mask] +
-                                        input_activity[:, t][mask])
+                                     input_activity[:, t][mask])
                     syn_drive = syn
                 else:
                     syn_drive = torch.zeros_like(syn)
@@ -613,9 +616,11 @@ class recurrent_layer:
         # Surrogate gradient parameter
         self.gamma = gamma  # Scale factor for surrogate gradient
         self.spike_threshold = spike_threshold  # Spike threshold
-        self.soft_reset = soft_reset  # If True: subtract threshold on spike; else hard reset to 0
+        # If True: subtract threshold on spike; else hard reset to 0
+        self.soft_reset = soft_reset
 
-        self.weight_variance = self.spike_threshold*weight_variance/100 if weight_variance is not None else None
+        self.weight_variance = self.spike_threshold*weight_variance / \
+            100 if weight_variance is not None else None
 
         # Device and dtype
         self.device = device
@@ -629,13 +634,17 @@ class recurrent_layer:
         self.create_layer()
         # DEBUG: Check for NaN/Inf in weights
         if torch.isnan(self.ff_weights).any() or torch.isinf(self.ff_weights).any():
-            logger.debug(f"Recurrent layer feedforward weights contain NaN or Inf after initialization!")
+            logger.debug(
+                f"Recurrent layer feedforward weights contain NaN or Inf after initialization!")
         else:
-            logger.debug(f"Recurrent layer feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
+            logger.debug(
+                f"Recurrent layer feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
         if torch.isnan(self.rec_weights).any() or torch.isinf(self.rec_weights).any():
-            logger.debug(f"Recurrent layer recurrent weights contain NaN or Inf after initialization!")
+            logger.debug(
+                f"Recurrent layer recurrent weights contain NaN or Inf after initialization!")
         else:
-            logger.debug(f"Recurrent layer recurrent weights initialized: mean={self.rec_weights.mean().item():.6f}, std={self.rec_weights.std().item():.6f}")
+            logger.debug(
+                f"Recurrent layer recurrent weights initialized: mean={self.rec_weights.mean().item():.6f}, std={self.rec_weights.std().item():.6f}")
 
     def reset_refractory_perdiod_counter(self):
         """
@@ -666,7 +675,8 @@ class recurrent_layer:
         current_batch_size = spk.shape[0]
         current_neurons = spk.shape[1]
         if self.ref_per is None:
-            raise ValueError("ref_per must be set to update refractory period counter.")
+            raise ValueError(
+                "ref_per must be set to update refractory period counter.")
         ref_per_value = int(self.ref_per)
         # Only operate on the current batch slice
         batch_slice = self.ref_per_tensor[:current_batch_size,
@@ -781,7 +791,8 @@ class recurrent_layer:
             h1 = input_activity[:, t] + \
                 torch.einsum("ab,bc->ac", (out, recurrent_weights.t()))
             if self.weight_variance is not None:
-                noisy_spike_threshold = torch.normal(mean=torch.tensor(self.spike_threshold), std=torch.tensor(self.weight_variance))
+                noisy_spike_threshold = torch.normal(mean=torch.tensor(
+                    self.spike_threshold), std=torch.tensor(self.weight_variance))
                 mthr = mem - noisy_spike_threshold
             else:
                 mthr = mem - self.spike_threshold
@@ -795,7 +806,8 @@ class recurrent_layer:
                 out = cast(torch.Tensor, spike_fn(
                     mthr, scale=self.gamma, threshold=0.0))
             if self.ref_per is not None and self.ref_per > 0:
-                refractory_mask = self.ref_per_tensor[:out.shape[0], :out.shape[1]] > 0
+                refractory_mask = self.ref_per_tensor[:out.shape[0],
+                                                      :out.shape[1]] > 0
                 out = out.masked_fill(refractory_mask, 0.0)
 
             rst = out.detach()  # We do not want to backprop through the reset
@@ -852,7 +864,7 @@ class recurrent_layer:
 
 class RA_I_mechanoreceptor():
     """
-    Models the fast-adapting (FA-I) mechanoreceptor response in tactile sensors.
+    Models the fast-adapting (RA-I) mechanoreceptor response in tactile sensors.
 
     This class monitors rapid changes in taxel sensor values and converts these changes into discrete events 
     when a specified threshold is exceeded. The step() method computes the number and timing of events based 
@@ -885,7 +897,7 @@ class RA_I_mechanoreceptor():
         """
         Reset the last taxel values and clear all stored events.
 
-        This is useful for reinitializing the FA-I response, for example, at the start of a new sequence or epoch.
+        This is useful for reinitializing the RA-I response, for example, at the start of a new sequence or epoch.
         """
 
         self.last_taxel_value.fill(0.0)
@@ -904,7 +916,7 @@ class RA_I_mechanoreceptor():
 
     def step(self, taxel_values, current_time, last_time):
         """
-        Update the FA-I response based on new taxel values and generate events if the threshold is exceeded.
+        Update the RA-I response based on new taxel values and generate events if the threshold is exceeded.
 
         For each channel, if the change in taxel value since the last update exceeds the threshold,
         one or more events are generated. If split_fa_channels is True, the polarity of the change
@@ -930,12 +942,14 @@ class RA_I_mechanoreceptor():
             requested = int(nb_events_req[channel])
 
             # Keep one-sided window policy: exclude last_time, allow current_time.
-            first_allowed = max(last_time + eps, self.last_events[channel] + self.ref_period)
+            first_allowed = max(
+                last_time + eps, self.last_events[channel] + self.ref_period)
             if first_allowed > current_time:
                 self.last_taxel_value[channel] = taxel_values[channel]
                 continue
 
-            max_events = int(np.floor((current_time - first_allowed) / self.ref_period)) + 1
+            max_events = int(
+                np.floor((current_time - first_allowed) / self.ref_period)) + 1
             n_events = min(requested, max_events)
             if n_events <= 0:
                 self.last_taxel_value[channel] = taxel_values[channel]
@@ -946,10 +960,12 @@ class RA_I_mechanoreceptor():
             else:
                 dt = (current_time - first_allowed) / (n_events - 1)
                 dt = max(dt, self.ref_period)
-                times = current_time - np.arange(n_events - 1, -1, -1, dtype=float) * dt
+                times = current_time - \
+                    np.arange(n_events - 1, -1, -1, dtype=float) * dt
 
             y_arr = np.full(times.shape, channel)
-            new_events = np.vstack((new_events, np.column_stack((times, y_arr))))
+            new_events = np.vstack(
+                (new_events, np.column_stack((times, y_arr))))
 
             self.last_events[channel] = times[-1]
             self.last_taxel_value[channel] = taxel_values[channel]
@@ -1044,7 +1060,8 @@ class SA_II_mechanoreceptor():
                 continue
 
             n_events = int(np.floor((current_time - first_allowed) / dt)) + 1
-            event_times = current_time - np.arange(n_events - 1, -1, -1, dtype=float) * dt
+            event_times = current_time - \
+                np.arange(n_events - 1, -1, -1, dtype=float) * dt
 
             if event_times.size > 0:
                 # Channel indices start from 0
@@ -1180,3 +1197,357 @@ class SA_II_alt_mechanoreceptor():
 
             return new_events[np.argsort(new_events[:, 0])]
         return np.empty((0, 2), dtype=float)
+
+
+class AdExLIF_neuron(nn.Module):
+    NeuronState = namedtuple('NeuronState', ['V', 'W', 'spk'])
+
+    def __init__(
+            self,
+            nb_inputs,
+            dt=1.,
+            Vr=0.0,
+            Vth=1.0,
+            Vrh=0.0,
+            Vreset=0.0,
+            a=0.0,
+            b=0.0,
+            R=1.0,
+            taum=1.0,
+            tauw=1.0,
+            device='cpu'
+    ):
+        super(AdExLIF_neuron, self).__init__()
+
+        self.linear = torch.ones(1, nb_inputs).to(device)
+        self.dt = dt
+        self.N = nb_inputs
+
+        self.Vr = Vr
+        self.Vth = Vth
+        self.Vrh = Vrh
+        self.Vreset = Vreset
+        self.a = a
+        self.b = b
+        self.R = R
+        self.taum = taum
+        self.tauw = tauw
+
+        self.device = device
+
+        self.state = self.NeuronState(
+            V=torch.zeros(1, self.N, device=self.device) + self.Vr,
+            W=torch.zeros(1, self.N, device=self.device),
+            spk=torch.zeros(1, self.N, device=self.device)
+        )
+
+    def forward(self, input):
+        # print(1)
+        V = self.state.V
+        W = self.state.W
+        I = (self.linear * input)
+        dV = (-(V - self.Vr) + self.dt * torch.exp((V - self.Vrh) /
+              self.dt) + self.R * (I - W)) / (self.taum)
+        dW = (self.a * (V - self.Vr) - W) / self.tauw
+
+        V = V + self.dt * dV
+        W = W + self.dt * dW
+
+        spk = spike_fn(V - self.Vth)
+
+        W = (1 - spk) * W + (spk) * (W + self.b)
+        V = (1 - spk) * V + (spk) * self.Vreset
+
+        self.state = self.NeuronState(V=V, W=W, spk=spk)
+        return spk
+
+    def reset(self):
+        self.state = self.NeuronState(
+            V=torch.zeros(1, self.N, device=self.device) + self.Vr,
+            W=torch.zeros(1, self.N, device=self.device),
+            spk=torch.zeros(1, self.N, device=self.device)
+        )
+
+
+class CuBaLIF_neuron(nn.Module):
+    NeuronState = namedtuple("NeuronState", ["V", "syn", "spk"])
+
+    def __init__(
+            self,
+            nb_inputs,
+            dt=1/1000,
+            alpha=1.0,
+            beta=1.0,
+            thr=1.0,
+            R=1.0,
+            device='cpu'
+    ):
+        super(CuBaLIF_neuron, self).__init__()
+
+        self.nb_inputs = nb_inputs
+        self.alpha = alpha
+        self.beta = beta
+        self.threshold = thr
+        # self.V_rest = -0.04  # -40mV
+        self.R = R
+        self.dt = dt
+
+        self.device = device
+
+        self.state = self.NeuronState(
+            V=torch.zeros(1, self.nb_inputs,
+                          device=self.device),
+            syn=torch.zeros(1, self.nb_inputs,
+                            device=self.device),
+            spk=torch.zeros(1, self.nb_inputs, device=self.device),
+        )
+
+    def forward(self, input):
+        V = self.state.V
+        spk = self.state.spk
+        syn = self.state.syn
+
+        # syn = self.alpha*syn + spk
+        # V = (self.beta * V + (1.0-self.beta) * input *
+        #      self.R + (1.0-self.beta)*syn) * (1.0 - spk)
+        syn = self.alpha*syn + input*self.R
+        V = (self.beta * V + syn) * (1.0 - spk)  # reset mechanism: zero
+        spk = spike_fn(V-self.threshold)
+
+        self.state = self.NeuronState(V=V, syn=syn, spk=spk)
+
+        return spk
+
+    def reset(self):
+        self.state = self.NeuronState(
+            V=torch.zeros(1, self.nb_inputs, device=self.device),
+            syn=torch.zeros(1, self.nb_inputs, device=self.device),
+            spk=torch.zeros(1, self.nb_inputs, device=self.device),
+        )
+
+
+class IZ_neuron(nn.Module):
+    # u = membrane recovery variable
+    NeuronState = namedtuple('NeuronState', ['V', 'u', 'spk'])
+
+    def __init__(
+        self,
+        nb_inputs,
+        dt=1/1000,
+        a=0.02,
+        b=0.2,
+        c=-65,
+        d=8,
+        device='cpu'
+    ):
+        super(IZ_neuron, self).__init__()
+
+        # One-to-one synapse
+        self.linear = nn.Parameter(torch.ones(
+            1, nb_inputs))
+        self.N = nb_inputs
+        # define some constants
+        self.spike_value = 35  # spike threshold
+
+        # define parameters
+        self.a = a
+        self.b = b
+        self.c = c  # reset potential
+        self.d = d
+        self.dt = dt*1E3  # convert from sec to ms
+
+        self.device = device
+
+        self.state = self.NeuronState(
+            V=torch.ones(1, self.N, device=self.device) * self.c,
+            u=torch.zeros(
+                1, self.N, device=self.device) * self.b*self.c,
+            spk=torch.zeros(1, self.N, device=self.device)
+        )
+
+    def forward(self, input):
+        V = self.state.V
+        u = self.state.u
+
+        numerical_res = round(self.dt)
+        if self.dt > 1:
+            output_spike = torch.zeros_like(self.state.spk)
+            for i in range(numerical_res):
+                V = V + (((0.04 * V + 5) * V) + 140 - u + input)
+                u = u + self.a * (self.b * V - u)
+
+                # create spike when threshold reached
+                spk = spike_fn(V - self.spike_value)
+                output_spike = output_spike + spk
+
+                # (reset membrane voltage) or (only update)
+                V = (spk * self.c) + ((1 - spk) * V)
+                # (reset recovery) or (update currents)
+                u = (spk * (u + self.d)) + ((1 - spk) * u)
+        else:
+            V = V + self.dt*(((0.04 * V + 5) * V) + 140 - u + input)
+            u = u + self.dt*self.a * (self.b * V - u)
+
+            # create spike when threshold reached
+            spk = spike_fn(V - self.spike_value)
+            output_spike = spk
+
+            # (reset membrane voltage) or (only update)
+            V = (spk * self.c) + ((1 - spk) * V)
+            # (reset recovery) or (update currents)
+            u = (spk * (u + self.d)) + ((1 - spk) * u)
+
+        self.state = self.NeuronState(V=V, u=u, spk=spk)
+
+        return spk
+
+    def reset(self):
+        self.state = self.NeuronState(
+            V=torch.ones(1, self.N, device=self.device) * self.c,
+            u=torch.zeros(
+                1, self.N, device=self.device) * self.b*self.c,
+            spk=torch.zeros(1, self.N, device=self.device)
+        )
+
+
+class LIF_neuron(nn.Module):
+    NeuronState = namedtuple("NeuronState", ["V", "spk"])
+
+    def __init__(
+            self,
+            nb_inputs,
+            dt=1/1000,
+            beta=1.0,
+            thr=1.0,
+            R=1.0,
+            device='cpu'
+    ):
+        super(LIF_neuron, self).__init__()
+
+        self.nb_inputs = nb_inputs
+        self.beta = beta
+        self.threshold = thr
+        # self.V_rest = -0.04  # -40mV
+        self.R = R
+        self.dt = dt
+
+        self.device = device
+
+        self.state = self.NeuronState(
+            V=torch.zeros(1, self.nb_inputs, device=self.device),
+            spk=torch.zeros(1, self.nb_inputs, device=self.device),
+        )
+
+    def forward(self, input):
+
+        V = self.state.V
+        spk = self.state.spk
+
+        # V = (self.beta * V + (1.0-self.beta) * input * self.R) * (1.0 - spk)
+        V = (self.beta * V + input * self.R) * \
+            (1.0 - spk)  # reset mechanism: zero
+        spk = spike_fn(V-self.threshold)
+
+        self.state = self.NeuronState(V=V, spk=spk)
+
+        return spk
+
+    def reset(self):
+        self.state = self.NeuronState(
+            V=torch.zeros(1, self.nb_inputs, device=self.device),
+            spk=torch.zeros(1, self.nb_inputs, device=self.device),
+        )
+
+
+class MN_neuron(nn.Module):
+    NeuronState = namedtuple("NeuronState", ["V", "i1", "i2", "Thr", "spk"])
+
+    def __init__(
+        self,
+        nb_inputs,
+        dt=1 / 1000,
+        a=5,
+        A1=10,
+        A2=-0.6,
+        b=10,
+        G=50,
+        k1=200,
+        k2=20,
+        R1=0,
+        R2=1,
+        device='cpu'
+    ):  # default combination: M2O of the original paper
+        super(MN_neuron, self).__init__()
+
+        # One-to-one synapse
+        self.linear = nn.Parameter(torch.ones(
+            1, nb_inputs))
+        self.N = nb_inputs
+        one2N_matrix = torch.ones(1, nb_inputs)
+        # define some constants
+        self.C = 1
+        self.EL = -0.07  # V
+        self.Vr = -0.07  # V
+        self.Tr = -0.06  # V
+        self.Tinf = -0.05  # V
+
+        # define parameters
+        self.a = a
+        self.A1 = A1
+        self.A2 = A2
+        self.b = b  # 1/s
+        self.G = G * self.C  # 1/s
+        self.k1 = k1  # 1/s
+        self.k2 = k2  # 1/s
+        self.R1 = R1  # not Ohm?
+        self.R2 = R2  # not Ohm?
+        self.dt = dt  # get dt from sample rate!
+
+        # set up missing parameters
+        self.a = nn.Parameter(one2N_matrix * self.a)
+        self.A1 = nn.Parameter(one2N_matrix * self.A1 *
+                               self.C)
+        self.A2 = nn.Parameter(one2N_matrix * self.A2 *
+                               self.C)
+
+        self.device = device
+        self.state = self.NeuronState(
+            V=torch.ones(1, self.N, device=self.device) * self.EL,
+            i1=torch.zeros(1, self.N, device=self.device),
+            i2=torch.zeros(1, self.N, device=self.device),
+            Thr=torch.ones(1, self.N, device=self.device) * self.Tinf,
+            spk=torch.zeros(1, self.N, device=self.device),
+        )
+
+    def forward(self, input):
+        V = self.state.V
+        i1 = self.state.i1
+        i2 = self.state.i2
+        Thr = self.state.Thr
+
+        i1 += -self.k1 * i1 * self.dt
+        i2 += -self.k2 * i2 * self.dt
+        V += self.dt * (self.linear * input + i1 + i2 -
+                        self.G * (V - self.EL)) / self.C
+        Thr += self.dt * (self.a * (V - self.EL) - self.b * (Thr - self.Tinf))
+
+        spk = spike_fn(V - Thr)
+
+        i1 = (1 - spk) * i1 + (spk) * (self.R1 * i1 + self.A1)
+        i2 = (1 - spk) * i2 + (spk) * (self.R2 * i2 + self.A2)
+        Thr = ((1 - spk) * Thr) + \
+            ((spk) * torch.max(Thr, torch.tensor(self.Tr, device=self.device)))
+        V = ((1 - spk) * V) + ((spk) * self.Vr)
+
+        self.state = self.NeuronState(V=V, i1=i1, i2=i2, Thr=Thr, spk=spk)
+
+        return spk
+
+    def reset(self):
+        self.state = self.NeuronState(
+            V=torch.ones(1, self.N, device=self.device) * self.EL,
+            i1=torch.zeros(1, self.N, device=self.device),
+            i2=torch.zeros(1, self.N, device=self.device),
+            Thr=torch.ones(1, self.N, device=self.device) * self.Tinf,
+            spk=torch.zeros(1, self.N, device=self.device),
+        )

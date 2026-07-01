@@ -39,6 +39,91 @@ Examples of sigma-delta files are:
 Use `--input_data_path` if your data lives somewhere else. The path should end
 with a trailing slash, for example `--input_data_path ./data/100Hz/`.
 
+## Encoding Generation
+
+Use `scripts/event_transform.py` to generate encoded datasets from raw tactile
+trials before training or standalone analysis.
+
+Supported encoding modes:
+- `mechanoreceptor`: FA-I and SA-II spike streams.
+- `sigma_delta`: ON and OFF spike streams.
+- `neuron_model`: spike streams from one selected neuron model.
+
+Show all options:
+
+```bash
+python scripts/event_transform.py --help
+```
+
+Generate mechanoreceptor-encoded data:
+
+```bash
+python scripts/event_transform.py \
+  --encoding-type mechanoreceptor
+```
+
+Generate sigma-delta-encoded data:
+
+```bash
+python scripts/event_transform.py \
+  --encoding-type sigma_delta
+```
+
+Generate neuron-model-encoded data (with configurable upsampling):
+
+```bash
+python scripts/event_transform.py \
+  --encoding-type neuron_model \
+  --neuron-model MN_neuron \
+  --upsample-strategy linear \
+  --upsample-dt-s 0.001
+```
+
+Common encoding CLI options:
+- `--data-path`: input folder for source tactile files (default `data/100Hz`).
+- `--data-files`: one or more input files relative to `--data-path`.
+- `--output-path`: explicit output pickle path override.
+
+Default output filenames (inside `--data-path`):
+- `mechanoreceptor_encoded.pkl`
+- `sigma_delta_encoded.pkl`
+- `<NEURON_MODEL>_encoded.pkl` for neuron-model mode, for example
+  `MN_neuron_encoded.pkl`
+
+## Encoded Data Analysis
+
+Use `scripts/analyse_encoding.py` to visualize all encoded files created by
+`event_transform.py`.
+
+Analyze all encoded files in `data/100Hz`:
+
+```bash
+python scripts/analyse_encoding.py
+```
+
+Customize input/output and sampling:
+
+```bash
+python scripts/analyse_encoding.py \
+  --data-path data/100Hz \
+  --pattern "*_encoded.pkl" \
+  --samples-per-letter 5 \
+  --output-root figures/encoding_analysis
+```
+
+What the analysis script does:
+- Scans encoded pickle files by glob pattern.
+- Infers schema from keys (`fa/sa`, `ON/OFF`, or `spikes`).
+- Samples trials per letter and generates per-sample plots.
+- Writes figures to `figures/encoding_analysis/<encoded_file_stem>/`.
+
+When using the project virtual environment directly, run:
+
+```bash
+/home/username/.virtualenvs/pytorch/bin/python scripts/event_transform.py --help
+/home/username/.virtualenvs/pytorch/bin/python scripts/analyse_encoding.py --help
+```
+
 ## Installation
 
 Create and activate a Python environment, then install dependencies:

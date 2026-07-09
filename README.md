@@ -86,6 +86,10 @@ python scripts/event_transform.py \
   --upsample-dt-s 0.001
 ```
 
+For neuron-model encoding, `--upsample-dt-s` is also passed to the neuron model
+as its simulation `dt` in seconds, so data availability and neuron dynamics use
+the same timestep. `IZ_neuron` converts that value to milliseconds internally.
+
 Common encoding CLI options:
 - `--data-path`: input folder for source tactile files (default `data/100Hz`).
 - `--data-files`: one or more input files relative to `--data-path`.

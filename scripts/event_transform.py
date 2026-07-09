@@ -64,7 +64,7 @@ def get_default_neuron_params(model_name: str) -> dict:
     signature = inspect.signature(model_class.__init__)
     defaults = {}
     for name, parameter in signature.parameters.items():
-        if name in {"self", "nb_inputs", "device"}:
+        if name in {"self", "nb_inputs", "device", "dt"}:
             continue
         if parameter.default is inspect.Parameter.empty:
             continue
@@ -101,6 +101,11 @@ def parse_neuron_param_assignments(assignments: list[str], model_name: str) -> d
         name, raw_value = assignment.split("=", 1)
         name = name.strip()
         raw_value = raw_value.strip()
+        if name == "dt":
+            raise ValueError(
+                "Neuron-model dt is controlled by --upsample-dt-s so data "
+                "sampling and neuron dynamics stay coupled."
+            )
         if name not in defaults:
             valid = ", ".join(defaults)
             raise ValueError(
@@ -535,13 +540,22 @@ def update_trial_duration_bounds(
     return longest_trial, shortest_trial
 
 
-def build_neuron_model(model_name: str, nb_inputs: int, neuron_params: dict | None = None):
+def build_neuron_model(
+    model_name: str,
+    nb_inputs: int,
+    neuron_params: dict | None = None,
+    dt_s: float | None = None,
+):
     """Create a neuron model instance for the configured model name."""
     if model_name not in NEURON_MODEL_CLASSES:
         raise ValueError(f"Unknown neuron model: {model_name}")
-    return NEURON_MODEL_CLASSES[model_name](
+    model_class = NEURON_MODEL_CLASSES[model_name]
+    params = dict(neuron_params or {})
+    if dt_s is not None and "dt" in inspect.signature(model_class.__init__).parameters:
+        params["dt"] = dt_s
+    return model_class(
         nb_inputs=nb_inputs,
-        **(neuron_params or {}),
+        **params,
     )
 
 
@@ -741,18 +755,18 @@ def main() -> None:
             longest_trial, shortest_trial = update_trial_duration_bounds(
                 timestamps, longest_trial, shortest_trial
             )
-            spikes = []
-            neuron_model = build_neuron_model(
-                NEURON_MODEL,
-                nb_inputs=len(taxels[0]),
-                neuron_params=NEURON_MODEL_PARAMS,
-            )
-
             timestamps, taxels = upsample_taxel_trial(
                 timestamps=timestamps,
                 taxels=taxels,
                 dt_s=UPSAMPLE_DT_S,
                 strategy=UPSAMPLE_STRATEGY,
+            )
+            spikes = []
+            neuron_model = build_neuron_model(
+                NEURON_MODEL,
+                nb_inputs=len(taxels[0]),
+                neuron_params=NEURON_MODEL_PARAMS,
+                dt_s=UPSAMPLE_DT_S,
             )
 
             # let us now normalize the taxel values to be in the range [0, 1] for the neuron model

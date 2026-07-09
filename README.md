@@ -55,6 +55,13 @@ Show all options:
 python scripts/event_transform.py --help
 ```
 
+Run a guided prompt that asks only the follow-up options relevant to the
+selected encoding:
+
+```bash
+python scripts/event_transform.py --interactive
+```
+
 Generate mechanoreceptor-encoded data:
 
 ```bash
@@ -95,6 +102,12 @@ Default output filenames (inside `--data-path`):
 Use `scripts/analyse_encoding.py` to visualize all encoded files created by
 `event_transform.py`.
 
+Run a guided prompt to select data path, file pattern, and plotting options:
+
+```bash
+python scripts/analyse_encoding.py --interactive
+```
+
 Analyze all encoded files in `data/100Hz`:
 
 ```bash
@@ -122,6 +135,8 @@ When using the project virtual environment directly, run:
 ```bash
 /home/username/.virtualenvs/pytorch/bin/python scripts/event_transform.py --help
 /home/username/.virtualenvs/pytorch/bin/python scripts/analyse_encoding.py --help
+/home/username/.virtualenvs/pytorch/bin/python scripts/event_transform.py --interactive
+/home/username/.virtualenvs/pytorch/bin/python scripts/analyse_encoding.py --interactive
 ```
 
 ## Installation

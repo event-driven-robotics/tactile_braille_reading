@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pattern",
         type=str,
-        default="*_encoded.pkl",
+        default="*_encoded*.pkl",
         help="Glob pattern for encoded files",
     )
     parser.add_argument(
@@ -178,6 +178,11 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def stem_matches_encoded_family(path: Path, family_stem: str) -> bool:
+    """Return True for the base encoded file and subset-suffixed variants."""
+    return path.stem == family_stem or path.stem.startswith(f"{family_stem}_")
+
+
 def filter_encoded_files(
     encoded_files: list[Path],
     encoding_type: str,
@@ -188,17 +193,29 @@ def filter_encoded_files(
         return encoded_files
 
     if encoding_type == "mechanoreceptor":
-        return [f for f in encoded_files if f.stem == "mechanoreceptor_encoded"]
+        return [
+            f for f in encoded_files
+            if stem_matches_encoded_family(f, "mechanoreceptor_encoded")
+        ]
 
     if encoding_type == "sigma_delta":
-        return [f for f in encoded_files if f.stem == "sigma_delta_encoded"]
+        return [
+            f for f in encoded_files
+            if stem_matches_encoded_family(f, "sigma_delta_encoded")
+        ]
 
     known_non_neuron = {"mechanoreceptor_encoded", "sigma_delta_encoded"}
-    neuron_files = [f for f in encoded_files if f.stem not in known_non_neuron]
+    neuron_files = [
+        f for f in encoded_files
+        if not any(stem_matches_encoded_family(f, stem) for stem in known_non_neuron)
+    ]
 
     if neuron_model:
         target_stem = f"{neuron_model}_encoded"
-        neuron_files = [f for f in neuron_files if f.stem == target_stem]
+        neuron_files = [
+            f for f in neuron_files
+            if stem_matches_encoded_family(f, target_stem)
+        ]
 
     return neuron_files
 
@@ -363,9 +380,24 @@ def analyze_one_file(
     with encoded_file.open("rb") as f:
         out_dict = pkl.load(f)
 
+    if not isinstance(out_dict, dict):
+        print(
+            f"Skipping {encoded_file.name}: expected a dictionary, "
+            f"got {type(out_dict).__name__}."
+        )
+        return
+
     schema = infer_schema(out_dict)
     if schema == "unknown":
         print(f"Skipping {encoded_file.name}: unsupported schema keys {list(out_dict.keys())}")
+        return
+
+    missing_keys = [
+        key for key in ["letter", "taxel_data", "timestamps"]
+        if key not in out_dict
+    ]
+    if missing_keys:
+        print(f"Skipping {encoded_file.name}: missing keys {missing_keys}")
         return
 
     letters_list = out_dict["letter"]
@@ -439,10 +471,14 @@ if __name__ == "__main__":
 
     rng = np.random.default_rng(args.seed)
 
-    # Only collapse into one directory name when one logical target was requested.
-    output_subdir = args.output_name if args.encoding_type != "all" else None
-
     for encoded_file in encoded_files:
+        # Use one custom folder only when there is a single target; otherwise keep
+        # one folder per file so subset-suffixed outputs do not overwrite each other.
+        output_subdir = (
+            args.output_name
+            if args.encoding_type != "all" and len(encoded_files) == 1
+            else None
+        )
         analyze_one_file(
             encoded_file=encoded_file,
             output_root=args.output_root,

@@ -119,7 +119,7 @@ Customize input/output and sampling:
 ```bash
 python scripts/analyse_encoding.py \
   --data-path data/100Hz \
-  --pattern "*_encoded.pkl" \
+  --pattern "*_encoded*.pkl" \
   --samples-per-letter 5 \
   --output-root figures/encoding_analysis
 ```

@@ -439,6 +439,13 @@ def _prepare_layers_for_inference(resume_path, params):
     return layers
 
 
+class _ExcludeFileOnlyRecords(logging.Filter):
+    """Keep records intended only for the logfile off the terminal."""
+
+    def filter(self, record):
+        return not getattr(record, 'file_only', False)
+
+
 def setup_logger(log_dir, run_id, log_level='INFO'):
     """
     Configure logging to write to both console and file.
@@ -461,6 +468,7 @@ def setup_logger(log_dir, run_id, log_level='INFO'):
     logger = logging.getLogger('braille_training')
     log_level_enum = getattr(logging, log_level.upper())
     logger.setLevel(log_level_enum)
+    logger.propagate = False
 
     # Remove any existing handlers
     logger.handlers = []
@@ -481,6 +489,7 @@ def setup_logger(log_dir, run_id, log_level='INFO'):
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(log_level_enum)
     console_handler.setFormatter(console_formatter)
+    console_handler.addFilter(_ExcludeFileOnlyRecords())
     logger.addHandler(console_handler)
 
     return logger

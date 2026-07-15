@@ -565,7 +565,7 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
         accs_hist_batches = []
         pbar_batches = tqdm(generator, position=2,
                             total=len(generator), leave=False)
-        for x_local, y_local in pbar_batches:
+        for batch_index, (x_local, y_local) in enumerate(pbar_batches, start=1):
             x_local, y_local = x_local.to(
                 params['device']), y_local.to(params['device'])
 
@@ -775,8 +775,21 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
             # Update batch progress bar with current and running average accuracy
             current_acc = train_acc_per_batch * 100
             running_avg_acc = np.mean(accs_hist_batches) * 100
-            pbar_batches.set_description(
-                f"Batch acc: {current_acc:.1f}%, Running avg: {running_avg_acc:.1f}%")
+            batch_status = (
+                f"Batch acc: {current_acc:.1f}%, "
+                f"Running avg: {running_avg_acc:.1f}%"
+            )
+            pbar_batches.set_description(batch_status)
+            logger.info(
+                "Epoch %d/%d, batch %d/%d - %s, Loss: %.6f",
+                count_epoch + 1,
+                params['epochs'],
+                batch_index,
+                len(generator),
+                batch_status,
+                loss_val.item(),
+                extra={'file_only': True},
+            )
 
             # Free up memory by deleting large intermediate tensors
             # del spk_rec_readout, recs, spk_rec_hidden, m, am
@@ -800,8 +813,17 @@ def train(params: dict, dataset: TensorDataset, layers: list, vars_eprop: list,
             # Save copies of the layer objects using our custom copy function
             best_acc_layers = copy_layers(layers)
 
-        pbar_training.set_description("Train {:.2f}%, Test {:.2f}%".format(
-            accs_hist_epochs[0][-1]*100, accs_hist_epochs[1][-1]*100))
+        epoch_status = "Train {:.2f}%, Test {:.2f}%".format(
+            accs_hist_epochs[0][-1]*100, accs_hist_epochs[1][-1]*100)
+        pbar_training.set_description(epoch_status)
+        logger.info(
+            "Epoch %d/%d complete - %s, Mean loss: %.6f",
+            count_epoch,
+            params['epochs'],
+            epoch_status,
+            mean_loss_per_epoch,
+            extra={'file_only': True},
+        )
 
         # Early stopping: check if training is not improving in initial epochs
         if params.get('early_stop_epochs', 0) > 0 and count_epoch <= params['early_stop_epochs']:

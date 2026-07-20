@@ -28,6 +28,11 @@ Date: January 15, 2026
 """
 
 import logging
+import os
+import resource
+import sys
+import time
+from functools import wraps
 from typing import cast
 import numpy as np
 import torch
@@ -47,6 +52,109 @@ logger = logging.getLogger('braille_training')
 # existing --gamma option can retain its meaning for BPTT and Frenkel's
 # implementation-defined STE without adding another CLI argument.
 BELLEC_PSEUDO_DERIVATIVE_DAMPENING = 0.3
+
+
+def _process_rss_bytes() -> int:
+    """Return the current process resident memory, falling back to peak RSS."""
+    try:
+        with open('/proc/self/statm', encoding='ascii') as statm:
+            resident_pages = int(statm.read().split()[1])
+        return resident_pages * os.sysconf('SC_PAGE_SIZE')
+    except (OSError, ValueError, IndexError):
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports KiB; macOS and some BSDs report bytes.
+        return int(peak_rss * 1024 if sys.platform.startswith('linux') else peak_rss)
+
+
+def _format_bytes(value: int) -> str:
+    """Format a byte count using binary units."""
+    amount = float(value)
+    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB'):
+        if amount < 1024.0 or unit == 'TiB':
+            return f"{amount:.1f} {unit}"
+        amount /= 1024.0
+    raise AssertionError("unreachable")
+
+
+class _PerformanceTracker:
+    """Collect lightweight process and CUDA statistics for debug logs."""
+
+    def __init__(self, device: torch.device | str):
+        self.device = torch.device(device)
+        self.cuda_enabled = self.device.type == 'cuda' and torch.cuda.is_available()
+        self.wall_start = time.perf_counter()
+        self.cpu_start = time.process_time()
+
+    def reset(self) -> None:
+        if self.cuda_enabled:
+            torch.cuda.synchronize(self.device)
+        self.wall_start = time.perf_counter()
+        self.cpu_start = time.process_time()
+
+    def summary(self, samples: int) -> str:
+        if self.cuda_enabled:
+            torch.cuda.synchronize(self.device)
+        wall_seconds = time.perf_counter() - self.wall_start
+        cpu_seconds = time.process_time() - self.cpu_start
+        return self._format_summary(wall_seconds, cpu_seconds, samples)
+
+    def summary_since(
+        self,
+        wall_start: float,
+        cpu_start: float,
+        samples: int,
+    ) -> str:
+        """Summarize an interval without resetting the batch timer."""
+        if self.cuda_enabled:
+            torch.cuda.synchronize(self.device)
+        return self._format_summary(
+            time.perf_counter() - wall_start,
+            time.process_time() - cpu_start,
+            samples,
+        )
+
+    def _format_summary(
+        self,
+        wall_seconds: float,
+        cpu_seconds: float,
+        samples: int,
+    ) -> str:
+        fields = [
+            f"wall={wall_seconds:.3f}s",
+            f"throughput={samples / wall_seconds:.1f} samples/s" if wall_seconds > 0 else "throughput=n/a",
+            f"process_cpu={100.0 * cpu_seconds / wall_seconds:.1f}%" if wall_seconds > 0 else "process_cpu=n/a",
+            f"process_rss={_format_bytes(_process_rss_bytes())}",
+        ]
+        if self.cuda_enabled:
+            free_memory, total_memory = torch.cuda.mem_get_info(self.device)
+            fields.extend([
+                f"gpu_allocated={_format_bytes(torch.cuda.memory_allocated(self.device))}",
+                f"gpu_reserved={_format_bytes(torch.cuda.memory_reserved(self.device))}",
+                f"gpu_peak_allocated={_format_bytes(torch.cuda.max_memory_allocated(self.device))}",
+                f"gpu_peak_reserved={_format_bytes(torch.cuda.max_memory_reserved(self.device))}",
+                f"gpu_free={_format_bytes(free_memory)}",
+                f"gpu_total={_format_bytes(total_memory)}",
+            ])
+            try:
+                fields.append(f"gpu_utilization={torch.cuda.utilization(self.device)}%")
+            except (AttributeError, RuntimeError, ModuleNotFoundError):
+                # Utilization needs optional NVML support on some PyTorch builds.
+                pass
+        return ", ".join(fields)
+
+
+def _file_only_during_training(func):
+    """Mark the logger as training-active and restore its state afterward."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        previous_training_state = getattr(logger, '_training_active', False)
+        logger._training_active = True
+        try:
+            return func(*args, **kwargs)
+        finally:
+            logger._training_active = previous_training_state
+
+    return wrapped
 
 
 def _normalize_eprop_mode(mode: str) -> str:
@@ -435,6 +543,7 @@ def build_and_train(params: dict, ds_train: TensorDataset, ds_test: TensorDatase
     return loss_hist_epochs, accs_hist_epochs, best_layers, eprop_decays, initial_weights
 
 
+@_file_only_during_training
 def train(params: dict, dataset: TensorDataset, layers: list,
           dataset_test: TensorDataset | None = None) -> tuple:
     """
@@ -567,6 +676,9 @@ def train(params: dict, dataset: TensorDataset, layers: list,
     - Test accuracy computed on full test set after each epoch
     - Best model saved based on test accuracy (not training accuracy)
     - Progress displayed via nested tqdm bars (epochs and batches)
+    - Debug mode logs batch/epoch timing, throughput, CPU time, process RSS,
+      and available CUDA memory/utilization statistics
+    - All messages emitted during batch/epoch processing are logfile-only
 
     **Prediction Logic:**
     - Uses compute_winning_neuron() for consistent winner-take-all selection
@@ -597,6 +709,13 @@ def train(params: dict, dataset: TensorDataset, layers: list,
     """
     if dataset_test is None:
         raise ValueError("dataset_test must be provided.")
+
+    # Training messages must never redraw or interrupt the nested tqdm bars.
+    train_logger = logging.LoggerAdapter(logger, {'file_only': True})
+    debug_performance = params.get('debug', False)
+    performance = _PerformanceTracker(params['device']) if debug_performance else None
+    if performance is not None and performance.cuda_enabled:
+        torch.cuda.reset_peak_memory_stats(performance.device)
 
     all_weights = [
         ("rec_ff_weights", layers[0].ff_weights),
@@ -629,6 +748,9 @@ def train(params: dict, dataset: TensorDataset, layers: list,
         weights, lr=params["learning_rate"], betas=(0.9, 0.995))
     count_epoch = 0
     for _ in pbar_training:
+        epoch_started = time.perf_counter()
+        epoch_cpu_started = time.process_time()
+        epoch_samples = 0
         # learning rate decreases over epochs
         # if e > nb_epochs/2:
         #     lr = lr * 0.9
@@ -638,6 +760,8 @@ def train(params: dict, dataset: TensorDataset, layers: list,
         pbar_batches = tqdm(generator, position=2,
                             total=len(generator), leave=False)
         for batch_index, (x_local, y_local) in enumerate(pbar_batches, start=1):
+            if performance is not None:
+                performance.reset()
             x_local, y_local = x_local.to(
                 params['device']), y_local.to(params['device'])
 
@@ -740,7 +864,7 @@ def train(params: dict, dataset: TensorDataset, layers: list,
                     torch.mean(torch.sum(spk_rec_hidden, 1))
                 # L1 loss on total number of spikes (output layer)
                 # reg_loss += params['reg_spikes']*torch.mean(torch.sum(spk_rec_readout, 1))
-                logger.debug(f"L1: {reg_loss}")
+                train_logger.debug(f"L1: {reg_loss}")
                 # reg_loss += params['reg_neurons']*torch.mean(torch.sum(torch.sum(spks1,dim=0),dim=0)**2) # e.g., L2 loss on total number of spikes (original)
                 # L2 loss on spikes per neuron (hidden layer 1)
                 reg_loss += params['reg_neurons'] * \
@@ -749,7 +873,7 @@ def train(params: dict, dataset: TensorDataset, layers: list,
                 # L2 loss on spikes per neuron (output layer)
                 # reg_loss += params['reg_neurons'] * \
                 #     torch.mean(torch.sum(torch.sum(spk_rec_readout, dim=0), dim=0)**2)
-                logger.debug(f"L1 + L2: {reg_loss}")
+                train_logger.debug(f"L1 + L2: {reg_loss}")
                 # Here we combine supervised loss and the regularizer
                 loss_val = loss_fn(log_p_y, y_local) + reg_loss
                 # BPTT: standard backpropagation
@@ -764,31 +888,31 @@ def train(params: dict, dataset: TensorDataset, layers: list,
                         grad_norm = param.grad.norm().item()
                         grad_nan = torch.isnan(param.grad).any().item()
                         grad_inf = torch.isinf(param.grad).any().item()
-                        logger.debug(f"Gradient stats for {name}: norm={grad_norm:.6e}, has_nan={grad_nan}, has_inf={grad_inf}")
+                        train_logger.debug(f"Gradient stats for {name}: norm={grad_norm:.6e}, has_nan={grad_nan}, has_inf={grad_inf}")
                         if grad_nan or grad_inf:
-                            logger.warning(f"Gradient anomaly detected in {name}: nan={grad_nan}, inf={grad_inf}")
+                            train_logger.warning(f"Gradient anomaly detected in {name}: nan={grad_nan}, inf={grad_inf}")
                     else:
-                        logger.debug(f"No gradient for {name} (param.grad is None)")
+                        train_logger.debug(f"No gradient for {name} (param.grad is None)")
                 # Optimizer state (Adamax: learning rate, step)
                 for i, group in enumerate(optimizer.param_groups):
-                    logger.debug(f"Optimizer group {i}: lr={group['lr']}, betas={group['betas']}, eps={group['eps']}")
+                    train_logger.debug(f"Optimizer group {i}: lr={group['lr']}, betas={group['betas']}, eps={group['eps']}")
                 for i, state in enumerate(optimizer.state.values()):
                     if 'step' in state:
-                        logger.debug(f"Optimizer state {i}: step={state['step']}")
+                        train_logger.debug(f"Optimizer state {i}: step={state['step']}")
                 # Loss value anomaly check
                 if isinstance(loss_val, torch.Tensor):
                     loss_nan = torch.isnan(loss_val).item()
                     loss_inf = torch.isinf(loss_val).item()
-                    logger.debug(f"Loss value: {loss_val.item():.6e}, has_nan={loss_nan}, has_inf={loss_inf}")
+                    train_logger.debug(f"Loss value: {loss_val.item():.6e}, has_nan={loss_nan}, has_inf={loss_inf}")
                     if loss_nan or loss_inf:
-                        logger.warning(f"Loss anomaly detected: nan={loss_nan}, inf={loss_inf}")
+                        train_logger.warning(f"Loss anomaly detected: nan={loss_nan}, inf={loss_inf}")
                 # Weight quantization check
                 if params.get('quantize_weights', False):
                     possible_weights = params.get('possible_weights')
                     if possible_weights is not None:
                         for name, param in zip(["rec_ff_weights", "rec_rec_weights", "out_weights"], weights):
                             unique_vals = torch.unique(param.data)
-                            logger.debug(f"Quantized weights for {name}: unique values = {unique_vals.cpu().numpy()}")
+                            train_logger.debug(f"Quantized weights for {name}: unique values = {unique_vals.cpu().numpy()}")
 
             loss_hist_batches.append(loss_val.item())
 
@@ -796,52 +920,52 @@ def train(params: dict, dataset: TensorDataset, layers: list,
             if params['debug'] and count_epoch == 0:
                 acc_before_update = np.mean(
                     (y_local == neuron_idc).detach().cpu().numpy())
-                logger.debug(f"\nDebug - First batch:")
-                logger.debug(
+                train_logger.debug(f"\nDebug - First batch:")
+                train_logger.debug(
                     f"  True labels (y_local): {y_local[:min(10, len(y_local))].cpu().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"  Predictions (neuron_idc): {neuron_idc[:min(10, len(y_local))].cpu().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"  Readout scores (summed over time): {debug_scores[:min(10, len(y_local))].detach().cpu().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"  Label distribution: 0={torch.sum(y_local==0).item()}, 1={torch.sum(y_local==1).item()}")
-                logger.debug(
+                train_logger.debug(
                     f"  Prediction distribution: 0={torch.sum(neuron_idc==0).item()}, 1={torch.sum(neuron_idc==1).item()}")
-                logger.debug(f"  Batch accuracy: {acc_before_update:.4f}")
+                train_logger.debug(f"  Batch accuracy: {acc_before_update:.4f}")
 
                 # Check input data
-                logger.debug(f"\n  Input data statistics:")
-                logger.debug(f"    Shape: {x_local.shape}")
-                logger.debug(
+                train_logger.debug(f"\n  Input data statistics:")
+                train_logger.debug(f"    Shape: {x_local.shape}")
+                train_logger.debug(
                     f"    Total input spikes (first 10 samples): {torch.sum(x_local[:min(10, len(y_local))], dim=(0,1)).cpu().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"    Input spike rate (mean): {x_local.mean().item():.6f}")
 
                 # Check hidden layer
-                logger.debug(f"\n  Hidden layer statistics:")
+                train_logger.debug(f"\n  Hidden layer statistics:")
                 # sum over time: [batch, neurons]
                 hidden_spike_counts = torch.sum(spk_rec_hidden, dim=0)
-                logger.debug(
+                train_logger.debug(
                     f"    Spike count distribution (mean across batch): {hidden_spike_counts.mean(dim=0).cpu().detach().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"    Spike count (min, max): ({hidden_spike_counts.min().item()}, {hidden_spike_counts.max().item()})")
-                logger.debug(
+                train_logger.debug(
                     f"    First 10 samples total spikes: {torch.sum(spk_rec_hidden[:min(10, len(y_local))], dim=(0,1)).cpu().detach().numpy()}")
 
                 # Check output layer
-                logger.debug(f"\n  Output layer statistics:")
-                logger.debug(f"    Weights shape: {layers[1].ff_weights.shape}")
-                logger.debug(
+                train_logger.debug(f"\n  Output layer statistics:")
+                train_logger.debug(f"    Weights shape: {layers[1].ff_weights.shape}")
+                train_logger.debug(
                     f"    Weights mean per neuron: {torch.mean(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"    Weights std per neuron: {torch.std(layers[1].ff_weights, dim=1).detach().cpu().numpy()}")
                 h2_sample = torch.einsum(
                     "abc,cd->abd", (spk_rec_hidden[:min(10, len(y_local))], layers[1].ff_weights.t()))
-                logger.debug(
+                train_logger.debug(
                     f"    Input current (h2) mean per output neuron: {h2_sample.mean(dim=(0,1)).detach().cpu().numpy()}")
-                logger.debug(
+                train_logger.debug(
                     f"    Number of positive weights: neuron0={torch.sum(layers[1].ff_weights[0] > 0).item()}, neuron1={torch.sum(layers[1].ff_weights[1] > 0).item()}")
-                logger.debug("")
+                train_logger.debug("")
 
             # Calculate train accuracy in each batch
             train_acc_per_batch, _, _ = compute_classification_accuracy(
@@ -849,7 +973,7 @@ def train(params: dict, dataset: TensorDataset, layers: list,
             accs_hist_batches.append(train_acc_per_batch)
 
             if params['debug'] and count_epoch == 0:
-                logger.debug(
+                train_logger.debug(
                     f"Train acc after weight update: {train_acc_per_batch*100:.2f}%")
 
             # Update batch progress bar with current and running average accuracy
@@ -860,7 +984,17 @@ def train(params: dict, dataset: TensorDataset, layers: list,
                 f"Running avg: {running_avg_acc:.1f}%"
             )
             pbar_batches.set_description(batch_status)
-            logger.info(
+            epoch_samples += len(y_local)
+            if performance is not None:
+                train_logger.debug(
+                    "Performance epoch %d/%d, batch %d/%d - %s",
+                    count_epoch + 1,
+                    params['epochs'],
+                    batch_index,
+                    len(generator),
+                    performance.summary(len(y_local)),
+                )
+            train_logger.info(
                 "Epoch %d/%d, batch %d/%d - %s, Loss: %.6f",
                 count_epoch + 1,
                 params['epochs'],
@@ -868,7 +1002,6 @@ def train(params: dict, dataset: TensorDataset, layers: list,
                 len(generator),
                 batch_status,
                 loss_val.item(),
-                extra={'file_only': True},
             )
 
             # Free up memory by deleting large intermediate tensors
@@ -896,14 +1029,24 @@ def train(params: dict, dataset: TensorDataset, layers: list,
         epoch_status = "Train {:.2f}%, Test {:.2f}%".format(
             accs_hist_epochs[0][-1]*100, accs_hist_epochs[1][-1]*100)
         pbar_training.set_description(epoch_status)
-        logger.info(
+        train_logger.info(
             "Epoch %d/%d complete - %s, Mean loss: %.6f",
             count_epoch,
             params['epochs'],
             epoch_status,
             mean_loss_per_epoch,
-            extra={'file_only': True},
         )
+        if performance is not None:
+            train_logger.debug(
+                "Performance epoch %d/%d - %s",
+                count_epoch,
+                params['epochs'],
+                performance.summary_since(
+                    epoch_started,
+                    epoch_cpu_started,
+                    epoch_samples,
+                ),
+            )
 
         # Early stopping: check if training is not improving in initial epochs
         if params.get('early_stop_epochs', 0) > 0 and count_epoch <= params['early_stop_epochs']:
@@ -917,12 +1060,12 @@ def train(params: dict, dataset: TensorDataset, layers: list,
             
             # Check if we're still below threshold at the end of the early stopping window
             if count_epoch == params['early_stop_epochs'] and current_train_acc < adaptive_threshold:
-                logger.warning(f"Early stopping triggered at epoch {count_epoch}:")
-                logger.warning(f"  Number of classes: {num_classes}")
-                logger.warning(f"  Chance level: {chance_level*100:.2f}%")
-                logger.warning(f"  Required threshold: {adaptive_threshold*100:.2f}% ({percentage_above_chance:.1f} percentage points above chance)")
-                logger.warning(f"  Training accuracy: {current_train_acc*100:.2f}%")
-                logger.warning(f"  Model appears to have poor weight initialization. Stopping training.")
+                train_logger.warning(f"Early stopping triggered at epoch {count_epoch}:")
+                train_logger.warning(f"  Number of classes: {num_classes}")
+                train_logger.warning(f"  Chance level: {chance_level*100:.2f}%")
+                train_logger.warning(f"  Required threshold: {adaptive_threshold*100:.2f}% ({percentage_above_chance:.1f} percentage points above chance)")
+                train_logger.warning(f"  Training accuracy: {current_train_acc*100:.2f}%")
+                train_logger.warning(f"  Model appears to have poor weight initialization. Stopping training.")
                 # If no best model was saved yet, save current state
                 if len(best_acc_layers) == 0:
                     best_acc_layers = copy_layers(layers)

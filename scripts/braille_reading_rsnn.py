@@ -443,7 +443,12 @@ class _ExcludeFileOnlyRecords(logging.Filter):
     """Keep records intended only for the logfile off the terminal."""
 
     def filter(self, record):
-        return not getattr(record, 'file_only', False)
+        training_active = getattr(
+            logging.getLogger('braille_training'),
+            '_training_active',
+            False,
+        )
+        return not training_active and not getattr(record, 'file_only', False)
 
 
 def setup_logger(log_dir, run_id, log_level='INFO'):

@@ -306,7 +306,7 @@ class feedforward_layer:
                 f"Feedforward weights contain NaN or Inf after initialization!")
         else:
             logger.debug(
-                f"Feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
+                f"Feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std(unbiased=False).item():.6f}")
 
     def reset_refractory_perdiod_counter(self):
         """
@@ -406,15 +406,14 @@ class feedforward_layer:
         - Synaptic dynamics: syn = alpha * syn + input (if alpha > 0)
         - Membrane dynamics: mem = beta * mem + syn (exponential decay)
           or mem = mem - sign(mem)*beta + syn (linear decay)
-        - Refractory period blocks synaptic input when active
+        - Refractory period suppresses spike emission while membrane and
+          synaptic-current integration continue
+        - The current input is integrated into the membrane recorded at the
+          same timestep before spike thresholding
         """
         syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=self.device, dtype=self.dtype)
-        new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                              device=self.device, dtype=self.dtype)
         mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                          device=self.device, dtype=self.dtype)
-        out = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=self.device, dtype=self.dtype)
 
         # always reset the refractory period counter at the beginning of a new forward pass
@@ -424,15 +423,35 @@ class feedforward_layer:
         mem_rec = []
         spk_rec = []
         syn_rec = []
+        refractory_rec = [] if self.ref_per is not None and self.ref_per > 0 else None
 
         # Compute feedforward layer activity
         for t in range(nb_steps):
+            # Integrate the current input into the membrane recorded at this
+            # code-time index, then threshold that membrane.  This convention
+            # makes v[t] depend on x[t] (and, in the recurrent layer below,
+            # z[t-1]) and aligns the forward graph with the e-prop traces.
+            if self.use_synapse:
+                syn = self.alpha * syn + input_activity[:, t]
+                syn_drive = syn
+            else:
+                syn_drive = input_activity[:, t]
+
+            if self.linear_decay:
+                membrane_drive = (mem-torch.sign(mem)*self.beta) + syn_drive
+            else:
+                membrane_drive = self.beta*mem + syn_drive
+
+            if lower_bound is not None:
+                membrane_drive = torch.clamp_min(
+                    membrane_drive, float(lower_bound))
+
             if self.weight_variance is not None:
                 noisy_spike_threshold = torch.normal(mean=torch.tensor(
                     self.spike_threshold), std=torch.tensor(self.weight_variance))
-                mthr = mem - noisy_spike_threshold
+                mthr = membrane_drive - noisy_spike_threshold
             else:
-                mthr = mem - self.spike_threshold
+                mthr = membrane_drive - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
             if self.eprop:
                 # For e-prop, use hard threshold (no gradient needed through spikes)
@@ -445,55 +464,40 @@ class feedforward_layer:
             if self.ref_per is not None and self.ref_per > 0:
                 refractory_mask = self.ref_per_tensor[:out.shape[0],
                                                       :out.shape[1]] > 0
-                out = out.masked_fill(refractory_mask, 0.0)
+            else:
+                refractory_mask = torch.zeros_like(out, dtype=torch.bool)
+            out = out.masked_fill(refractory_mask, 0.0)
 
             rst = out.detach()
 
-            # update the correct counter
+            # Refractoriness suppresses spike emission but does not discard
+            # synaptic input or freeze the membrane.  Biophysically, the
+            # absolute refractory period reflects transient ion-channel
+            # availability rather than a disconnection of the neuron.
             if self.ref_per is not None and self.ref_per > 0:
                 self.update_refractory_perdiod_counter(rst)
-                # take care of last batch
-                mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
-                if self.use_synapse:
-                    new_syn = self.alpha * syn
-                    new_syn[mask] = (self.alpha*syn[mask] +
-                                     input_activity[:, t][mask])
-                    syn_drive = syn
-                else:
-                    syn_drive = torch.zeros_like(syn)
-                    syn_drive[mask] = input_activity[:, t][mask]
-            else:
-                if self.use_synapse:
-                    new_syn = self.alpha*syn + input_activity[:, t]
-                    syn_drive = syn
-                else:
-                    syn_drive = input_activity[:, t]
-
-            if self.linear_decay:
-                # torch.sign returns: 1 if x > 0, -1 if x < 0, and 0 if x == 0
-                membrane_drive = (mem-torch.sign(mem)*self.beta) + syn_drive
-            else:
-                membrane_drive = self.beta*mem + syn_drive
 
             if self.soft_reset:
                 new_mem = membrane_drive - rst * self.spike_threshold
             else:
                 new_mem = membrane_drive * (1.0-rst)
-            if lower_bound:
-                new_mem[new_mem < lower_bound] = lower_bound
 
-            mem_rec.append(mem)
+            mem_rec.append(membrane_drive)
             spk_rec.append(out)
             syn_rec.append(syn_drive)
+            if refractory_rec is not None:
+                refractory_rec.append(refractory_mask)
 
             mem = new_mem
-            if self.use_synapse:
-                syn = new_syn
 
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)
         spk_rec = torch.stack(spk_rec, dim=1)
         syn_rec = torch.stack(syn_rec, dim=1)
+        self.refractory_rec = (
+            torch.stack(refractory_rec, dim=1)
+            if refractory_rec is not None else None
+        )
         if return_syn:
             return spk_rec, mem_rec, syn_rec
         return spk_rec, mem_rec
@@ -638,13 +642,13 @@ class recurrent_layer:
                 f"Recurrent layer feedforward weights contain NaN or Inf after initialization!")
         else:
             logger.debug(
-                f"Recurrent layer feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std().item():.6f}")
+                f"Recurrent layer feedforward weights initialized: mean={self.ff_weights.mean().item():.6f}, std={self.ff_weights.std(unbiased=False).item():.6f}")
         if torch.isnan(self.rec_weights).any() or torch.isinf(self.rec_weights).any():
             logger.debug(
                 f"Recurrent layer recurrent weights contain NaN or Inf after initialization!")
         else:
             logger.debug(
-                f"Recurrent layer recurrent weights initialized: mean={self.rec_weights.mean().item():.6f}, std={self.rec_weights.std().item():.6f}")
+                f"Recurrent layer recurrent weights initialized: mean={self.rec_weights.mean().item():.6f}, std={self.rec_weights.std(unbiased=False).item():.6f}")
 
     def reset_refractory_perdiod_counter(self):
         """
@@ -758,12 +762,13 @@ class recurrent_layer:
         - Synaptic dynamics: syn = alpha * syn + total_input (if alpha > 0)
         - Membrane dynamics: mem = beta * mem + syn (exponential decay)
           or mem = mem - sign(mem)*beta + syn (linear decay)
-        - Refractory period blocks synaptic input when active
+        - Refractory period suppresses spike emission while membrane and
+          synaptic-current integration continue
+        - Current input and the previous recurrent spike are integrated into
+          the membrane recorded at the same timestep before thresholding
         """
         syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=self.device, dtype=self.dtype)
-        new_syn = torch.zeros((input_activity.shape[0], self.nb_neurons),
-                              device=self.device, dtype=self.dtype)
         mem = torch.zeros((input_activity.shape[0], self.nb_neurons),
                           device=self.device, dtype=self.dtype)
         out = torch.zeros((input_activity.shape[0], self.nb_neurons),
@@ -776,6 +781,7 @@ class recurrent_layer:
         mem_rec = []
         spk_rec = []
         syn_rec = []
+        refractory_rec = [] if self.ref_per is not None and self.ref_per > 0 else None
 
         recurrent_weights = self.rec_weights if rec_weights is None else rec_weights
         rec_mask = 1.0 - torch.eye(
@@ -787,15 +793,31 @@ class recurrent_layer:
 
         # Compute recurrent layer activity
         for t in range(nb_steps):
-            # input activity plus last step output activity
+            # Integrate x[t] and the previously emitted z[t-1] into the
+            # membrane recorded as v[t], then threshold v[t] to obtain z[t].
             h1 = input_activity[:, t] + \
                 torch.einsum("ab,bc->ac", (out, recurrent_weights.t()))
+            if self.use_synapse:
+                syn = self.alpha*syn + h1
+                syn_drive = syn
+            else:
+                syn_drive = h1
+
+            if self.linear_decay:
+                membrane_drive = (mem-torch.sign(mem)*self.beta) + syn_drive
+            else:
+                membrane_drive = self.beta*mem + syn_drive
+
+            if lower_bound is not None:
+                membrane_drive = torch.clamp_min(
+                    membrane_drive, float(lower_bound))
+
             if self.weight_variance is not None:
                 noisy_spike_threshold = torch.normal(mean=torch.tensor(
                     self.spike_threshold), std=torch.tensor(self.weight_variance))
-                mthr = mem - noisy_spike_threshold
+                mthr = membrane_drive - noisy_spike_threshold
             else:
-                mthr = mem - self.spike_threshold
+                mthr = membrane_drive - self.spike_threshold
             # Use surrogate gradient for BPTT compatibility
             if self.eprop:
                 # For e-prop, use hard threshold (no gradient needed through spikes)
@@ -808,55 +830,36 @@ class recurrent_layer:
             if self.ref_per is not None and self.ref_per > 0:
                 refractory_mask = self.ref_per_tensor[:out.shape[0],
                                                       :out.shape[1]] > 0
-                out = out.masked_fill(refractory_mask, 0.0)
+            else:
+                refractory_mask = torch.zeros_like(out, dtype=torch.bool)
+            out = out.masked_fill(refractory_mask, 0.0)
 
             rst = out.detach()  # We do not want to backprop through the reset
 
             if self.ref_per is not None and self.ref_per > 0:
                 self.update_refractory_perdiod_counter(rst)
-                # only update the membrane potential if not in refractory period
-                # take care of last batch
-                mask = self.ref_per_tensor[:syn.shape[0], :syn.shape[1]] == 0.0
-                if self.use_synapse:
-                    new_syn = self.alpha * syn
-                    new_syn[mask] = (self.alpha*syn[mask] + h1[mask])
-                    syn_drive = syn
-                else:
-                    syn_drive = torch.zeros_like(syn)
-                    syn_drive[mask] = h1[mask]
-            else:
-                if self.use_synapse:
-                    new_syn = self.alpha*syn + h1
-                    syn_drive = syn
-                else:
-                    syn_drive = h1
-
-            if self.linear_decay:
-                membrane_drive = (mem-torch.sign(mem)*self.beta) + syn_drive
-            else:
-                membrane_drive = self.beta*mem + syn_drive
 
             if self.soft_reset:
                 new_mem = membrane_drive - rst * self.spike_threshold
             else:
                 new_mem = membrane_drive * (1.0-rst)
 
-            if lower_bound:
-                # clamp membrane potential
-                new_mem[new_mem < lower_bound] = lower_bound
-
-            mem_rec.append(mem)
+            mem_rec.append(membrane_drive)
             spk_rec.append(out)
             syn_rec.append(syn_drive)
+            if refractory_rec is not None:
+                refractory_rec.append(refractory_mask)
 
             mem = new_mem
-            if self.use_synapse:
-                syn = new_syn
 
         # Now we merge the recorded membrane potentials into a single tensor
         mem_rec = torch.stack(mem_rec, dim=1)
         spk_rec = torch.stack(spk_rec, dim=1)
         syn_rec = torch.stack(syn_rec, dim=1)
+        self.refractory_rec = (
+            torch.stack(refractory_rec, dim=1)
+            if refractory_rec is not None else None
+        )
         if return_syn:
             return spk_rec, mem_rec, syn_rec
         return spk_rec, mem_rec

@@ -26,6 +26,16 @@ import torch
 from .neuron_models import ste_fn
 
 
+def expand_input_copies(inputs: torch.Tensor, nb_input_copies: int) -> torch.Tensor:
+    """Return the exact presynaptic feature tensor used by the network."""
+    copies = int(nb_input_copies)
+    if copies < 1:
+        raise ValueError(f"nb_input_copies must be >= 1, got {copies}")
+    if copies == 1:
+        return inputs
+    return inputs.tile((1, 1, copies))
+
+
 def compute_winning_neuron(spk_rec_readout: torch.Tensor, params: dict) -> tuple:
     """
     Compute predictions from output spike counts with random tie-breaking.
@@ -155,12 +165,10 @@ def run_snn(inputs: torch.Tensor, layers: list, params: dict) -> tuple:
         rec_rec_weights = rec_layer.rec_weights
         out_ff_weights = ff_layer.ff_weights
 
-    if params["nb_input_copies"] > 1:
-        h1 = torch.einsum(
-            "abc,cd->abd", (inputs.tile((params["nb_input_copies"],)), rec_ff_weights.t()))
-    else:
-        h1 = torch.einsum(
-            "abc,cd->abd", inputs, rec_ff_weights.t())
+    expanded_inputs = expand_input_copies(
+        inputs, params["nb_input_copies"])
+    h1 = torch.einsum(
+        "abc,cd->abd", expanded_inputs, rec_ff_weights.t())
 
     if return_syn:
         spk_rec_hidden, mem_rec_hidden, syn_rec_hidden = rec_layer.compute_activity(

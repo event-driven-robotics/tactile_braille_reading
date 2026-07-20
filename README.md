@@ -273,9 +273,16 @@ taxels as `2 * len(selected_channels)`.
 | --- | --- | --- |
 | `--eprop` | off | Use e-prop instead of BPTT. |
 | `--eprop_mode {frenkel,bellec,experimental,traditional}` | `frenkel` | E-prop variant. Legacy aliases are `experimental=frenkel` and `traditional=bellec`. |
-| `--gamma <float>` | `15.0` | Surrogate gradient scale factor. |
+| `--gamma <float>` | `15.0` | BPTT fast-sigmoid scale and Frenkel triangular STE amplitude. Bellec mode uses its paper-specific fixed pseudo-derivative normalization. |
 
 Default training uses BPTT. `--eprop` switches to the online e-prop path.
+
+BPTT retains the batch-mean `NLLLoss` convention. Bellec and Frenkel e-prop
+instead sum their manual gradients over the batch and all selected error
+timesteps. E-prop learning rates are therefore tied to the configured batch
+size and output window; increasing either generally requires retuning the
+learning rate. The project does not implement or plan ReckOn's per-timestep
+stochastic integer-weight update machinery.
 
 ### Neuron Dynamics
 
@@ -283,8 +290,6 @@ Default training uses BPTT. `--eprop` switches to the online e-prop path.
 | --- | --- | --- |
 | `--tau_mem <float>` | `0.06` | Membrane time constant in seconds. |
 | `--tau_mem_rec <float>` | `0.06` | Recurrent membrane time constant in seconds. |
-| `--tau_trace <float>` | `0.14` | Hidden eligibility trace time constant in seconds. |
-| `--tau_trace_out <float>` | `0.14` | Output trace time constant in seconds. |
 | `--tau_ratio <float>` | `10` | Ratio used for synaptic time constant calculation. |
 | `--ref_per_ms <float>` | `3.0` | Refractory period in milliseconds. |
 | `--ref_per_timesteps <int>` | unset | Deprecated timestep-based refractory override. |
@@ -298,6 +303,12 @@ Default training uses BPTT. `--eprop` switches to the online e-prop path.
 `--ref_per_ms` is the preferred refractory-period interface. If
 `--ref_per_timesteps` is explicitly set, it takes priority and the effective
 millisecond value is derived from `--time_bin_size`.
+
+In both canonical LIF e-prop modes, hidden eligibility uses `tau_mem_rec` and
+the output trace uses `tau_mem`; there are no independent trace-time CLI
+parameters. During refractoriness the model continues integrating membrane and
+synaptic current while suppressing spike emission. Bellec's pseudo-derivative
+is additionally zero on refractory steps.
 
 ### Weights, Trainability, and Regularization
 

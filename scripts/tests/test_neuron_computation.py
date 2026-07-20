@@ -29,12 +29,13 @@ from utils.neuron_models import feedforward_layer, recurrent_layer
 
 
 @pytest.mark.smoke
-def test_feedforward_known_step_response() -> None:
+@pytest.mark.parametrize("eprop", [False, True])
+def test_feedforward_known_step_response(eprop: bool) -> None:
     """Validate exact spike and membrane trajectory for a 1-neuron feedforward case.
 
     Expected behavior:
-    - First timestep integrates input but does not spike.
-    - Second timestep crosses threshold and spikes.
+    - The first timestep integrates its current input and spikes immediately.
+    - Reset is applied to the state carried into the next timestep.
     - Subsequent timesteps remain silent with this setup.
     """
     layer = feedforward_layer(
@@ -44,7 +45,7 @@ def test_feedforward_known_step_response() -> None:
         fwd_weight_scale=1.0,
         alpha=0.0,
         beta=0.0,
-        eprop=True,
+        eprop=eprop,
         linear_decay=False,
         device=torch.device("cpu"),
         dtype=torch.float64,
@@ -57,8 +58,8 @@ def test_feedforward_known_step_response() -> None:
     input_activity = torch.tensor([[[1.2], [0.2], [0.0], [0.0]]], dtype=torch.float64)
     spk_rec, mem_rec = layer.compute_activity(input_activity, nb_steps=4, lower_bound=None)
 
-    expected_spikes = torch.tensor([[[0.0], [1.0], [0.0], [0.0]]], dtype=torch.float64)
-    expected_mem = torch.tensor([[[0.0], [1.2], [0.0], [0.0]]], dtype=torch.float64)
+    expected_spikes = torch.tensor([[[1.0], [0.0], [0.0], [0.0]]], dtype=torch.float64)
+    expected_mem = torch.tensor([[[1.2], [0.2], [0.0], [0.0]]], dtype=torch.float64)
 
     assert torch.equal(spk_rec, expected_spikes), (
         f"Feedforward spikes mismatch\nactual={spk_rec}\nexpected={expected_spikes}"
@@ -69,7 +70,8 @@ def test_feedforward_known_step_response() -> None:
 
 
 @pytest.mark.smoke
-def test_recurrent_diagonal_mask_and_offdiag_propagation() -> None:
+@pytest.mark.parametrize("eprop", [False, True])
+def test_recurrent_diagonal_mask_and_offdiag_propagation(eprop: bool) -> None:
     """Verify recurrent self-connections are masked and off-diagonal propagation works.
 
     The recurrent matrix intentionally contains strong diagonal values. The test
@@ -84,7 +86,7 @@ def test_recurrent_diagonal_mask_and_offdiag_propagation() -> None:
         rec_weight_scale=1.0,
         alpha=0.0,
         beta=0.0,
-        eprop=True,
+        eprop=eprop,
         linear_decay=False,
         device=torch.device("cpu"),
         dtype=torch.float64,
@@ -122,8 +124,8 @@ def test_recurrent_diagonal_mask_and_offdiag_propagation() -> None:
         rec_weights=rec_weights,
     )
 
-    expected_neuron0 = torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0], dtype=torch.float64)
-    expected_neuron1 = torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0], dtype=torch.float64)
+    expected_neuron0 = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0], dtype=torch.float64)
+    expected_neuron1 = torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0], dtype=torch.float64)
 
     assert torch.equal(spk_rec[0, :, 0], expected_neuron0), (
         f"Recurrent neuron0 spikes mismatch\nactual={spk_rec[0, :, 0]}\nexpected={expected_neuron0}"
@@ -131,3 +133,40 @@ def test_recurrent_diagonal_mask_and_offdiag_propagation() -> None:
     assert torch.equal(spk_rec[0, :, 1], expected_neuron1), (
         f"Recurrent neuron1 spikes mismatch\nactual={spk_rec[0, :, 1]}\nexpected={expected_neuron1}"
     )
+
+
+@pytest.mark.smoke
+def test_refractory_neuron_integrates_but_cannot_spike() -> None:
+    """Refractoriness masks spikes without disconnecting membrane input."""
+    layer = feedforward_layer(
+        nb_inputs=1,
+        nb_neurons=1,
+        batch_size=1,
+        fwd_weight_scale=1.0,
+        alpha=0.0,
+        beta=1.0,
+        eprop=True,
+        linear_decay=False,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        ref_per=2,
+        gamma=15.0,
+        spike_threshold=1.0,
+        soft_reset=False,
+    )
+
+    input_activity = torch.tensor(
+        [[[1.2], [0.6], [0.6], [0.0]]], dtype=torch.float64)
+    spk_rec, mem_rec = layer.compute_activity(
+        input_activity, nb_steps=4, lower_bound=None)
+
+    expected_spikes = torch.tensor(
+        [[[1.0], [0.0], [0.0], [1.0]]], dtype=torch.float64)
+    expected_mem = torch.tensor(
+        [[[1.2], [0.6], [1.2], [1.2]]], dtype=torch.float64)
+    expected_refractory = torch.tensor(
+        [[[False], [True], [True], [False]]])
+
+    assert torch.equal(spk_rec, expected_spikes)
+    assert torch.equal(mem_rec, expected_mem)
+    assert torch.equal(layer.refractory_rec.cpu(), expected_refractory)

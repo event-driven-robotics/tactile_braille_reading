@@ -72,7 +72,11 @@ from torch.utils.data import TensorDataset
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from utils.data_loader import load_and_extract
-from utils.train_snn import build_and_train, load_weights_from_model
+from utils.train_snn import (
+    _validate_eprop_decay_mode,
+    build_and_train,
+    load_weights_from_model,
+)
 from utils.validate_snn import (compute_classification_accuracy,
                                 get_network_activity, plot_confusion_matrix,
                                 plot_network_activity,
@@ -195,10 +199,6 @@ def parse_arguments():
                         help='Membrane time constant (seconds)')
     parser.add_argument('--tau_mem_rec', type=float, default=0.06,
                         help='Recurrent membrane time constant (seconds)')
-    parser.add_argument('--tau_trace', type=float, default=0.14,
-                        help='Eligibility trace time constant (seconds)')
-    parser.add_argument('--tau_trace_out', type=float, default=0.14,
-                        help='Output trace time constant (seconds)')
     parser.add_argument('--tau_ratio', type=float, default=10,
                         help='Ratio for tau_syn calculation')
     parser.add_argument('--ref_per_ms', type=float, default=3.0,
@@ -786,6 +786,10 @@ os.makedirs(logs_dir, exist_ok=True)
 
 # Initialize logger (must be done after logs_dir is created)
 logger = setup_logger(logs_dir, run_id, params['log_level'])
+
+# Fail before dataset loading or training if an e-prop configuration uses a
+# decay rule that its multiplicative eligibility recursions do not support.
+_validate_eprop_decay_mode(params, log_success=True)
 logger.info(f"="*80)
 logger.info(f"Braille Reading RSNN Training - Run ID: {run_id}")
 logger.info(f"="*80)
@@ -1308,9 +1312,8 @@ if __name__ == '__main__':
         ##########################################################################
 
         # Build network architecture and train with specified algorithm
-        # Note: params dict is modified in-place by build_and_train() to include:
-        #   - 'beta_trace': Eligibility trace decay for hidden layer (e-prop only)
-        #   - 'beta_trace_out': Eligibility trace decay for output layer (e-prop only)
+        # Canonical LIF e-prop derives its eligibility decays directly from
+        # tau_mem_rec (hidden traces) and tau_mem (readout traces).
         loss_hist_epochs = []
         accs_hist = [[], []]
         initial_weights: dict[str, np.ndarray] | None = None
@@ -1326,7 +1329,7 @@ if __name__ == '__main__':
                 "Inference-only mode: skipping training and running evaluation only.")
         else:
             try:
-                loss_hist_epochs, accs_hist, best_layers, vars_eprop, initial_weights = build_and_train(
+                loss_hist_epochs, accs_hist, best_layers, _eprop_decays, initial_weights = build_and_train(
                     params=params, ds_train=ds_train, ds_test=ds_test, resume_weights=resume_weights)
             except Exception as e:
                 logger.error(

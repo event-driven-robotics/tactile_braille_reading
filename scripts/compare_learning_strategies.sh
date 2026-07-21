@@ -5,20 +5,20 @@
 # Fixed experiment settings:
 #   - letters: A B
 #   - hidden neurons: 50
-#   - epochs: 50
+#   - maximum epochs: 25
+#   - early stopping: require 55% training accuracy by epoch 5
 #   - seed: 42
 #   - debug mode: enabled
 #   - validation split: enabled (used to rank grid configurations)
+#   - batch size: 128
 #
 # Performance-sensitive grid:
 #   - learning rate: 1e-5, 5e-5, 1e-4
-#   - batch size: 32, 128
 #   - surrogate-gradient gamma: 5, 15, 30 (BPTT and Frenkel only)
 #
-# The learning-rate/batch-size grid is intentional: BPTT uses a batch-mean
-# loss, whereas the e-prop implementations sum their manual gradients over the
-# batch and selected error timesteps. Their best learning-rate/batch-size pair
-# therefore should not be assumed to be the same.
+# Learning rate is tuned separately because BPTT uses a batch-mean loss,
+# whereas the e-prop implementations sum their manual gradients over the batch
+# and selected error timesteps.
 #
 # Usage:
 #   ./scripts/compare_learning_strategies.sh
@@ -28,7 +28,6 @@
 #
 # Optional environment overrides for the search grid:
 #   LEARNING_RATES="0.00001 0.00005 0.0001"
-#   BATCH_SIZES="32 128"
 #   GAMMAS="5 15 30"
 
 set -Euo pipefail
@@ -37,13 +36,15 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly TRAINING_SCRIPT="${SCRIPT_DIR}/braille_reading_rsnn.py"
 
-readonly EPOCHS=50
+readonly EPOCHS=25
+readonly EARLY_STOP_EPOCHS=5
+readonly EARLY_STOP_THRESHOLD=5
 readonly NB_HIDDEN=50
 readonly SEED=42
-readonly LETTERS=(A B)
+readonly BATCH_SIZE=128
+readonly LETTERS=(A B C D)
 
 read -r -a LEARNING_RATE_GRID <<< "${LEARNING_RATES:-0.00001 0.00005 0.0001}"
-read -r -a BATCH_SIZE_GRID <<< "${BATCH_SIZES:-32 128}"
 read -r -a GAMMA_GRID <<< "${GAMMAS:-5 15 30}"
 
 DRY_RUN=false
@@ -113,8 +114,8 @@ if ! "$PYTHON_BIN" -c 'import numpy, torch' 2>/dev/null; then
     exit 1
 fi
 
-if ((${#LEARNING_RATE_GRID[@]} == 0 || ${#BATCH_SIZE_GRID[@]} == 0 || ${#GAMMA_GRID[@]} == 0)); then
-    echo "Error: learning-rate, batch-size, and gamma grids must not be empty." >&2
+if ((${#LEARNING_RATE_GRID[@]} == 0 || ${#GAMMA_GRID[@]} == 0)); then
+    echo "Error: learning-rate and gamma grids must not be empty." >&2
     exit 1
 fi
 
@@ -127,7 +128,7 @@ readonly MANIFEST_FILE="${RESULTS_ROOT}/comparison_manifest.tsv"
 readonly SUMMARY_FILE="${RESULTS_ROOT}/comparison_summary.tsv"
 
 readonly STRATEGIES=(bptt bellec frenkel)
-readonly TOTAL_CONFIGS=$((${#LEARNING_RATE_GRID[@]} * ${#BATCH_SIZE_GRID[@]} * (2 * ${#GAMMA_GRID[@]} + 1)))
+readonly TOTAL_CONFIGS=$((${#LEARNING_RATE_GRID[@]} * (2 * ${#GAMMA_GRID[@]} + 1)))
 
 if [[ "$DRY_RUN" == false ]]; then
     mkdir -p "$RESULTS_ROOT" "$MODELS_ROOT" "$FIGURES_ROOT" "$LOGS_ROOT"
@@ -137,10 +138,11 @@ fi
 echo "Learning-strategy comparison: $COMPARISON_ID"
 echo "Training script: $TRAINING_SCRIPT"
 echo "Python: $PYTHON_BIN"
-echo "Fixed: letters=${LETTERS[*]}, hidden=$NB_HIDDEN, epochs=$EPOCHS, seed=$SEED, debug=true"
+echo "Fixed: letters=${LETTERS[*]}, hidden=$NB_HIDDEN, max_epochs=$EPOCHS, seed=$SEED, batch_size=$BATCH_SIZE, debug=true"
+echo "Early stopping: epoch=$EARLY_STOP_EPOCHS, threshold=${EARLY_STOP_THRESHOLD}pp above chance (55% for A/B)"
 echo "Selection: validation split enabled; configurations ranked by val_acc"
 echo "Fixed for fairness: reg_spikes=0, reg_neurons=0"
-echo "Grid: learning_rate=${LEARNING_RATE_GRID[*]}, batch_size=${BATCH_SIZE_GRID[*]}"
+echo "Learning-rate grid: ${LEARNING_RATE_GRID[*]}"
 echo "Gamma grid (BPTT/Frenkel only): ${GAMMA_GRID[*]}"
 echo "Configurations: $TOTAL_CONFIGS"
 echo "Results root: $RESULTS_ROOT"
@@ -161,79 +163,78 @@ for strategy in "${STRATEGIES[@]}"; do
     fi
 
     for learning_rate in "${LEARNING_RATE_GRID[@]}"; do
-        for batch_size in "${BATCH_SIZE_GRID[@]}"; do
-            for gamma in "${strategy_gamma_grid[@]}"; do
-                ((run_number += 1))
+        for gamma in "${strategy_gamma_grid[@]}"; do
+            ((run_number += 1))
 
-                config_name="${strategy}_lr_${learning_rate}_batch_${batch_size}_gamma_${gamma}"
-                config_results_dir="${RESULTS_ROOT}/${config_name}"
-                config_models_dir="${MODELS_ROOT}/${config_name}"
-                config_figures_dir="${FIGURES_ROOT}/${config_name}"
-                config_logs_dir="${LOGS_ROOT}/${config_name}"
+            config_name="${strategy}_lr_${learning_rate}_batch_${BATCH_SIZE}_gamma_${gamma}"
+            config_results_dir="${RESULTS_ROOT}/${config_name}"
+            config_models_dir="${MODELS_ROOT}/${config_name}"
+            config_figures_dir="${FIGURES_ROOT}/${config_name}"
+            config_logs_dir="${LOGS_ROOT}/${config_name}"
 
-                command=(
-                    "$PYTHON_BIN"
-                    "$TRAINING_SCRIPT"
-                    --letters "${LETTERS[@]}"
-                    --nb_hidden "$NB_HIDDEN"
-                    --epochs "$EPOCHS"
-                    --seed "$SEED"
-                    --debug
-                    --validation
-                    --early_stop_epochs 0
-                    --repetitions 1
-                    --learning_rate "$learning_rate"
-                    --batch_size "$batch_size"
-                    --gamma "$gamma"
-                    --reg_spikes 0
-                    --reg_neurons 0
-                    --results_path "$config_results_dir"
-                    --model_path "$config_models_dir"
-                    --fig_path "$config_figures_dir"
-                    --log_path "$config_logs_dir"
-                    --save_artifacts_for best
-                )
+            command=(
+                "$PYTHON_BIN"
+                "$TRAINING_SCRIPT"
+                --letters "${LETTERS[@]}"
+                --nb_hidden "$NB_HIDDEN"
+                --epochs "$EPOCHS"
+                --seed "$SEED"
+                --debug
+                --validation
+                --early_stop_epochs "$EARLY_STOP_EPOCHS"
+                --early_stop_threshold "$EARLY_STOP_THRESHOLD"
+                --repetitions 1
+                --learning_rate "$learning_rate"
+                --batch_size "$BATCH_SIZE"
+                --gamma "$gamma"
+                --reg_spikes 0
+                --reg_neurons 0
+                --results_path "$config_results_dir"
+                --model_path "$config_models_dir"
+                --fig_path "$config_figures_dir"
+                --log_path "$config_logs_dir"
+                --save_artifacts_for best
+            )
 
-                if [[ -n "$CUDA_ARG" ]]; then
-                    command+=("$CUDA_ARG")
-                fi
+            if [[ -n "$CUDA_ARG" ]]; then
+                command+=("$CUDA_ARG")
+            fi
 
-                case "$strategy" in
-                    bptt)
-                        # BPTT is the default path: do not pass --eprop.
-                        ;;
-                    bellec)
-                        command+=(--eprop --eprop_mode bellec)
-                        ;;
-                    frenkel)
-                        command+=(--eprop --eprop_mode frenkel)
-                        ;;
-                esac
+            case "$strategy" in
+                bptt)
+                    # BPTT is the default path: do not pass --eprop.
+                    ;;
+                bellec)
+                    command+=(--eprop --eprop_mode bellec)
+                    ;;
+                frenkel)
+                    command+=(--eprop --eprop_mode frenkel)
+                    ;;
+            esac
 
-                printf '[%d/%d] %s | lr=%s | batch=%s | gamma=%s\n' \
-                    "$run_number" "$TOTAL_CONFIGS" "$strategy" "$learning_rate" "$batch_size" "$gamma"
+            printf '[%d/%d] %s | lr=%s | batch=%s | gamma=%s\n' \
+                "$run_number" "$TOTAL_CONFIGS" "$strategy" "$learning_rate" "$BATCH_SIZE" "$gamma"
 
-                if [[ "$DRY_RUN" == true ]]; then
-                    printf '  '
-                    printf '%q ' "${command[@]}"
-                    printf '\n\n'
-                    continue
-                fi
+            if [[ "$DRY_RUN" == true ]]; then
+                printf '  '
+                printf '%q ' "${command[@]}"
+                printf '\n\n'
+                continue
+            fi
 
-                if "${command[@]}"; then
-                    status="completed"
-                    echo "Completed: $config_name"
-                else
-                    status="failed"
-                    ((failures += 1))
-                    echo "Failed: $config_name" >&2
-                fi
+            if "${command[@]}"; then
+                status="completed"
+                echo "Completed: $config_name"
+            else
+                status="failed"
+                ((failures += 1))
+                echo "Failed: $config_name" >&2
+            fi
 
-                printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-                    "$strategy" "$learning_rate" "$batch_size" "$gamma" "$status" "$config_results_dir" \
-                    >> "$MANIFEST_FILE"
-                echo
-            done
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$strategy" "$learning_rate" "$BATCH_SIZE" "$gamma" "$status" "$config_results_dir" \
+                >> "$MANIFEST_FILE"
+            echo
         done
     done
 done

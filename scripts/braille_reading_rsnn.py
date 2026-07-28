@@ -147,7 +147,7 @@ def parse_arguments():
     # Path configuration
     parser.add_argument('--fig_path', type=str, default='./figures',
                         help='Path to save figures')
-    parser.add_argument('--model_path', type=str, default='./model',
+    parser.add_argument('--model_path', type=str, default='./models',
                         help='Path to save models')
     parser.add_argument('--results_path', type=str, default='./results',
                         help='Path to save results')
@@ -1335,7 +1335,12 @@ if __name__ == '__main__':
         else:
             try:
                 loss_hist_epochs, accs_hist, best_layers, _eprop_decays, initial_weights = build_and_train(
-                    params=params, ds_train=ds_train, ds_test=ds_test, resume_weights=resume_weights)
+                    params=params,
+                    ds_train=ds_train,
+                    ds_test=ds_test,
+                    resume_weights=resume_weights,
+                    ds_validation=ds_validation if params["validation"] else None,
+                )
             except Exception as e:
                 logger.error(
                     f"Training failed for repetition {repetition + 1}: {str(e)}")

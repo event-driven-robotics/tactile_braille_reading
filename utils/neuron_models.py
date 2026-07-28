@@ -951,8 +951,18 @@ class RA_I_mechanoreceptor():
                 self.last_taxel_value[channel] = taxel_values[channel]
                 continue
 
-            max_events = int(
-                np.floor((current_time - first_allowed) / self.ref_period)) + 1
+            # A zero refractory period means that event generation is not
+            # rate-limited. In that case the threshold-crossing count itself
+            # is the only required cap; dividing by the period would produce
+            # infinity.
+            if self.ref_period == 0:
+                max_events = requested
+            else:
+                max_events = int(
+                    np.floor(
+                        (current_time - first_allowed) / self.ref_period
+                    )
+                ) + 1
             n_events = min(requested, max_events)
             if n_events <= 0:
                 self.last_taxel_value[channel] = taxel_values[channel]

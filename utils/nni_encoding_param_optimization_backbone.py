@@ -34,19 +34,19 @@ DEFAULT_PARAMS: dict[str, int] = {
     "refractory_period_ms": 0,
 }
 
-QUICK_TEST_LETTERS = ("A", "B", "C")
-MIN_TRIALS_PER_CLASS_FOR_THREE_WAY_SPLIT = 10
+QUICK_TEST_LETTERS = ("A", "B", "C")  # sets the letters used for encoding and training. Use all letters for a full experiment.
+TRIALS_PER_CLASS = None  # sets the number of trials per letter class. None uses all available trials for the selected letters. Use a number (e.g., 10) for a quick test.
 
 # These parameters remain fixed during the encoding HPO.
 FIXED_TRAINING_PARAMS: dict[str, Any] = {
     "epochs": 30,
-    "nb_hidden": 25,
+    "nb_hidden": 50,
     # Optional: list of letters to work with.
     "letters": list(QUICK_TEST_LETTERS),
 
     "repetitions": 1,
     "batch_size": 128,
-    "learning_rate": 0.005,
+    "learning_rate": 0.001,
     "seed": 42,
     "validation": True,
     "encoding_type": "mechanoreceptor",
@@ -87,9 +87,10 @@ def build_encoding_config(
 
         letters=QUICK_TEST_LETTERS,
 
-        # A stratified 70/20/10 train/test/validation split needs at least
-        # 10 samples per class so every class can occur in every subset.
-        nb_trials=MIN_TRIALS_PER_CLASS_FOR_THREE_WAY_SPLIT,
+        # None uses every available trial for the selected letters. If this is
+        # capped again, keep at least 10 trials per class so a stratified
+        # 70/20/10 train/validation/test split can represent every class.
+        nb_trials=TRIALS_PER_CLASS,
 
         output_path=output_path,
         save_output=True,
@@ -103,16 +104,16 @@ def train_and_evaluate(
     """
     Train the SNN using a trial-specific encoded pickle file.
 
-    Intermediate results are currently reported after each successful
-    training repetition. Per-epoch reporting would need a callback
-    inside build_and_train().
+    Intermediate results are reported for every validation score observed
+    during training so NNI can show live progress. The final optimization
+    metric still corresponds to the best validation accuracy seen.
     """
 
     reported_metrics: list[AccuracyMetrics] = []
 
     def report_intermediate(metrics: AccuracyMetrics) -> None:
         reported_metrics.append(metrics)
-        nni.report_intermediate_result(metrics)
+        nni.report_intermediate_result(metrics["default"])
 
     final_validation_accuracy = run_training(
         encoded_data_path=encoded_data_path,
@@ -218,15 +219,13 @@ def main() -> None:
 
         print(
             f"Final validation accuracy: {accuracy_metrics['default']:.6f}; "
-            f"training accuracy: {accuracy_metrics['training_accuracy']:.6f}; "
-            f"test accuracy (reporting only): {accuracy_metrics['test_accuracy']:.6f}"
+            f"training accuracy: {accuracy_metrics['training_accuracy']:.6f}. "
+            "Final test performance is kept out of NNI optimization metrics."
         )
 
-        # Report the final result exactly once.
-        nni.report_final_result({
-            **accuracy_metrics,
-            **encoding_stats,
-        })
+        # Keep NNI focused on the single optimization metric. A scalar is
+        # displayed as ``default`` in the web interface.
+        nni.report_final_result(accuracy_metrics["default"])
 
     finally:
         # Remove the temporary encoded file after training.

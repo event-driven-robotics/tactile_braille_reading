@@ -59,7 +59,10 @@ Learning mode:
 - Legacy aliases still accepted: `experimental`, `traditional`
 
 Evaluation/stop behavior:
-- `--validation` switches evaluation target from test set to validation split
+- `--validation` selects models on validation and evaluates the selected model
+  on test; test is not evaluated during training
+- without `--validation`, test also selects the epoch, so the resulting score
+  is a selection-holdout estimate rather than an unbiased test
 - `--early_stop_epochs`, `--early_stop_threshold` adaptive early-stop controls
 
 Artifact policy:

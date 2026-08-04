@@ -33,6 +33,7 @@ import resource
 import sys
 import time
 from functools import wraps
+from collections.abc import Callable
 from typing import cast
 import numpy as np
 import torch
@@ -241,6 +242,7 @@ def build_and_train(
     ds_test: TensorDataset,
     resume_weights: dict[str, np.ndarray] | None = None,
     ds_validation: TensorDataset | None = None,
+    model_callback: Callable[[float, float], None] | None = None,
 ) -> tuple:
     """
     Build and train a recurrent spiking neural network for braille letter classification.
@@ -334,6 +336,12 @@ def build_and_train(
         Validation dataset used exclusively to select the best epoch. When it is
         omitted, the test dataset is used for backward compatibility.
 
+    model_callback : callable or None
+        Optional callback invoked whenever an epoch produces a strictly better
+        selection accuracy. Arguments are selection (normally validation) and
+        training accuracy. The test set is not evaluated during validation-
+        based model selection.
+
     resume_weights : dict or None
         Optional weight dictionary used to initialize the model before training.
         Expected keys: 'rec_ff_weights', 'rec_rec_weights', 'out_weights'.
@@ -347,9 +355,11 @@ def build_and_train(
         - loss_hist_epochs : list of float
             Training loss values per epoch (length: epochs)
         - accs_hist_epochs : list of lists
-            [[train_accuracies], [test_accuracies]] per epoch
+            [[train_accuracies], [selection_accuracies]] per epoch
             Each sublist has length: epochs
             Accuracies are floats in range [0.0, 1.0]
+            ``selection_accuracies`` contains validation accuracy when a
+            validation set is supplied, otherwise test/holdout accuracy.
         - best_layers : list
             [recurrent_layer, feedforward_layer] objects with weights from
             the epoch with highest validation accuracy when a validation set is
@@ -383,9 +393,9 @@ def build_and_train(
     - Returns weights from best epoch, not final epoch
 
     **Performance Tracking:**
-    - Computes best training accuracy and corresponding test accuracy
-    - Computes best test accuracy and corresponding training accuracy
-    - Identifies epochs where best performance occurred
+    - Tracks training accuracy and the model-selection split per epoch
+    - Uses validation for selection when supplied
+    - Uses test/holdout for selection only when validation is unavailable
 
     See Also
     --------
@@ -539,21 +549,8 @@ def build_and_train(
         layers=layers,
         dataset_test=ds_test,
         dataset_validation=ds_validation,
+        model_callback=model_callback,
     )
-
-    # best training and test at best training
-    acc_best_train = np.max(accs_hist_epochs[0])  # returns max value
-    acc_best_train = acc_best_train*100
-
-    # returns index of max value
-    idx_best_train = np.argmax(accs_hist_epochs[0])
-    acc_test_at_best_train = accs_hist_epochs[1][idx_best_train]*100
-
-    # best test and training at best test
-    acc_best_test = np.max(accs_hist_epochs[1])
-    acc_best_test = acc_best_test*100
-    idx_best_test = np.argmax(accs_hist_epochs[1])
-    acc_train_at_best_test = accs_hist_epochs[0][idx_best_test]*100
 
     return loss_hist_epochs, accs_hist_epochs, best_layers, eprop_decays, initial_weights
 
@@ -561,13 +558,15 @@ def build_and_train(
 @_file_only_during_training
 def train(params: dict, dataset: TensorDataset, layers: list,
           dataset_test: TensorDataset | None = None,
-          dataset_validation: TensorDataset | None = None) -> tuple:
+          dataset_validation: TensorDataset | None = None,
+          model_callback: Callable[[float, float], None] | None = None) -> tuple:
     """
-    Train a spiking neural network and evaluate on test data.
+    Train a spiking neural network and evaluate on the model-selection split.
 
     Implements the main training loop for a spiking neural network using either e-prop or BPTT.
     Processes data in batches, computes gradients (via eligibility traces for e-prop or standard
-    backprop for BPTT), updates weights via Adamax optimizer, and tracks training/test performance
+    backprop for BPTT), updates weights via Adamax optimizer, and tracks
+    training/model-selection performance
     over epochs. Supports optional weight quantization, spike regularization, and detailed debugging.
 
     Parameters
@@ -640,6 +639,11 @@ def train(params: dict, dataset: TensorDataset, layers: list,
         Validation dataset used to select the best epoch. If omitted, the test
         dataset is used for backward compatibility.
 
+    model_callback : callable, optional
+        Called after each epoch-level selection accuracy evaluation, with
+        selection (normally validation) and training accuracy. Best-model
+        saving remains tied to the best selection accuracy independently.
+
     Returns
     -------
     tuple
@@ -649,10 +653,10 @@ def train(params: dict, dataset: TensorDataset, layers: list,
             Training loss values per epoch (length: epochs)
             Loss includes NLL loss + regularization (for BPTT only, e-prop computes gradients directly)
         - accs_hist_epochs : list of lists
-            [[train_accuracies], [test_accuracies]] per epoch
+            [[train_accuracies], [selection_accuracies]] per epoch
             train_accuracies: list of float, length: epochs (range [0.0, 1.0])
-            test_accuracies: list of float, length: epochs (range [0.0, 1.0])
-            If dataset_test is None, test_accuracies will be empty lists
+            selection_accuracies: validation accuracies when validation data is
+            supplied, otherwise test/holdout accuracies.
         - best_acc_layers : list
             [recurrent_layer, feedforward_layer] copied layer objects
             Contains weights from the epoch with highest validation accuracy
@@ -692,7 +696,9 @@ def train(params: dict, dataset: TensorDataset, layers: list,
 
     **Performance Tracking:**
     - Training accuracy computed on full training set after each batch
-    - Test accuracy computed on full test set after each epoch for reporting
+    - Validation accuracy is computed after each epoch when available
+    - Without validation, test/holdout accuracy is computed after each epoch
+      and therefore is not an unbiased final-test estimate
     - Best model saved based on validation accuracy when validation is supplied
     - Progress displayed via nested tqdm bars (epochs and batches)
     - Debug mode logs batch/epoch timing, throughput, CPU time, process RSS,
@@ -1039,37 +1045,37 @@ def train(params: dict, dataset: TensorDataset, layers: list,
         if dataset_validation is not None:
             selection_acc_per_epoch, _, _ = compute_classification_accuracy(
                 dataset=dataset_validation, layers=layers, params=params)
-            selection_name = "Validation"
         else:
             selection_acc_per_epoch, _, _ = compute_classification_accuracy(
                 dataset=dataset_test, layers=layers, params=params)
-            selection_name = "Test"
 
+        is_improved_best_metric = (
+            selection_acc_per_epoch > best_selection_acc_per_epoch
+        )
         if selection_acc_per_epoch >= best_selection_acc_per_epoch:
             best_selection_acc_per_epoch = float(selection_acc_per_epoch)
             # Save copies of the layer objects using our custom copy function
             best_acc_layers = copy_layers(layers)
 
         if dataset_validation is not None:
-            # Preserve RNG state so reporting test performance cannot affect
-            # later training epochs (notably when random tie-breaking is on).
-            with torch.random.fork_rng(devices=[]):
-                test_acc_per_epoch, _, _ = compute_classification_accuracy(
-                    dataset=dataset_test, layers=layers, params=params)
             epoch_status = (
-                "Train {:.2f}%, Validation {:.2f}%, Test {:.2f}%".format(
+                "Train {:.2f}%, Validation {:.2f}%".format(
                     accs_hist_epochs[0][-1] * 100,
                     selection_acc_per_epoch * 100,
-                    test_acc_per_epoch * 100,
                 )
             )
         else:
-            test_acc_per_epoch = selection_acc_per_epoch
             epoch_status = "Train {:.2f}%, Test {:.2f}%".format(
                 accs_hist_epochs[0][-1] * 100,
-                test_acc_per_epoch * 100,
+                selection_acc_per_epoch * 100,
             )
-        accs_hist_epochs[1].append(test_acc_per_epoch)
+        accs_hist_epochs[1].append(selection_acc_per_epoch)
+
+        if model_callback is not None:
+            model_callback(
+                float(selection_acc_per_epoch),
+                float(accs_hist_epochs[0][-1]),
+            )
 
         pbar_training.set_description(epoch_status)
         train_logger.info(

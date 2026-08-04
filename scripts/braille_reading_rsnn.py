@@ -979,15 +979,18 @@ if __name__ == '__main__':
 
     loss_hist_repetition = []
     accs_hist_repetition = []
-    eval_acc_repetition = []
-    best_eval_acc: float | None = None
+    selection_acc_repetition = []
+    train_acc_repetition = []
+    test_acc_repetition = []
+    best_selection_acc: float | None = None
+    best_test_acc: float | None = None
     best_repetition: int | None = None
     best_layers_for_traces: list | None = None
     best_ds_train: TensorDataset | None = None
     best_ds_test: TensorDataset | None = None
     best_initial_weights: dict[str, np.ndarray] | None = None
     best_acc_train_hist: np.ndarray | None = None
-    best_acc_test_hist: np.ndarray | None = None
+    best_acc_selection_hist: np.ndarray | None = None
     best_loss_train_hist: np.ndarray | None = None
 
     save_artifacts_mode = params.get('save_artifacts_for', 'best')
@@ -1037,12 +1040,12 @@ if __name__ == '__main__':
 
     def _save_trace_artifacts(
         rep: int,
-        eval_acc_value: float,
+        test_acc_value: float,
         layers_to_save: list,
         ds_train_local: TensorDataset,
         ds_test_local: TensorDataset,
         acc_train_hist_local: np.ndarray | None,
-        acc_test_hist_local: np.ndarray | None,
+        acc_selection_hist_local: np.ndarray | None,
         loss_train_hist_local: np.ndarray | None,
     ) -> None:
         try:
@@ -1097,7 +1100,7 @@ if __name__ == '__main__':
                 run_id=run_id,
                 record_mode=save_artifacts_mode,
                 repetition=rep,
-                eval_acc=float(eval_acc_value),
+                eval_acc=float(test_acc_value),
                 train_acc=float(train_acc_local),
                 test_acc=float(test_acc_local),
                 trues_train=trues_train_array,
@@ -1121,7 +1124,17 @@ if __name__ == '__main__':
                 syn_rec_hidden_test=syn_rec_hidden_test,
                 syn_rec_readout_test=syn_rec_readout_test,
                 acc_train=acc_train_hist_local if acc_train_hist_local is not None else np.array([]),
-                acc_test=acc_test_hist_local if acc_test_hist_local is not None else np.array([]),
+                acc_selection=acc_selection_hist_local if acc_selection_hist_local is not None else np.array([]),
+                acc_validation=(
+                    acc_selection_hist_local
+                    if params["validation"] and acc_selection_hist_local is not None
+                    else np.array([])
+                ),
+                acc_test=(
+                    acc_selection_hist_local
+                    if not params["validation"] and acc_selection_hist_local is not None
+                    else np.array([])
+                ),
                 loss_train=loss_train_hist_local if loss_train_hist_local is not None else np.array([]),
             )
 
@@ -1225,7 +1238,7 @@ if __name__ == '__main__':
         #   - 'time_step': Duration of each simulation timestep (seconds)
         #   - 'delayed_output': Optional parameter for e-prop (final timesteps used for gradient computation)
         try:
-            ds_train, ds_test, ds_validation, labels = load_and_extract(
+            ds_train, ds_validation, ds_test, labels = load_and_extract(
                 params=params, file_name=file_name, letter_written=letters)
         except Exception as e:
             logger.error(f"Failed to load data from {file_name}: {str(e)}")
@@ -1261,10 +1274,10 @@ if __name__ == '__main__':
 
         # Print comprehensive dataset statistics
         logger.info("Number of training samples %i." % len(ds_train))
-        logger.info("Number of testing samples %i." % len(ds_test))
         if params["validation"]:
             logger.info("Number of validation samples %i." %
                         len(ds_validation))
+        logger.info("Number of testing samples %i." % len(ds_test))
         logger.info("Number of output classes %i." % len(np.unique(labels)))
         logger.info("Number of input channels %i." %
                     len(params["selected_channels"]))
@@ -1354,19 +1367,60 @@ if __name__ == '__main__':
         # MODEL EVALUATION
         ##########################################################################
 
-        # Compute final accuracy and predictions on validation or test set
-        # Use validation set if available (created from training set)
-        # Otherwise use test set for evaluation
+        # Validation selects the model; test evaluates the selected model.
+        # Without validation, test is also the epoch-selection holdout, so its
+        # result is useful but is not an unbiased final-test estimate.
+        with torch.random.fork_rng(devices=[]):
+            train_acc, _, _ = compute_classification_accuracy(
+                dataset=ds_train, layers=best_layers, params=params)
         if params["validation"]:
-            val_acc, trues, preds = compute_classification_accuracy(
+            validation_acc, _, _ = compute_classification_accuracy(
                 dataset=ds_validation, layers=best_layers, params=params)
+            selection_acc = (
+                float(validation_acc)
+                if params.get('inference_only', False)
+                else float(np.max(accs_hist[1]))
+            )
+            selection_split = "validation"
         else:
-            val_acc, trues, preds = compute_classification_accuracy(
-                dataset=ds_test, layers=best_layers, params=params)
-        eval_acc_repetition.append(val_acc)
+            validation_acc = None
+            selection_split = "test"
 
-        if best_eval_acc is None or val_acc > best_eval_acc:
-            best_eval_acc = float(val_acc)
+        test_acc, trues, preds = compute_classification_accuracy(
+            dataset=ds_test, layers=best_layers, params=params)
+        test_acc = float(test_acc)
+        train_acc = float(train_acc)
+        if validation_acc is None:
+            selection_acc = (
+                test_acc
+                if params.get('inference_only', False)
+                else float(np.max(accs_hist[1]))
+            )
+
+        selection_acc_repetition.append(selection_acc)
+        train_acc_repetition.append(train_acc)
+        test_acc_repetition.append(test_acc)
+        if validation_acc is not None:
+            logger.info(
+                "Repetition %d selected-model metrics - training: %.2f%%, "
+                "validation: %.2f%%, final test: %.2f%%",
+                repetition + 1,
+                train_acc * 100,
+                float(validation_acc) * 100,
+                test_acc * 100,
+            )
+        else:
+            logger.info(
+                "Repetition %d selected-model metrics - training: %.2f%%, "
+                "test/selection holdout: %.2f%% (not an unbiased final test)",
+                repetition + 1,
+                train_acc * 100,
+                test_acc * 100,
+            )
+
+        if best_selection_acc is None or selection_acc > best_selection_acc:
+            best_selection_acc = selection_acc
+            best_test_acc = test_acc
             best_repetition = int(repetition + 1)
             best_layers_for_traces = best_layers
             best_ds_train = ds_train
@@ -1376,20 +1430,21 @@ if __name__ == '__main__':
                 for key, value in (initial_weights.items() if initial_weights is not None else [])
             } if not params.get('inference_only', False) else None
             best_acc_train_hist = np.array(accs_hist[0], copy=True)
-            best_acc_test_hist = np.array(accs_hist[1], copy=True)
+            best_acc_selection_hist = np.array(accs_hist[1], copy=True)
             best_loss_train_hist = np.array(loss_hist_epochs, copy=True)
             logger.info(
-                f"New best repetition so far: rep {repetition + 1} with eval accuracy {val_acc*100:.2f}%")
+                f"New best repetition so far: rep {repetition + 1} with "
+                f"{selection_split} selection accuracy {selection_acc*100:.2f}%")
 
         # Warn if final accuracy is low
         num_classes = len(params['letters'])
         chance_level = 1.0 / num_classes
-        if val_acc < (chance_level + 0.10):  # Less than 10% above chance
+        if test_acc < (chance_level + 0.10):  # Less than 10% above chance
             if params.get('inference_only', False):
                 logger.warning(
-                    f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%).")
+                    f"Final test accuracy ({test_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%).")
             else:
-                logger.warning(f"Final accuracy ({val_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%). "
+                logger.warning(f"Selected model test accuracy ({test_acc*100:.2f}%) is near chance level ({chance_level*100:.2f}%). "
                                f"Poor weight initialization or insufficient training.")
 
         ##########################################################################
@@ -1419,7 +1474,8 @@ if __name__ == '__main__':
                     figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_rep_{repetition+1}"),
                 acc_train=np.array(accs_hist[0]),
                 acc_test=np.array(accs_hist[1]),
-                loss_train=np.array(loss_hist_epochs))
+                loss_train=np.array(loss_hist_epochs),
+                evaluation_label="Validation" if params["validation"] else "Test/holdout")
 
         # Generate confusion matrix showing classification performance per letter
         plot_confusion_matrix(
@@ -1443,9 +1499,23 @@ if __name__ == '__main__':
 
             np.savez_compressed(results_file,
                                 acc_train=accs_hist[0],
-                                acc_test=accs_hist[1],
+                                acc_selection=accs_hist[1],
+                                acc_validation=accs_hist[1] if params["validation"] else np.array([]),
+                                acc_test=accs_hist[1] if not params["validation"] else np.array([]),
                                 loss_train=loss_hist_epochs,
-                                val_acc=val_acc,
+                                validation_accuracy=(
+                                    float(validation_acc)
+                                    if validation_acc is not None else np.nan
+                                ),
+                                test_accuracy=test_acc,
+                                selection_accuracy=selection_acc,
+                                selection_split=selection_split,
+                                # Legacy scalar keys now have one fixed meaning.
+                                val_acc=(
+                                    float(validation_acc)
+                                    if validation_acc is not None else np.nan
+                                ),
+                                test_acc=test_acc,
                                 trues=trues_array,
                                 preds=preds_array,
                                 repetition=repetition + 1,
@@ -1469,12 +1539,12 @@ if __name__ == '__main__':
         if save_artifacts_mode == 'all':
             _save_trace_artifacts(
                 rep=repetition + 1,
-                eval_acc_value=float(val_acc),
+                test_acc_value=test_acc,
                 layers_to_save=best_layers,
                 ds_train_local=ds_train,
                 ds_test_local=ds_test,
                 acc_train_hist_local=np.array(accs_hist[0], copy=True),
-                acc_test_hist_local=np.array(accs_hist[1], copy=True),
+                acc_selection_hist_local=np.array(accs_hist[1], copy=True),
                 loss_train_hist_local=np.array(loss_hist_epochs, copy=True),
             )
 
@@ -1496,7 +1566,8 @@ if __name__ == '__main__':
             and best_ds_train is not None
             and best_ds_test is not None
             and best_repetition is not None
-            and best_eval_acc is not None
+            and best_selection_acc is not None
+            and best_test_acc is not None
         ):
             if not params.get('inference_only', False):
                 _save_weight_artifacts(
@@ -1507,12 +1578,12 @@ if __name__ == '__main__':
 
             _save_trace_artifacts(
                 rep=best_repetition,
-                eval_acc_value=best_eval_acc,
+                test_acc_value=best_test_acc,
                 layers_to_save=best_layers_for_traces,
                 ds_train_local=best_ds_train,
                 ds_test_local=best_ds_test,
                 acc_train_hist_local=best_acc_train_hist,
-                acc_test_hist_local=best_acc_test_hist,
+                acc_selection_hist_local=best_acc_selection_hist,
                 loss_train_hist_local=best_loss_train_hist,
             )
         else:
@@ -1530,7 +1601,8 @@ if __name__ == '__main__':
                     figures_dir, f"{nb_hidden}_neurons_{str_letters}_training_performance_{params['repetitions']}_rep"),
                 acc_train=np.array(accs_hist_repetition)[:, 0],
                 acc_test=np.array(accs_hist_repetition)[:, 1],
-                loss_train=np.array(loss_hist_repetition))
+                loss_train=np.array(loss_hist_repetition),
+                evaluation_label="Validation" if params["validation"] else "Test/holdout")
 
     ##########################################################################
     # FINAL PERFORMANCE REPORT
@@ -1555,85 +1627,39 @@ if __name__ == '__main__':
     logger.info(f"  Device: {params['device']}")
     logger.info("")
 
-    # Performance across repetitions
-    if params.get('inference_only', False):
-        if len(eval_acc_repetition) > 0:
-            eval_accs = np.array(eval_acc_repetition)
-            num_classes = len(params['letters'])
-            chance_level = 1.0 / num_classes
-
+    # Report metrics for the selected model, rather than unrelated final-epoch
+    # or maximum test-history values.
+    if selection_acc_repetition:
+        selected_train = np.asarray(train_acc_repetition)
+        selected_test = np.asarray(test_acc_repetition)
+        selected_metric = np.asarray(selection_acc_repetition)
+        logger.info(
+            f"Selected-model Summary ({len(selection_acc_repetition)} successful repetitions):")
+        logger.info(
+            f"  Training: {np.mean(selected_train)*100:.2f}% ± {np.std(selected_train)*100:.2f}%")
+        if params["validation"]:
             logger.info(
-                f"Inference-only Summary ({len(eval_acc_repetition)} successful repetitions):")
-            logger.info("")
-            logger.info(f"  Evaluation Accuracy:")
+                f"  Validation (selection): {np.mean(selected_metric)*100:.2f}% ± "
+                f"{np.std(selected_metric)*100:.2f}%")
             logger.info(
-                f"    Mean: {np.mean(eval_accs)*100:.2f}% ± {np.std(eval_accs)*100:.2f}%")
-            logger.info(f"    Min:  {np.min(eval_accs)*100:.2f}%")
-            logger.info(f"    Max:  {np.max(eval_accs)*100:.2f}%")
-            logger.info("")
-            logger.info(
-                f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
-            logger.info(
-                f"  Improvement over chance (mean eval): {(np.mean(eval_accs) - chance_level)*100:.2f} percentage points")
-            logger.info("")
+                f"  Test (final evaluation): {np.mean(selected_test)*100:.2f}% ± "
+                f"{np.std(selected_test)*100:.2f}%")
         else:
-            logger.warning(f"  No successful repetitions to report.")
-            logger.info(f"")
-    elif len(accs_hist_repetition) > 0:
-        accs_array = np.array(accs_hist_repetition)
-        loss_array = np.array(loss_hist_repetition)
-
-        # Extract final and best accuracies for each repetition
-        final_train_accs = accs_array[:, 0, -1]  # Last epoch train accuracy
-        final_test_accs = accs_array[:, 1, -1]   # Last epoch test accuracy
-        best_train_accs = np.max(
-            accs_array[:, 0, :], axis=1)  # Best train accuracy
-        best_test_accs = np.max(
-            accs_array[:, 1, :], axis=1)   # Best test accuracy
-        final_losses = loss_array[:, -1]  # Last epoch loss
-
-        logger.info(
-            f"Performance Summary ({len(accs_hist_repetition)} successful repetitions):")
-        logger.info(f"")
-        logger.info(f"  Training Accuracy (final epoch):")
-        logger.info(
-            f"    Mean: {np.mean(final_train_accs)*100:.2f}% ± {np.std(final_train_accs)*100:.2f}%")
-        logger.info(f"    Min:  {np.min(final_train_accs)*100:.2f}%")
-        logger.info(f"    Max:  {np.max(final_train_accs)*100:.2f}%")
-        logger.info(f"")
-        logger.info(f"  Test Accuracy (final epoch):")
-        logger.info(
-            f"    Mean: {np.mean(final_test_accs)*100:.2f}% ± {np.std(final_test_accs)*100:.2f}%")
-        logger.info(f"    Min:  {np.min(final_test_accs)*100:.2f}%")
-        logger.info(f"    Max:  {np.max(final_test_accs)*100:.2f}%")
-        logger.info(f"")
-        logger.info(f"  Best Training Accuracy (across all epochs):")
-        logger.info(
-            f"    Mean: {np.mean(best_train_accs)*100:.2f}% ± {np.std(best_train_accs)*100:.2f}%")
-        logger.info(f"    Min:  {np.min(best_train_accs)*100:.2f}%")
-        logger.info(f"    Max:  {np.max(best_train_accs)*100:.2f}%")
-        logger.info(f"")
-        logger.info(f"  Best Test Accuracy (across all epochs):")
-        logger.info(
-            f"    Mean: {np.mean(best_test_accs)*100:.2f}% ± {np.std(best_test_accs)*100:.2f}%")
-        logger.info(f"    Min:  {np.min(best_test_accs)*100:.2f}%")
-        logger.info(f"    Max:  {np.max(best_test_accs)*100:.2f}%")
-        logger.info(f"")
-        logger.info(f"  Final Loss:")
-        logger.info(
-            f"    Mean: {np.mean(final_losses):.4f} ± {np.std(final_losses):.4f}")
-        logger.info(f"    Min:  {np.min(final_losses):.4f}")
-        logger.info(f"    Max:  {np.max(final_losses):.4f}")
-        logger.info(f"")
-
-        # Chance level comparison
+            logger.info(
+                f"  Test/selection holdout: {np.mean(selected_test)*100:.2f}% ± "
+                f"{np.std(selected_test)*100:.2f}%")
+            logger.warning(
+                "  No validation split: test selected the epoch, so this is not "
+                "an unbiased final-test estimate.")
+        if loss_hist_repetition:
+            final_losses = np.asarray(loss_hist_repetition)[:, -1]
+            logger.info(
+                f"  Training loss (final epoch): {np.mean(final_losses):.4f} ± "
+                f"{np.std(final_losses):.4f}")
         num_classes = len(params['letters'])
         chance_level = 1.0 / num_classes
         logger.info(
             f"  Chance Level: {chance_level*100:.2f}% (1/{num_classes} classes)")
-        logger.info(
-            f"  Improvement over chance (mean test): {(np.mean(final_test_accs) - chance_level)*100:.2f} percentage points")
-        logger.info(f"")
     else:
         logger.warning(f"  No successful repetitions to report.")
         logger.info(f"")
@@ -1646,8 +1672,7 @@ if __name__ == '__main__':
     logger.info(f"  Logs:     {logs_dir}")
 
     logger.info(f"\n{'='*80}")
-    successful_repetitions = len(eval_acc_repetition) if params.get(
-        'inference_only', False) else len(accs_hist_repetition)
+    successful_repetitions = len(selection_acc_repetition)
     logger.info(
         f"ALL TRAINING COMPLETE - {params['repetitions']} repetitions requested, {successful_repetitions} successful")
     logger.info(f"{'='*80}\n")

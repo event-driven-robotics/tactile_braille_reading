@@ -59,10 +59,10 @@ def main() -> None:
     # experiment.config.max_experiment_duration = "168h"
     
     # for a quick test
-    parallel_trials = 5
+    parallel_trials = 2
     experiment.config.max_trial_number = 1000
     experiment.config.trial_concurrency = parallel_trials
-    experiment.config.max_experiment_duration = "12h"
+    experiment.config.max_experiment_duration = "168h"  # 7 days
 
     # Each trial requests one GPU, with up to five trials sharing that GPU.
     experiment.config.trial_gpu_number = 1

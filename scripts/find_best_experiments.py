@@ -15,8 +15,11 @@ import numpy as np
 
 
 DEFAULT_RESULTS_ROOT = "./results"
-DEFAULT_METRIC = "val_acc"
-METRIC_CHOICES = ["val_acc", "best_test", "final_test", "best_train"]
+DEFAULT_METRIC = "selection_accuracy"
+METRIC_CHOICES = [
+    "selection_accuracy", "validation_accuracy", "test_accuracy", "best_train",
+    "val_acc", "best_test", "final_test",
+]
 
 
 def _to_scalar(value):
@@ -59,6 +62,22 @@ def _load_result(npz_path):
 
     acc_train = data["acc_train"] if "acc_train" in data else None
     acc_test = data["acc_test"] if "acc_test" in data else None
+    acc_selection = data["acc_selection"] if "acc_selection" in data else acc_test
+    validation_accuracy = (
+        _to_scalar(data["validation_accuracy"])
+        if "validation_accuracy" in data
+        else (_to_scalar(data["val_acc"]) if "val_acc" in data else None)
+    )
+    if isinstance(validation_accuracy, float) and np.isnan(validation_accuracy):
+        validation_accuracy = None
+    test_accuracy = (
+        _to_scalar(data["test_accuracy"]) if "test_accuracy" in data else None
+    )
+    selection_accuracy = (
+        _to_scalar(data["selection_accuracy"])
+        if "selection_accuracy" in data
+        else validation_accuracy
+    )
 
     entry = {
         "path": str(npz_path),
@@ -71,9 +90,13 @@ def _load_result(npz_path):
         "batch_size": _to_scalar(data["batch_size"]) if "batch_size" in data else None,
         "nb_epochs": _to_scalar(data["nb_epochs"]) if "nb_epochs" in data else None,
         "repetition": _to_scalar(data["repetition"]) if "repetition" in data else None,
-        "val_acc": _to_scalar(data["val_acc"]) if "val_acc" in data else None,
+        "selection_accuracy": selection_accuracy,
+        "validation_accuracy": validation_accuracy,
+        "test_accuracy": test_accuracy,
+        "val_acc": validation_accuracy,
         "acc_train": acc_train,
         "acc_test": acc_test,
+        "acc_selection": acc_selection,
     }
 
     if acc_train is not None and len(acc_train) > 0:
@@ -84,16 +107,27 @@ def _load_result(npz_path):
         entry["best_train"] = None
 
     if acc_test is not None and len(acc_test) > 0:
-        entry["final_test"] = float(acc_test[-1])
+        entry["final_test"] = (
+            float(test_accuracy) if test_accuracy is not None else float(acc_test[-1])
+        )
         entry["best_test"] = float(np.max(acc_test))
     else:
-        entry["final_test"] = None
-        entry["best_test"] = None
+        entry["final_test"] = test_accuracy
+        entry["best_test"] = test_accuracy
+
+    if entry["selection_accuracy"] is None and acc_selection is not None and len(acc_selection) > 0:
+        entry["selection_accuracy"] = float(np.max(acc_selection))
 
     return entry
 
 
 def _compute_metric(entry, metric):
+    if metric == "selection_accuracy":
+        return entry["selection_accuracy"]
+    if metric == "validation_accuracy":
+        return entry["validation_accuracy"]
+    if metric == "test_accuracy":
+        return entry["test_accuracy"] if entry["test_accuracy"] is not None else entry["final_test"]
     if metric == "val_acc":
         return entry["val_acc"] if entry["val_acc"] is not None else entry["best_test"]
     if metric == "best_test":
@@ -117,7 +151,7 @@ def _collect_results(results_root):
         if entry["nb_hidden"] is None:
             continue
 
-        if entry["acc_test"] is None and entry["val_acc"] is None:
+        if entry["acc_selection"] is None and entry["selection_accuracy"] is None:
             continue
 
         results.append(entry)
@@ -186,6 +220,7 @@ def _write_json(best_by_hidden, output_path):
             cleaned = dict(entry)
             cleaned.pop("acc_train", None)
             cleaned.pop("acc_test", None)
+            cleaned.pop("acc_selection", None)
             output[str(nb_hidden)].append(cleaned)
 
     with open(output_path, "w") as handle:

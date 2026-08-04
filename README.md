@@ -243,8 +243,10 @@ command line. Defaults below reflect `scripts/braille_reading_rsnn.py`.
 | `--early_stop_threshold <float>` | `5.0` | Percentage points above chance required during the early-stop window. |
 
 Without `--validation`, data is split 80% train and 20% test. With
-`--validation`, the split is approximately 70% train, 20% test, and 10%
-validation.
+`--validation`, the split is approximately 70% train, 20% validation, and 10%
+test. Validation drives epoch and repetition selection; each selected model is
+then evaluated on test. Without validation, test also selects the epoch, so its
+score is a selection-holdout estimate rather than an unbiased final test.
 
 ### Data and Encoding
 
@@ -400,7 +402,11 @@ Important files include:
 - `figures/<run_id>/*confusion_matrix*.pdf`
 - `figures/<run_id>/*network_activity*.pdf`
 
-The metrics `.npz` files contain training/test or validation performance arrays.
+The metrics `.npz` files keep epoch-selection history separate from final
+evaluation: `acc_validation` is populated for train/validation/test runs,
+`acc_test` is populated as a per-epoch holdout curve only for train/test runs,
+and `test_accuracy` is the selected model's test result. Predictions, labels,
+and `network_input` all refer to that same test split.
 The trace `.npz` files include `record_mode` metadata and spike/membrane traces
 for later analysis.
 

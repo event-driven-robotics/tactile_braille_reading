@@ -9,7 +9,7 @@ braille letter classification with detailed metrics and diagnostic visualization
 
 Key Components:
 - compute_classification_accuracy: Evaluate network performance on datasets
-- plot_training_performance: Visualize training/test accuracy and loss over epochs
+- plot_training_performance: Visualize training/selection accuracy and loss over epochs
 - plot_confusion_matrix: Generate confusion matrix heatmaps from predictions
 - get_network_activity: Record spike trains from all network layers
 - plot_network_activity: Create raster plots of neuronal spike activity
@@ -192,12 +192,18 @@ def compute_classification_accuracy(dataset: TensorDataset, layers: list, params
     return mean_accs, trues, preds
 
 
-def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
+def plot_training_performance(
+    path: str,
+    acc_train: np.ndarray,
+    acc_test: np.ndarray,
+    loss_train: np.ndarray,
+    evaluation_label: str = "Test",
+) -> None:
     """
     Visualize training performance for a single training run.
 
-    Creates a two-panel figure showing training/test accuracies and training loss over epochs
-    for a single training run.
+    Creates a two-panel figure showing training and model-selection accuracies
+    plus training loss over epochs for a single run.
 
     Parameters
     ----------
@@ -211,7 +217,8 @@ def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.nda
         Values should be in range [0.0, 1.0] (converted to % internally)
 
     acc_test : np.ndarray
-        Test accuracies with shape [n_epochs]
+        Model-selection accuracies with shape [n_epochs]. These are validation
+        accuracies when validation is enabled, otherwise test/holdout accuracies.
         Values should be in range [0.0, 1.0] (converted to % internally)
 
     loss_train : np.ndarray
@@ -227,14 +234,14 @@ def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.nda
     -----
     **Figure Layout:**
     - Figure size: 8x12 inches (portrait orientation)
-    - Top panel: Accuracy plot (training and test)
+    - Top panel: Accuracy plot (training and model-selection split)
     - Bottom panel: Loss plot (training only)
 
     **Top Panel (Accuracy):**
     - Y-axis: Accuracy in percentage (0-105%)
-    - Solid lines for both training and test accuracy
-    - Colors: Blue for training, Orange/Red for test
-    - Legend: Training and Test labels
+    - Solid lines for both training and model-selection accuracy
+    - Colors: Blue for training, Orange/Red for the selection split
+    - Legend text uses ``evaluation_label`` for the selection split
 
     **Bottom Panel (Loss):**
     - Y-axis: Loss value (auto-scaled)
@@ -268,7 +275,7 @@ def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.nda
     ax.set_ylabel("Accuracy (%)")
     ax.set_ylim((0, 105))
     ax.set_title("Accuracy")
-    ax.legend(["Training", "Test"], loc='lower right')
+    ax.legend(["Training", evaluation_label], loc='lower right')
 
     ax = fig.add_subplot(2, 1, 2)
     ax.plot(range(1, len(loss_train)+1),
@@ -284,13 +291,20 @@ def plot_training_performance(path: str, acc_train: np.ndarray, acc_test: np.nda
     plt.close(fig)
 
 
-def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, acc_test: np.ndarray, loss_train: np.ndarray) -> None:
+def plot_training_performance_repetitive_runs(
+    path: str,
+    acc_train: np.ndarray,
+    acc_test: np.ndarray,
+    loss_train: np.ndarray,
+    evaluation_label: str = "Test",
+) -> None:
     """
     Visualize training performance with accuracy and loss plots across one or multiple runs.
 
-    Creates a two-panel figure showing training/test accuracies and training loss over epochs.
+    Creates a two-panel figure showing training/model-selection accuracies and
+    training loss over epochs.
     For single runs, displays only that run. For multiple runs, displays mean ± standard deviation
-    and highlights the best trial (highest test accuracy).
+    and highlights the best trial (highest selection accuracy).
 
     Parameters
     ----------
@@ -305,7 +319,7 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
         Values should be in range [0.0, 1.0] (converted to % internally)
 
     acc_test : np.ndarray
-        Test accuracies with shape [n_runs, n_epochs]
+        Model-selection accuracies with shape [n_runs, n_epochs]
         For single run: shape [1, n_epochs]
         Values should be in range [0.0, 1.0] (converted to % internally)
 
@@ -323,7 +337,7 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
     -----
     **Figure Layout:**
     - Figure size: 8x12 inches (portrait orientation)
-    - Top panel: Accuracy plot (training and test)
+    - Top panel: Accuracy plot (training and model-selection split)
     - Bottom panel: Loss plot (training only)
 
     **Top Panel (Accuracy):**
@@ -331,7 +345,7 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
     - Shaded regions: ± 1 standard deviation around mean
     - Dashed lines: Mean accuracy across all runs
     - Solid lines: Best trial (trial with maximum test accuracy)
-    - Colors: Blue for training, Orange/Red for test
+    - Colors: Blue for training, Orange/Red for the selection split
     - Legend: Shows mean, std, and best trial
 
     **Bottom Panel (Loss):**
@@ -342,7 +356,7 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
     - Color: Blue for training loss
 
     **Best Trial Selection:**
-    - Best trial is defined as the run with maximum test accuracy
+    - Best trial is defined as the run with maximum selection accuracy
     - If multiple runs achieve same max, selects first occurrence
     - Both accuracy and loss plots show data from this same trial
 
@@ -403,8 +417,11 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
     ax.set_ylabel("Accuracy (%)")
     ax.set_ylim((0, 105))
     ax.set_title("Accuracy")
-    ax.legend(["Training std", "Test std", r"$\overline{\mathrm{Training}}$",
-              r"$\overline{\mathrm{Test}}$", "Training @ best test", "Best test"], loc='lower right')
+    evaluation_lower = evaluation_label.lower()
+    ax.legend(["Training std", f"{evaluation_label} std", r"$\overline{\mathrm{Training}}$",
+              rf"$\overline{{\mathrm{{{evaluation_label}}}}}$",
+              f"Training @ best {evaluation_lower}", f"Best {evaluation_lower}"],
+              loc='lower right')
 
     ax = fig.add_subplot(2, 1, 2)
     ax.fill_between(range(1, len(loss_train_mean)+1), loss_train_mean +
@@ -417,7 +434,8 @@ def plot_training_performance_repetitive_runs(path: str, acc_train: np.ndarray, 
     ax.set_ylabel("Loss")
     ax.set_ylim(bottom=0)
     ax.legend(
-        ["Training std", r"$\overline{\mathrm{Training}}$", "Training loss @ best test"])
+        ["Training std", r"$\overline{\mathrm{Training}}$",
+         f"Training loss @ best {evaluation_lower}"])
     ax.set_title("Training loss")
     fig.align_ylabels()
     fig.tight_layout()

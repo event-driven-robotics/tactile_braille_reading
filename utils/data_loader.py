@@ -58,7 +58,7 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
         - 'dtype_torch' : torch.dtype
             PyTorch data type for tensors
         - 'validation' : bool
-            If True, creates 70/20/10 train/test/validation split;
+            If True, creates a 70/20/10 train/validation/test split;
             If False, creates 80/20 train/test split
         - 'debug' : bool
             If True, prints detailed label distribution information
@@ -89,17 +89,17 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     Returns
     -------
     tuple
-        (ds_train, ds_test, ds_validation, labels) where:
+        (ds_train, ds_validation, ds_test, labels) where:
 
         - ds_train : TensorDataset
             Training dataset containing (data, labels) pairs
             Data shape: [n_train_samples, time_steps, n_channels]
-        - ds_test : TensorDataset
-            Test dataset containing (data, labels) pairs
-            Data shape: [n_test_samples, time_steps, n_channels]
         - ds_validation : TensorDataset or None
             Validation dataset (None if params['validation']=False)
             Data shape: [n_val_samples, time_steps, n_channels]
+        - ds_test : TensorDataset
+            Test dataset containing (data, labels) pairs
+            Data shape: [n_test_samples, time_steps, n_channels]
         - labels : torch.Tensor
             All label values in the full dataset (before split), shape: [n_total_samples]
 
@@ -127,8 +127,11 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     **Dataset Splits:**
 
     - All splits use stratified sampling to maintain class balance
-    - If validation=True: 70% train, 20% test, 10% validation
+    - If validation=True: 70% train, 20% validation, 10% test
     - If validation=False: 80% train, 20% test, validation is None
+    - Use validation performance for epoch selection and hyperparameter
+      optimization. Keep the test set untouched until model and
+      hyperparameter selection are complete.
 
     **Side Effects:**
 
@@ -152,7 +155,8 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
     ...     'debug': False
     ... }
     >>> letters = ['a', 'b', 'c']
-    >>> train, test, val, labels = load_and_extract(params, 'data.pkl', letters)
+    >>> train, validation, test, labels = load_and_extract(
+    ...     params, 'data.pkl', letters)
     >>> print(params['nb_inputs'])  # Will be 6 (3 taxels * 2 channels)
     6
     """
@@ -297,17 +301,33 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
         logger.debug(f"  Total: {total_samples} samples")
 
     if params['validation']:
-        # create 70/20/10 train/test/validation split
-        # first create 70/30 train/(test + validation)
-        x_train, x_test, y_train, y_test = train_test_split(
-            data, labels, test_size=0.30, shuffle=True, stratify=labels)
-        # split test and validation 2/1
-        x_test, x_validation, y_test, y_validation = train_test_split(
-            x_test, y_test, test_size=0.33, shuffle=True, stratify=y_test)
+        # Create a 70/20/10 train/validation/test split:
+        #   - train: fit model weights
+        #   - validation: select epochs and drive hyperparameter optimization
+        #   - test: untouched final evaluation of the selected setup
+        #
+        # First reserve 30% as a common validation + test holdout.
+        x_train, x_remainder, y_train, y_remainder = train_test_split(
+            data,
+            labels,
+            test_size=0.30,
+            shuffle=True,
+            stratify=labels,
+        )
+
+        # Split the 30% remainder into 20% validation and 10% test.
+        # One third of the remainder equals 10% of the complete dataset.
+        x_validation, x_test, y_validation, y_test = train_test_split(
+            x_remainder,
+            y_remainder,
+            test_size=1 / 3,
+            shuffle=True,
+            stratify=y_remainder,
+        )
 
         ds_train = TensorDataset(x_train, y_train)
-        ds_test = TensorDataset(x_test, y_test)
         ds_validation = TensorDataset(x_validation, y_validation)
+        ds_test = TensorDataset(x_test, y_test)
 
     else:
         # create 80/20 train/test split
@@ -329,15 +349,6 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
             print(
                 f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
 
-        print(f"\nTest set:")
-        unique_test, counts_test = np.unique(
-            y_test.cpu().numpy(), return_counts=True)
-        for label_idx, count in zip(unique_test, counts_test):
-            label_name = letter_written[label_idx]
-            percentage = (count / len(y_test)) * 100
-            print(
-                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
-
         if params['validation']:
             print(f"\nValidation set:")
             unique_val, counts_val = np.unique(
@@ -348,6 +359,15 @@ def load_and_extract(params: dict, file_name: str, letter_written: list) -> tupl
                 print(
                     f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
 
+        print(f"\nTest set:")
+        unique_test, counts_test = np.unique(
+            y_test.cpu().numpy(), return_counts=True)
+        for label_idx, count in zip(unique_test, counts_test):
+            label_name = letter_written[label_idx]
+            percentage = (count / len(y_test)) * 100
+            print(
+                f"  Label {label_idx} ({label_name}): {count} samples ({percentage:.1f}%)")
+
         print()  # blank line for readability
 
-    return ds_train, ds_test, ds_validation, labels
+    return ds_train, ds_validation, ds_test, labels

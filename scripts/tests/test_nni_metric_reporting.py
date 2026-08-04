@@ -11,17 +11,16 @@ class TestNniMetricReporting(TestCase):
         metrics = make_accuracy_metrics(
             validation_accuracy=0.75,
             training_accuracy=0.90,
-            test_accuracy=0.70,
         )
 
         self.assertEqual(
             list(metrics),
-            ["default", "training_accuracy", "test_accuracy"],
+            ["default", "training_accuracy", "validation_accuracy"],
         )
         self.assertEqual(metrics, {
             "default": 0.75,
             "training_accuracy": 0.90,
-            "test_accuracy": 0.70,
+            "validation_accuracy": 0.75,
         })
 
     def test_accuracy_payload_rejects_invalid_values(self):
@@ -31,19 +30,16 @@ class TestNniMetricReporting(TestCase):
                     make_accuracy_metrics(
                         validation_accuracy=invalid_accuracy,
                         training_accuracy=0.90,
-                        test_accuracy=0.70,
                     )
 
     def test_train_and_evaluate_returns_best_validation_repetition_metrics(self):
         first = make_accuracy_metrics(
             validation_accuracy=0.60,
             training_accuracy=0.95,
-            test_accuracy=0.58,
         )
         best = make_accuracy_metrics(
             validation_accuracy=0.80,
             training_accuracy=0.85,
-            test_accuracy=0.76,
         )
 
         def fake_run_training(**kwargs):
@@ -59,14 +55,41 @@ class TestNniMetricReporting(TestCase):
             result = backbone.train_and_evaluate(Path("encoded.pkl"), "trial-1")
 
         self.assertEqual(result, best)
-        self.assertEqual(report.call_args_list[0].args, (first,))
-        self.assertEqual(report.call_args_list[1].args, (best,))
+        self.assertEqual(report.call_args_list[0].args, (first["default"],))
+        self.assertEqual(report.call_args_list[1].args, (best["default"],))
+
+    def test_train_and_evaluate_reports_all_intermediate_validation_metrics(self):
+        first = make_accuracy_metrics(
+            validation_accuracy=0.80,
+            training_accuracy=0.85,
+        )
+        later = make_accuracy_metrics(
+            validation_accuracy=0.70,
+            training_accuracy=0.90,
+        )
+
+        def fake_run_training(**kwargs):
+            callback = kwargs["intermediate_result_callback"]
+            callback(first)
+            callback(later)
+            return first["default"]
+
+        with (
+            patch.object(backbone, "run_training", side_effect=fake_run_training),
+            patch.object(backbone.nni, "report_intermediate_result") as report,
+        ):
+            result = backbone.train_and_evaluate(Path("encoded.pkl"), "trial-1")
+
+        self.assertEqual(result, first)
+        self.assertEqual(
+            [call.args for call in report.call_args_list],
+            [(first["default"],), (later["default"],)],
+        )
 
     def test_train_and_evaluate_rejects_mismatched_optimization_metric(self):
         metrics = make_accuracy_metrics(
             validation_accuracy=0.80,
             training_accuracy=0.85,
-            test_accuracy=0.76,
         )
 
         def fake_run_training(**kwargs):

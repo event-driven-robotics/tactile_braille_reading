@@ -315,7 +315,7 @@ def run_health_checks(experiment: Dict[str, Any]) -> List[str]:
         return getattr(value, "shape", "n/a")
 
     val_acc = experiment.get("val_acc")
-    if val_acc is not None and not (0.0 <= float(val_acc) <= 1.0):
+    if val_acc is not None and np.isfinite(float(val_acc)) and not (0.0 <= float(val_acc) <= 1.0):
         warnings.append(f"val_acc out of [0, 1] range: {val_acc}")
 
     trues = experiment.get("trues")
@@ -377,6 +377,8 @@ def run_health_checks(experiment: Dict[str, Any]) -> List[str]:
     nb_epochs = experiment.get("nb_epochs")
     acc_train = experiment.get("acc_train")
     acc_test = experiment.get("acc_test")
+    acc_validation = experiment.get("acc_validation")
+    acc_selection = experiment.get("acc_selection")
     loss_train = experiment.get("loss_train")
 
     if nb_epochs is not None:
@@ -384,6 +386,14 @@ def run_health_checks(experiment: Dict[str, Any]) -> List[str]:
             warnings.append(f"acc_train length ({len(acc_train)}) differs from nb_epochs ({nb_epochs})")
         if acc_test is not None and len(acc_test) not in (0, int(nb_epochs)):
             warnings.append(f"acc_test length ({len(acc_test)}) differs from nb_epochs ({nb_epochs})")
+        if acc_validation is not None and len(acc_validation) not in (0, int(nb_epochs)):
+            warnings.append(
+                f"acc_validation length ({len(acc_validation)}) differs from nb_epochs ({nb_epochs})"
+            )
+        if acc_selection is not None and len(acc_selection) not in (0, int(nb_epochs)):
+            warnings.append(
+                f"acc_selection length ({len(acc_selection)}) differs from nb_epochs ({nb_epochs})"
+            )
         if loss_train is not None and len(loss_train) not in (0, int(nb_epochs)):
             warnings.append(f"loss_train length ({len(loss_train)}) differs from nb_epochs ({nb_epochs})")
 
